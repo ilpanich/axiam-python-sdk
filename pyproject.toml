@@ -39,12 +39,13 @@ dev = [
     "twine",
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
     "respx",
 ]
 
 [project.urls]
-Repository = "https://github.com/ilpanich/axiam"
-Documentation = "https://docs.axiam.io/sdks/python"
+Repository = "https://github.com/ilpanich/axiam-python-sdk"
+Documentation = "https://ilpanich.github.io/axiam-python-sdk/"
 
 [tool.setuptools.packages.find]
 where = ["src"]

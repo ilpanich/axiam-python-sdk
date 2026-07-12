@@ -4,9 +4,11 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Package identity
 
+- **Repository:** [github.com/ilpanich/axiam-python-sdk](https://github.com/ilpanich/axiam-python-sdk)
 - **PyPI package:** `axiam-sdk`
 - **Registry:** [pypi.org/project/axiam-sdk](https://pypi.org/project/axiam-sdk/) _(reserved, not yet published)_
-- **Version tags:** `axiam-python-sdk/vX.Y.Z` (monorepo subdir tagging convention, D-05/D-13)
+- **Version tags:** `vX.Y.Z`
+- **API docs:** [ilpanich.github.io/axiam-python-sdk](https://ilpanich.github.io/axiam-python-sdk/)
 - **License:** Apache-2.0
 - **Python:** `>=3.10` (D-11)
 
@@ -14,7 +16,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 This SDK conforms to CONTRACT.md §1–§10.
 
-See [`../CONTRACT.md`](../CONTRACT.md) for the full cross-language behavioral contract.
+See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
 ## Status
 
@@ -182,7 +184,7 @@ generated gRPC stubs (`src/axiam_sdk/grpc/gen/`) are committed and shipped
 in both the wheel and the sdist. Contributors regenerating them locally run:
 
 ```bash
-bash sdks/python/scripts/gen_grpc.sh
+bash scripts/gen_grpc.sh
 ```
 
 CI regenerates the same way and fails the build on any drift
@@ -199,9 +201,15 @@ including the examples. CI enforces this with a dedicated grep gate.
 ## Development
 
 ```bash
-pip install -e "sdks/python[dev,fastapi,django]"
-pytest sdks/python/tests
-mypy --strict sdks/python/src
-ruff check sdks/python
-ruff format --check sdks/python
+pip install -e ".[dev,fastapi,django]"
+pytest tests
+mypy --strict src
+ruff check .
+ruff format --check .
+```
+
+Coverage (as CI runs it, reported to Coveralls):
+
+```bash
+pytest --cov=axiam_sdk --cov-report=lcov
 ```

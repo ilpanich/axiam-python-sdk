@@ -7,7 +7,7 @@
 # committed stubs are reproducible without a `buf` install. This is the
 # drift-check anchor for the CI job wired in a later plan (19-07): CI
 # re-runs this exact script and asserts `git diff --exit-code` is clean
-# against `sdks/python/src/axiam_sdk/grpc/gen`.
+# against `src/axiam_sdk/grpc/gen`.
 #
 # grpc_tools.protoc's generated `*_pb2_grpc.py` uses a bare
 # `import authorization_pb2 as authorization__pb2` import that breaks once
@@ -27,13 +27,13 @@
 #
 # Usage (from repo root or anywhere — path resolution is relative to the
 # repo root via `git rev-parse --show-toplevel`):
-#   bash sdks/python/scripts/gen_grpc.sh
+#   bash scripts/gen_grpc.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROTO_DIR="${REPO_ROOT}/proto/axiam/v1"
-OUT_DIR="${REPO_ROOT}/sdks/python/src/axiam_sdk/grpc/gen"
+OUT_DIR="${REPO_ROOT}/src/axiam_sdk/grpc/gen"
 PROTO_FILE="authorization.proto"
 
 mkdir -p "${OUT_DIR}"
