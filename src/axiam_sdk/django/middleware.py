@@ -14,7 +14,7 @@ Security-critical invariant — cross-tenant token replay defense (T-19-19):
 the AXIAM JWKS is organization-wide, not tenant-scoped, so a token that is
 signature-valid may still belong to a *different* tenant. ``_authenticate``
 enforces ``claims["tenant_id"] == configured_tenant`` BEFORE any claim is
-trusted further — mirrors ``sdks/go/middleware/nethttp.go`` lines 78-95.
+trusted further — mirrors ``the Go SDK's middleware/nethttp.go`` lines 78-95.
 
 Security-critical invariant — expiry (T-19-20): ``JwksVerifier.verify()``
 checks the signature only, not ``exp`` (documented on that class).
@@ -34,7 +34,7 @@ additionally requires the ``X-CSRF-Token`` request header to be present and
 equal (constant-time) to the ``axiam_csrf`` cookie value, rejecting with
 403 on mismatch/absence. This mirrors, locally, the same double-submit
 check the AXIAM server performs on its own endpoints (§3) — see also
-``sdks/java/.../AxiamAuthenticationFilter.java`` for the same pattern
+``the Java SDK's .../AxiamAuthenticationFilter.java`` for the same pattern
 applied to the Spring integration.
 """
 
@@ -95,7 +95,7 @@ def _extract_token(request: HttpRequest) -> _Credential | None:
     """Extract the bearer token from ``Authorization: Bearer <token>``,
     falling back to the ``axiam_access`` session cookie.
 
-    Ported 1:1 from ``sdks/go/middleware/nethttp.go``'s ``extractToken``
+    Ported 1:1 from ``the Go SDK's middleware/nethttp.go``'s ``extractToken``
     (lines 109-125): Bearer header first, cookie fallback second — this
     exact ordering is a Shared Pattern (19-PATTERNS.md) also used by the
     FastAPI dependency.

@@ -1,6 +1,6 @@
 """Sync + async auth/tenant metadata interceptors (D-12, CONTRACT.md §5/§6).
 
-Mirrors ``sdks/go/grpc/interceptor.go``'s non-blocking ``TokenFunc`` pattern,
+Mirrors ``the Go SDK's grpc/interceptor.go``'s non-blocking ``TokenFunc`` pattern,
 adapted for Python's dual sync (``grpcio``) + async (``grpc.aio``) interceptor
 base classes — these are DIFFERENT classes in ``grpc``'s API surface, so two
 concrete interceptor classes are required, sharing one metadata-building

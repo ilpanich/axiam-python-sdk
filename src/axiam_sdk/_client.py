@@ -7,8 +7,8 @@ SDK-Q08) — NOT as ``async_*`` methods on this class. Both classes share the
 ``_AxiamClientBase`` construction/body-building/response-parsing logic defined
 below (one ``_Session``: cookie jar, CSRF state, tenant/org context, refresh
 guard); only the transport (sync vs. async httpx client) and the single-flight
-refresh-guard call differ. Mirrors ``sdks/go/client.go`` + ``sdks/go/login.go``
-+ ``sdks/go/authz.go``, adapted to Python's sync+async duality.
+refresh-guard call differ. Mirrors ``the Go SDK's client.go`` + ``the Go SDK's login.go``
++ ``the Go SDK's authz.go``, adapted to Python's sync+async duality.
 """
 
 from __future__ import annotations

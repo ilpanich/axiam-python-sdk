@@ -1,7 +1,7 @@
 """Regression tests for the exception taxonomy (D-08) and LoginResult
 redaction (D-07/D-21).
 
-Mirrors ``sdks/typescript/test`` intent (CR-04 carry-forward): the raw
+Mirrors the TypeScript SDK's test intent (CR-04 carry-forward): the raw
 ``axiam_access``/``axiam_refresh`` cookie value must never appear in
 ``repr``/``str``/``repr(__cause__)`` of a raised ``NetworkError``, and a
 non-sensitive header value MUST survive redaction — proving the test is

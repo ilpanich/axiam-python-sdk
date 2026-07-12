@@ -2,8 +2,8 @@
 
 Central status -> error mapper (CONTRACT.md §2). This is the single source of
 truth for both the REST and gRPC transports so the two cannot drift on the
-error taxonomy — mirrors ``sdks/go/errors.go`` and
-``sdks/typescript/src/core/errorMapper.ts``.
+error taxonomy — mirrors ``the Go SDK's errors.go`` and
+``the TypeScript SDK's src/core/errorMapper.ts``.
 
 CRITICAL invariant (CR-04 carry-forward): ``NetworkError`` MUST redact
 ``Set-Cookie``/``Authorization``/``Cookie`` from any wrapped ``httpx``
@@ -180,7 +180,7 @@ def error_from_http_status(
     When ``response`` is provided, it is the SOLE source of the wrapped
     cause — any caller-supplied cause is intentionally not accepted by this
     signature, closing the redact-before-wrap bypass this taxonomy exists to
-    prevent (mirrors ``sdks/go/errors.go::newNetworkError``'s documented
+    prevent (mirrors ``the Go SDK's errors.go::newNetworkError``'s documented
     invariant).
 
     On a 403, the server's authorization-denied body

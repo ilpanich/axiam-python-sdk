@@ -5,8 +5,8 @@ CONTRACT.md §9: exactly one in-flight ``POST /api/v1/auth/refresh`` call
 across any number of concurrent callers observing the same expired access
 token, with no retry loop on failure (§9.3).
 
-Mirrors ``sdks/go/internal/refreshguard/guard.go`` and
-``sdks/rust/src/token/refresh_guard.rs``, adapted to Python's sync+async
+Mirrors ``the Go SDK's internal/refreshguard/guard.go`` and
+``the Rust SDK's src/token/refresh_guard.rs``, adapted to Python's sync+async
 duality (D-01). BOTH entry points serialize on ONE shared
 ``threading.Lock`` — an OS-level primitive usable from either paradigm —
 with a double-check-after-acquire body operating on the same cached-token

@@ -27,7 +27,7 @@ each language uses its own idiomatic naming convention as shown below.
 
 **Argument order:** every operation above takes the acted-upon subject before the object it
 acts on — concretely, `check_access`/`can` take `(action, resource[, scope])` in every SDK,
-with no exception. PHP's `can(action, resource)` (`sdks/php/src/AxiamClient.php`) was
+with no exception. PHP's `can(action, resource)` (`the PHP SDK's src/AxiamClient.php`) was
 reversed relative to this rule prior to SDK-Q09 remediation (2026-07); it has been corrected
 to match its own `checkAccess(action, resource)` and every other SDK's `can`/`Can`.
 
@@ -423,7 +423,7 @@ recorded here until one exists.
 
 ### OpenAPI Export Feature Flag
 
-`sdks/openapi.json` is generated with `--no-default-features` (SAML endpoints excluded). Both the committed spec and the CI drift gate use identical flags. SDK consumers requiring SAML endpoint documentation should build AXIAM with the `saml` feature enabled and export locally.
+`openapi.json` is generated with `--no-default-features` (SAML endpoints excluded). Both the committed spec and the CI drift gate use identical flags. SDK consumers requiring SAML endpoint documentation should build AXIAM with the `saml` feature enabled and export locally.
 
 ---
 

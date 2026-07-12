@@ -3,7 +3,7 @@
 Drives all paths of ``axiam_sdk.amqp._consumer._on_message`` against a
 recording fake ``AbstractIncomingMessage`` double (no live broker) —
 mirroring Go's ``AckableDelivery``/``recordingDelivery`` seam
-(``sdks/go/amqp/consumer_test.go``).
+(``the Go SDK's amqp/consumer_test.go``).
 
 Every message body used here is v2-shaped (``key_version=2`` + ``nonce`` +
 ``issued_at``, per NEW-4 / ``testdata/v2_reference_vectors.json``'s field

@@ -6,7 +6,7 @@ strict-TLS channel (``_tls.build_channel_credentials``), with a sync-safe
 auth/tenant interceptor (``_interceptor.py``) and exactly-once
 UNAUTHENTICATED refresh-and-retry (§9.3) via a caller-supplied refresh
 closure — this module never imports ``axiam_sdk._client`` (no import cycle,
-mirrors ``sdks/go/grpc/client.go``'s ``RefreshFunc`` decoupling).
+mirrors ``the Go SDK's grpc/client.go``'s ``RefreshFunc`` decoupling).
 """
 
 from __future__ import annotations

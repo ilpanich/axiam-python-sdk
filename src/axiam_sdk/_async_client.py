@@ -8,8 +8,8 @@ sync client. Shares :class:`axiam_sdk._client._AxiamClientBase`'s
 construction/body-building/response-parsing logic (one ``_Session``: cookie
 jar, CSRF state, tenant/org context, refresh guard) with ``AxiamClient``; only
 the transport (async httpx client) and the single-flight async refresh-guard
-call path are specific to this class. Mirrors ``sdks/go/client.go`` +
-``sdks/go/login.go`` + ``sdks/go/authz.go``, adapted to Python's async idiom.
+call path are specific to this class. Mirrors ``the Go SDK's client.go`` +
+``the Go SDK's login.go`` + ``the Go SDK's authz.go``, adapted to Python's async idiom.
 """
 
 from __future__ import annotations

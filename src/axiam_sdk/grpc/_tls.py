@@ -1,6 +1,6 @@
 """Strict-TLS gRPC channel credentials (CF-03/SC#3, T-19-12).
 
-Mirrors ``sdks/go/grpc/tls.go``: builds channel credentials via
+Mirrors ``the Go SDK's grpc/tls.go``: builds channel credentials via
 ``grpc.ssl_channel_credentials`` — root certs from a caller-supplied custom
 CA PEM when provided, else the system trust roots. This module never
 constructs a plaintext/unencrypted channel anywhere in this package

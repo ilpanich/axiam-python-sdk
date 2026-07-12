@@ -1,9 +1,9 @@
 """Shared REST session: one cookie jar, CSRF capture, tenant header
 injection, lazily-built sync+async httpx clients (CF-01/CF-02/CF-03).
 
-Mirrors ``sdks/go/client.go``'s ``decorateRequest``/``captureCSRFFromResponse``/
+Mirrors ``the Go SDK's client.go``'s ``decorateRequest``/``captureCSRFFromResponse``/
 ``doRequest`` choke-point pattern and
-``sdks/typescript/src/rest/session.ts``'s shared-session shape, adapted to
+``the TypeScript SDK's src/rest/session.ts``'s shared-session shape, adapted to
 Python's sync+async duality (D-01).
 
 CRITICAL — cookie-jar sharing (Assumption A1, empirically verified against
@@ -42,7 +42,7 @@ _DEFAULT_READ_TIMEOUT = 30.0
 
 class _Session:
     """Shared REST session state. Not part of the public API (PEP 8
-    leading-underscore convention — see ``sdks/python/19-RESEARCH.md``
+    leading-underscore convention — see the Phase 19 research notes
     Recommended Project Structure).
 
     Owns:

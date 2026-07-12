@@ -1,8 +1,8 @@
 """Async AMQP event consumer with HMAC verify-before-handler (CONTRACT.md §8).
 
 Closure-handler consumer built on ``aio-pika`` (D-02, async-only). Ports
-``sdks/go/amqp/consumer.go``'s ``verifyAndDispatch`` ack/nack decision matrix
-and ``sdks/go/amqp/errdrop.go``'s exported ``ErrDrop`` sentinel.
+``the Go SDK's amqp/consumer.go``'s ``verifyAndDispatch`` ack/nack decision matrix
+and ``the Go SDK's amqp/errdrop.go``'s exported ``ErrDrop`` sentinel.
 
 Security invariant (T-19-16/T-19-17/T-19-18): every delivery's HMAC-SHA256
 signature is verified via :func:`axiam_sdk.amqp._hmac.verify_hmac` — proven
@@ -68,7 +68,7 @@ class ErrDrop(Exception):
     message is dropped rather than looping the queue. Any OTHER exception
     raised by the handler is treated as transient and nacks WITH requeue.
     Mirrors Go's exported ``var ErrDrop = errors.New(...)`` sentinel
-    (``sdks/go/amqp/errdrop.go``).
+    (``the Go SDK's amqp/errdrop.go``).
     """
 
 

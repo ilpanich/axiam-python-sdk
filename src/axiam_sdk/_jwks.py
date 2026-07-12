@@ -2,7 +2,7 @@
 
 Verifies AXIAM access tokens locally against the organization-wide EdDSA
 JWKS, using PyJWT's :class:`~jwt.PyJWKClient`. Mirrors
-``sdks/go/internal/jwks/verifier.go`` and ``sdks/rust/src/token/jwks.rs``.
+``the Go SDK's internal/jwks/verifier.go`` and ``the Rust SDK's src/token/jwks.rs``.
 
 Endpoint: ``GET {base_url}/oauth2/jwks`` — a single, organization-wide
 endpoint serving exactly one Ed25519 key today. This is NOT a generic OIDC
