@@ -311,7 +311,8 @@ freshness window). SDKs that re-serialize the received body minus
 in the HMAC and need only add these three validation gates plus the optional
 DTO fields.
 
-**Canonical reference vectors.** `crates/axiam-amqp/tests/fixtures/v2_reference_vectors.json`
+**Canonical reference vectors.** `testdata/v2_reference_vectors.json` (vendored
+into this repository from the server's `crates/axiam-amqp/tests/fixtures/v2_reference_vectors.json`)
 contains server-produced, byte-exact vectors (master key, derived subkey,
 canonical signed JSON, and resulting `hmac_signature`) for both message types.
 Every SDK MUST validate its HMAC implementation byte-for-byte against this file.

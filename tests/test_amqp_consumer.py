@@ -6,8 +6,8 @@ mirroring Go's ``AckableDelivery``/``recordingDelivery`` seam
 (``sdks/go/amqp/consumer_test.go``).
 
 Every message body used here is v2-shaped (``key_version=2`` + ``nonce`` +
-``issued_at``, per NEW-4 / ``crates/axiam-amqp/tests/fixtures/
-v2_reference_vectors.json``'s field order) and self-signed with a fixed
+``issued_at``, per NEW-4 / ``testdata/v2_reference_vectors.json``'s field
+order) and self-signed with a fixed
 test key via ``_sign()`` below — this file's job is exercising the ack/nack
 DECISION MATRIX itself, not proving cross-language HMAC byte-parity (that
 proof against the real server-signed v2 reference vectors, plus the NEW-4
