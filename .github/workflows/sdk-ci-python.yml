@@ -1,0 +1,224 @@
+name: SDK CI — Python
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold-check:
+    name: SDK Scaffold Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Verify LICENSE file
+        run: test -f LICENSE
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # D-18: CI test matrix = Python 3.10/3.11/3.12/3.13 on ubuntu-latest.
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (incl. fastapi/django/dev extras)
+        run: pip install -e '.[dev,fastapi,django]'
+
+      - name: Test
+        run: pytest tests -v
+
+      - name: Dependency vulnerability scan (CI-03)
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable --desc
+
+      - name: Byte-compile examples (D-13)
+        run: python -m py_compile examples/*.py
+
+  tls-bypass-gate:
+    name: TLS-bypass gate (SC#3)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # §6 / SC#3: strict TLS is always on (verify=True hardcoded); the only
+      # escape hatch is an explicit custom_ca parameter — there must be no
+      # insecure/skip-verification surface anywhere in the SDK's own source
+      # tree, including examples and tests. Extended beyond the literal
+      # verify=False string to ssl._create_unverified_context and verify=0
+      # (falsy-but-not-literal-False) per CF-03's "no TLS-bypass idiom
+      # appears anywhere" requirement.
+      - name: TLS-bypass gate — no TLS-bypass patterns (SC#3)
+        run: |
+          if grep -rnE 'verify\s*=\s*(False|0)|ssl\._create_unverified_context' \
+              src examples tests 2>/dev/null | grep -q .; then
+            echo "FAIL: found a TLS-bypass pattern in the SDK source tree"
+            grep -rnE 'verify\s*=\s*(False|0)|ssl\._create_unverified_context' \
+              src examples tests || true
+            exit 1
+          fi
+          echo "OK: no TLS-bypass patterns found"
+
+  grpc-drift-check:
+    name: gRPC stub drift-check (D-04)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      # D-04 / Pitfall 5: Python does not use buf. Codegen is
+      # `python -m grpc_tools.protoc` (via scripts/gen_grpc.sh) for BOTH local
+      # and CI, run against this repo's own vendored proto/axiam/v1.
+      - name: Install grpcio-tools (matches the pinned grpcio runtime)
+        run: pip install 'grpcio-tools==1.78.*'
+
+      - name: Regenerate gRPC stubs
+        run: bash scripts/gen_grpc.sh
+
+      - name: Fail on drift — committed stubs must match protos (D-04)
+        run: git diff --exit-code src/axiam_sdk/grpc/gen
+
+  lint:
+    name: Lint (mypy --strict + ruff + interrogate) (D-20)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (incl. fastapi/django/dev extras)
+        run: pip install -e '.[dev,fastapi,django]'
+
+      - name: mypy --strict
+        run: mypy --strict src
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+      # Docstring-coverage gate on the public API surface (pdoc-published):
+      # config (fail-under = 100, the generated grpc/gen/* stub exclusion)
+      # lives in [tool.interrogate] in pyproject.toml, mirroring the
+      # generated-stub exemptions already documented there for ruff/mypy.
+      - name: interrogate (docstring coverage)
+        run: interrogate -c pyproject.toml src/axiam_sdk
+
+  build-check:
+    name: Build + twine check (SC#5)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install build + twine
+        run: pip install build twine
+
+      - name: Build sdist + wheel (SC#5)
+        run: python -m build
+
+      - name: twine check (SC#5)
+        run: twine check dist/*
+
+  # Publishing to PyPI is IRREVERSIBLE — a version number can never be reused.
+  # Git tags are NOT branch-scoped, so without this gate a release tag cut on a
+  # feature branch would ship unreviewed code to the world under a version that
+  # can never be reclaimed. The publish job below `needs:` this.
+  verify-tag-on-main:
+    name: Verify tag is on main
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Assert the tagged commit is an ancestor of origin/main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is NOT on origin/main. Release tags must be cut from main."
+            exit 1
+          fi
+          echo "OK: ${GITHUB_REF_NAME} (${GITHUB_SHA}) is on origin/main."
+
+  publish:
+    name: Publish to PyPI
+    # Manual-on-tag, side-effecting step: this job only runs when a maintainer
+    # pushes a plain vX.Y.Z tag on this standalone SDK repo. It is never
+    # triggered by a PR, so no publish-adjacent OIDC token is ever exposed to a
+    # PR-triggered job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-tag-on-main
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      # Required for PyPI Trusted Publishing (OIDC) — no stored API token
+      # (D-05). The Trusted Publisher registered on PyPI must name THIS repo
+      # (ilpanich/axiam-python-sdk), this workflow file (sdk-ci-python.yml) and
+      # the `pypi` environment, or the token exchange is rejected.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      # D-04: the committed gRPC stubs must be up to date before a release
+      # tag is trusted — same drift-check as the PR gate, run again here as
+      # a belt-and-suspenders confirm on the tagged commit.
+      - name: Install grpcio-tools (matches the pinned grpcio runtime)
+        run: pip install 'grpcio-tools==1.78.*'
+
+      - name: Regenerate gRPC stubs
+        run: bash scripts/gen_grpc.sh
+
+      - name: Fail on drift — committed stubs must match protos (D-04)
+        run: git diff --exit-code src/axiam_sdk/grpc/gen
+
+      - name: Install build + twine
+        run: pip install build twine
+
+      - name: Build sdist + wheel (SC#5)
+        run: python -m build
+
+      - name: twine check (SC#5)
+        run: twine check dist/*
+
+      # PyPI Trusted Publishing (OIDC, D-05) — no password/token input; the
+      # id-token: write permission above is what authorizes the exchange.
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: dist
