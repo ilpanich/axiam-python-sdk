@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package axiam.v1;
+
+option php_metadata_namespace = "Axiam\\Sdk\\Grpc\\Gen\\Metadata";
+// PHP-only codegen options (ignored by all other language plugins — these
+// are standard protobuf FileOptions fields, ambient to protoc's PHP
+// backend, not a custom extension). Without these, protoc's --php_out
+// derives the namespace from the proto package ("axiam.v1" -> "Axiam\V1"),
+// which does not match this SDK's PSR-4 root (Axiam\Sdk\ -> src/). Setting
+// them explicitly lands the generated classes' `namespace` declarations at
+// Axiam\Sdk\Grpc\Gen (sdks/php/src/Grpc/Gen/, D-03) while leaving every
+// other language's codegen (Rust/Go/Python/TypeScript) byte-for-byte
+// unaffected (22-05-PLAN.md Task 1).
+option php_namespace = "Axiam\\Sdk\\Grpc\\Gen";
+
+// Authorization service for low-latency access checks in service meshes.
+service AuthorizationService {
+  // Check whether a subject can perform an action on a resource.
+  rpc CheckAccess(CheckAccessRequest) returns (CheckAccessResponse);
+
+  // Check multiple access requests in a single round-trip.
+  rpc BatchCheckAccess(BatchCheckAccessRequest) returns (BatchCheckAccessResponse);
+}
+
+message CheckAccessRequest {
+  // Tenant UUID — all checks are tenant-scoped.
+  string tenant_id = 1;
+  // Subject (user) UUID.
+  string subject_id = 2;
+  // Action name (e.g. "read", "write", "delete").
+  string action = 3;
+  // Target resource UUID.
+  string resource_id = 4;
+  // Optional scope for sub-resource granularity.
+  optional string scope = 5;
+}
+
+message CheckAccessResponse {
+  // Whether the access is allowed.
+  bool allowed = 1;
+  // Reason for denial (empty when allowed).
+  string deny_reason = 2;
+}
+
+message BatchCheckAccessRequest {
+  repeated CheckAccessRequest requests = 1;
+}
+
+message BatchCheckAccessResponse {
+  repeated CheckAccessResponse results = 1;
+}
