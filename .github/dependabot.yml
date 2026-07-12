@@ -1,0 +1,22 @@
+# .github/dependabot.yml
+# Automated dependency updates — D-16 (CONTEXT.md), CI-03.
+# Standalone Python SDK repo: the package lives at the root, so `pip` targets /
+# (in the monorepo this entry was /sdks/python).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

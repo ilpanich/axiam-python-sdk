@@ -1,0 +1,42 @@
+name: Coverage
+
+# Test-coverage reporting to Coveralls. Kept separate from sdk-ci-python.yml so
+# a Coveralls outage cannot fail the merge gate: the CI workflow's `test` job is
+# the pass/fail authority, this one only reports.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: pytest --cov + Coveralls
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+
+      # The framework extras are required: without them the fastapi/django
+      # middleware modules fail to import and their lines are reported as
+      # uncovered rather than as tested.
+      - name: Install dependencies (incl. fastapi/django/dev extras)
+        run: pip install -e '.[dev,fastapi,django]'
+
+      - name: Run tests with coverage
+        run: pytest --cov=axiam_sdk --cov-report=lcov
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e  # v2.3.7
+        with:
+          file: coverage.lcov
+          format: lcov
+          github-token: ${{ secrets.GITHUB_TOKEN }}
