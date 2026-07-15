@@ -73,9 +73,11 @@ class _ScriptedServicer(authorization_pb2_grpc.AuthorizationServiceServicer):
         self._already_failed_once = False
         self.deny_permission = False
         self.received_metadata: list[tuple[str, str]] = []
+        self.last_request: authorization_pb2.CheckAccessRequest | None = None
 
     def CheckAccess(self, request, context):  # noqa: N802
         self.received_metadata = list(context.invocation_metadata() or [])
+        self.last_request = request
         if self.unauthenticated_once and not self._already_failed_once:
             self._already_failed_once = True
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "token expired")
@@ -155,6 +157,22 @@ class TestSyncAuthzGrpcClient:
             assert result.reason is None
             assert ("authorization", "Bearer sync-token") in test_server.servicer.received_metadata
             assert ("x-tenant-id", "tenant-1") in test_server.servicer.received_metadata
+        finally:
+            client.close()
+
+    def test_check_access_forwards_scope(self, test_server: _TestServer, tmp_path) -> None:
+        # A non-None scope must be threaded onto the wire request (the
+        # `_to_wire` scope branch).
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AuthzGrpcClient(
+            test_server.target, token_fn=lambda: "tok", tenant_id="t1", custom_ca=ca_file
+        )
+        try:
+            result = client.check_access("user-1", "read", "resource-1", scope="sub:1")
+            assert result.allowed is True
+            last = test_server.servicer.last_request
+            assert last is not None
+            assert last.scope == "sub:1"
         finally:
             client.close()
 

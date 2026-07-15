@@ -57,6 +57,18 @@ axiam_sdk = ["py.typed", "grpc/gen/*.py", "grpc/gen/*.pyi"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.coverage.run]
+# grpc/gen is protoc output — already excluded from ruff (extend-exclude) and
+# mypy (exclude) below. Measuring generated stubs dilutes the ratio without
+# saying anything about the SDK's own tests.
+omit = ["*/grpc/gen/*"]
+
+[tool.coverage.report]
+# Regression gate: fail if coverage drops below the floor. Set below the
+# current level (~98% with generated stubs excluded) so it never false-fails;
+# ratchet upward as coverage rises.
+fail_under = 96
+
 [tool.mypy]
 strict = true
 files = ["src"]
