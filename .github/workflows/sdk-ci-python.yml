@@ -45,6 +45,11 @@ jobs:
 
       - name: Dependency vulnerability scan (CI-03)
         run: |
+          # Patch the build tooling before auditing: Python 3.10/3.11 ship an
+          # older setuptools (79.0.1, flagged by PYSEC-2026-3447, fixed in
+          # 83.0.0) and pip. Upgrading resolves those findings rather than
+          # suppressing them; the SDK's own runtime deps are audited as-is.
+          pip install --upgrade pip 'setuptools>=83.0.0'
           pip install pip-audit
           pip-audit --skip-editable --desc
 
