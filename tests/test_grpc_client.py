@@ -73,7 +73,7 @@ class _ScriptedServicer(authorization_pb2_grpc.AuthorizationServiceServicer):
         self._already_failed_once = False
         self.deny_permission = False
         self.received_metadata: list[tuple[str, str]] = []
-        self.last_request = None
+        self.last_request: authorization_pb2.CheckAccessRequest | None = None
 
     def CheckAccess(self, request, context):  # noqa: N802
         self.received_metadata = list(context.invocation_metadata() or [])
@@ -160,7 +160,7 @@ class TestSyncAuthzGrpcClient:
         finally:
             client.close()
 
-    def test_check_access_with_scope_sets_wire_scope(self, test_server: _TestServer, tmp_path) -> None:
+    def test_check_access_forwards_scope(self, test_server: _TestServer, tmp_path) -> None:
         # A non-None scope must be threaded onto the wire request (the
         # `_to_wire` scope branch).
         ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
@@ -170,7 +170,9 @@ class TestSyncAuthzGrpcClient:
         try:
             result = client.check_access("user-1", "read", "resource-1", scope="sub:1")
             assert result.allowed is True
-            assert test_server.servicer.last_request.scope == "sub:1"
+            last = test_server.servicer.last_request
+            assert last is not None
+            assert last.scope == "sub:1"
         finally:
             client.close()
 
