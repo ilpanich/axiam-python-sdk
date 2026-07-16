@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha2] - 2026-07-16
+
 ### Added
 
 - Declarative authorization helpers (CONTRACT.md §11): `require_access` /
