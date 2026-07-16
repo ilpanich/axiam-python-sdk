@@ -14,7 +14,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§10.
+This SDK conforms to CONTRACT.md §1–§11.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -176,6 +176,83 @@ def protected_view(request):
 ```
 
 See [`examples/django_middleware.py`](./examples/django_middleware.py).
+
+### Declarative authorization helpers (§11)
+
+Layered on top of the §10 authentication guards above, `require_access` /
+`require_role` add a per-endpoint AXIAM authorization check without hand-
+writing `check_access(...)` calls in every handler. They run strictly
+*after* authentication (never a separate/duplicated token-verification
+path) and check the *request's authenticated caller* (`subject_id`), never
+the SDK client's own — typically service-account — identity. Error
+mapping: unauthenticated -> 401; denied -> 403; an
+unresolvable resource id -> 400; a transport failure while calling the
+authz endpoint -> 503 (fail closed — never allow on a transport error). No
+decision caching: every request is a fresh `check_access` round-trip.
+`require_role` is a local, no-round-trip check against the verified
+identity's roles — cheaper but coarser, and NOT a substitute for
+`require_access`'s authoritative, resource-level check.
+
+**FastAPI** (`axiam-sdk[fastapi]`) — `require_access` takes the async
+`AsyncAxiamClient`:
+
+```python
+from fastapi import Depends, FastAPI
+from axiam_sdk import AsyncAxiamClient
+from axiam_sdk.fastapi import AxiamUser, JwksVerifier, require_access, require_role
+
+verifier = JwksVerifier(base_url)
+authz_client = AsyncAxiamClient(base_url=base_url, tenant_slug="acme")
+
+app = FastAPI()
+
+require_doc_read = require_access(
+    verifier, "acme", authz_client, "documents:read", resource_param="doc_id"
+)
+
+@app.get("/docs/{doc_id}")
+async def get_doc(doc_id: str, user: AxiamUser = Depends(require_doc_read)):
+    return {"message": f"user {user.user_id} may read document {doc_id}"}
+
+require_admin_role = require_role(verifier, "acme", "admin")
+
+@app.delete("/admin/cache")
+async def reset_cache(user: AxiamUser = Depends(require_admin_role)):
+    return {"message": f"cache reset by {user.user_id}"}
+```
+
+The resource id is resolved, in precedence order, from a literal
+`resource_id=` (singleton resources), a `resource_param=` path parameter
+name, or a `resolver=lambda request: ...` callback (body fields, headers,
+composite lookups) — exactly one must be supplied.
+
+**Django** (`axiam-sdk[django]`) — `require_access`/`require_role` are view
+decorators reading `request.axiam_user` (set by `AxiamAuthMiddleware`) and
+take the sync `AxiamClient`:
+
+```python
+from axiam_sdk import AxiamClient
+from axiam_sdk.django.decorators import require_access, require_role
+
+authz_client = AxiamClient(base_url="https://localhost:8443", tenant_slug="acme")
+
+@require_access(authz_client, "documents:read", resource_param="doc_id")
+def get_document(request, doc_id):
+    user = request.axiam_user
+    return JsonResponse({"message": f"user {user.user_id} may read document {doc_id}"})
+
+@require_role("admin")
+def reset_cache_view(request):
+    return JsonResponse({"message": f"cache reset by {request.axiam_user.user_id}"})
+```
+
+Both async and sync Django views are supported (`require_access`/
+`require_role` detect the wrapped view's dispatch mode automatically).
+`resource_param` defaults to `"pk"`, matching the view kwarg Django's own
+URL path converters typically bind a captured resource identifier to.
+
+See [`examples/fastapi_dependency.py`](./examples/fastapi_dependency.py) and
+[`examples/django_middleware.py`](./examples/django_middleware.py).
 
 ## gRPC stub generation (D-04)
 

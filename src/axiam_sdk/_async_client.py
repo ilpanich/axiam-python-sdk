@@ -144,10 +144,23 @@ class AsyncAxiamClient(_AxiamClientBase):
     # ------------------------------------------------------------------
 
     async def check_access(
-        self, action: str, resource_id: str, scope: str | None = None
+        self,
+        action: str,
+        resource_id: str,
+        scope: str | None = None,
+        *,
+        subject_id: str | None = None,
     ) -> AccessResult:
-        """``POST /api/v1/authz/check`` (CONTRACT.md §1)."""
-        body = self._access_check_body(action, resource_id, scope)
+        """``POST /api/v1/authz/check`` (CONTRACT.md §1).
+
+        ``subject_id`` (CONTRACT.md §11.2), when supplied, checks the given
+        subject's permissions rather than this client's own — the caller
+        must hold ``authz:check_as`` server-side. This is what the
+        declarative ``require_access`` helper (§11) passes to check the
+        *request's* authenticated user rather than this client's own
+        (often service-account) session.
+        """
+        body = self._access_check_body(action, resource_id, scope, subject_id)
         wire = await self._authz_post_async(CHECK_PATH, body)
         return AccessResult(**wire)
 
