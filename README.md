@@ -1,5 +1,12 @@
 # axiam-sdk (Python)
 
+[![CI](https://github.com/ilpanich/axiam-python-sdk/actions/workflows/sdk-ci-python.yml/badge.svg?branch=main)](https://github.com/ilpanich/axiam-python-sdk/actions/workflows/sdk-ci-python.yml)
+[![Coverage Status](https://coveralls.io/repos/github/ilpanich/axiam-python-sdk/badge.svg?branch=main)](https://coveralls.io/github/ilpanich/axiam-python-sdk?branch=main)
+[![PyPI](https://img.shields.io/pypi/v/axiam-sdk.svg)](https://pypi.org/project/axiam-sdk/)
+[![Python versions](https://img.shields.io/pypi/pyversions/axiam-sdk.svg)](https://pypi.org/project/axiam-sdk/)
+[![Docs](https://img.shields.io/badge/docs-pdoc-blue.svg)](https://ilpanich.github.io/axiam-python-sdk/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Access eXtended Identity and Authorization Management.
 
 ## Package identity
