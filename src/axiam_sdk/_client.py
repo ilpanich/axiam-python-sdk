@@ -318,14 +318,29 @@ class _AxiamClientBase:
     # ------------------------------------------------------------------
 
     def _access_check_body(
-        self, action: str, resource_id: str, scope: str | None
+        self,
+        action: str,
+        resource_id: str,
+        scope: str | None,
+        subject_id: str | None = None,
     ) -> dict[str, Any]:
-        """Build a single ``{action, resource_id, scope?}`` check body
-        shared by ``check_access``/``can`` (CONTRACT.md §1) — ``scope`` is
-        omitted entirely when ``None`` rather than sent as JSON ``null``."""
+        """Build a single ``{action, resource_id, scope?, subject_id?}``
+        check body shared by ``check_access``/``can`` (CONTRACT.md §1) —
+        ``scope``/``subject_id`` are each omitted entirely when ``None``
+        rather than sent as JSON ``null``.
+
+        ``subject_id`` (CONTRACT.md §11.2) checks the given subject's
+        permissions rather than the authenticated caller's own — used by the
+        declarative ``require_access`` helpers (§11) to check the *request's*
+        authenticated user rather than this client's own (often
+        service-account) session. The server requires the caller to hold
+        ``authz:check_as`` whenever ``subject_id`` is supplied.
+        """
         body: dict[str, Any] = {"action": action, "resource_id": resource_id}
         if scope is not None:
             body["scope"] = scope
+        if subject_id is not None:
+            body["subject_id"] = subject_id
         return body
 
 
@@ -435,9 +450,23 @@ class AxiamClient(_AxiamClientBase):
     # REST authz: check_access / can / batch_check (Task 3)
     # ------------------------------------------------------------------
 
-    def check_access(self, action: str, resource_id: str, scope: str | None = None) -> AccessResult:
-        """``POST /api/v1/authz/check`` (CONTRACT.md §1)."""
-        body = self._access_check_body(action, resource_id, scope)
+    def check_access(
+        self,
+        action: str,
+        resource_id: str,
+        scope: str | None = None,
+        *,
+        subject_id: str | None = None,
+    ) -> AccessResult:
+        """``POST /api/v1/authz/check`` (CONTRACT.md §1).
+
+        ``subject_id`` (CONTRACT.md §11.2), when supplied, checks the given
+        subject's permissions rather than this client's own — the caller
+        must hold ``authz:check_as`` server-side. This is what the
+        declarative ``require_access`` helpers (§11) pass to check the
+        *request's* authenticated user.
+        """
+        body = self._access_check_body(action, resource_id, scope, subject_id)
         wire = self._authz_post_sync(CHECK_PATH, body)
         return AccessResult(**wire)
 
