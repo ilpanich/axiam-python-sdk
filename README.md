@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§11.
+This SDK conforms to CONTRACT.md §1–§11 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -281,6 +281,39 @@ regeneration from `proto/axiam/v1/`.
 escape hatch is an explicit `custom_ca` parameter (a CA bundle path or
 `ssl.SSLContext`) — there is no boolean bypass anywhere in this SDK,
 including the examples. CI enforces this with a dedicated grep gate.
+
+### mTLS / client certificates (§6.1)
+
+For IoT devices and service accounts that authenticate by **mutual TLS**, pass
+a PEM client-certificate chain plus its PEM private key (each `str` or
+`bytes`). The same identity is applied to both the REST and gRPC transports of
+the client, and presenting it **never** relaxes server verification — strict
+TLS (`§6`) stays fully on.
+
+```python
+from axiam_sdk import AxiamClient
+
+with open("device-cert.pem", "rb") as f:
+    client_cert = f.read()
+with open("device-key.pem", "rb") as f:
+    client_key = f.read()
+
+client = AxiamClient(
+    base_url="https://axiam.example.com",
+    tenant_slug="acme",
+    custom_ca="/etc/axiam/org-ca.pem",  # server trust (optional; system roots by default)
+    client_cert=client_cert,            # PEM cert chain (str or bytes)
+    client_key=client_key,              # PEM private key (str or bytes)
+)
+# AsyncAxiamClient(...) takes the identical client_cert=/client_key= parameters.
+```
+
+`client_cert` and `client_key` must be supplied together (only one is a
+construction-time error), and a non-PEM value is rejected at construction. The
+private key is secret material: it is loaded straight into the TLS stack and is
+never logged, stored as a public attribute, or exposed via a getter (`§6.1`
+rule 3 / `§7`). The gRPC authorization clients accept the same
+`client_cert=`/`client_key=` parameters.
 
 ## Development
 

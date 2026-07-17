@@ -83,10 +83,12 @@ class _AxiamClientBase:
         org_slug: str | None = None,
         org_id: str | None = None,
         custom_ca: str | None = None,
+        client_cert: str | bytes | None = None,
+        client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        """Construct the shared client state (CONTRACT.md §5/§6/§7).
+        """Construct the shared client state (CONTRACT.md §5/§6/§6.1/§7).
 
         ``tenant_slug`` is required — AXIAM is multi-tenant with no default
         tenant; omitting it is an ``AuthError`` at construction time, never a
@@ -94,14 +96,25 @@ class _AxiamClientBase:
         and optional here — the real org UUID is usually only known after a
         successful login/refresh resolves it from the access token's
         ``org_id`` claim (Pitfall 3, see :meth:`resolved_org_id`). ``custom_ca``
-        is the sole TLS-bypass escape hatch permitted by §6 — a PEM-encoded CA
-        bundle, never a boolean. ``timeout`` overrides the default httpx
+        is the sole *server*-trust override permitted by §6 — a PEM-encoded CA
+        bundle, never a boolean.
+
+        ``client_cert``/``client_key`` opt this client into **mutual TLS**
+        (CONTRACT.md §6.1): a PEM certificate chain plus its PEM private key
+        (each ``str`` or ``bytes``), presented for client authentication on
+        the REST transport. They must be supplied together. Presenting a
+        client certificate never relaxes server verification (§6.1 rule 2),
+        and the private key is secret — it is loaded straight into the TLS
+        stack, never logged, stored as a public attribute, or exposed via a
+        getter (§6.1 rule 3 / §7). ``timeout`` overrides the default httpx
         connect/read timeouts. ``logger`` is injectable (D-15); a silent
         :func:`_null_logger` is used when omitted.
 
         Raises:
             AuthError: if ``tenant_slug`` is empty, or if both ``org_slug``
                 and ``org_id`` are supplied.
+            ValueError: if exactly one of ``client_cert``/``client_key`` is
+                supplied, or if the supplied client identity is not valid PEM.
         """
         if not tenant_slug:
             raise AuthError(
@@ -121,6 +134,8 @@ class _AxiamClientBase:
             base_url=base_url,
             tenant_slug=tenant_slug,
             custom_ca=custom_ca,
+            client_cert=client_cert,
+            client_key=client_key,
             timeout=timeout,
             logger=self._logger,
         )

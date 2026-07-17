@@ -63,6 +63,8 @@ class AuthzGrpcClient:
         tenant_id: str,
         refresh_fn: SyncRefreshFn | None = None,
         custom_ca: str | None = None,
+        client_cert: str | bytes | None = None,
+        client_key: str | bytes | None = None,
     ) -> None:
         """Open a strict-TLS secure channel to ``target`` with the
         auth/tenant interceptor installed.
@@ -77,13 +79,20 @@ class AuthzGrpcClient:
                 owned single-flight refresh (§9); when ``None``, an
                 UNAUTHENTICATED response is mapped and raised immediately
                 with no retry.
-            custom_ca: The sole TLS-bypass escape hatch (§6) — a PEM CA
+            custom_ca: The sole *server*-trust override (§6) — a PEM CA
                 bundle, or ``None`` for strict default verification.
+            client_cert: Optional PEM client-certificate chain (``str`` or
+                ``bytes``) presented for mTLS client authentication
+                (CONTRACT.md §6.1); must be given together with
+                ``client_key``.
+            client_key: Optional PEM private key (``str`` or ``bytes``)
+                matching ``client_cert`` (CONTRACT.md §6.1); secret material,
+                never logged or exposed via a getter (§7).
         """
         self._tenant_id = tenant_id
         self._refresh_fn = refresh_fn
 
-        credentials = build_channel_credentials(custom_ca)
+        credentials = build_channel_credentials(custom_ca, client_cert, client_key)
         interceptor = SyncAuthInterceptor(token_fn=token_fn, tenant_id=tenant_id)
         channel = grpc.secure_channel(target, credentials)
         self._channel = grpc.intercept_channel(channel, interceptor)
@@ -174,15 +183,19 @@ class AsyncAuthzGrpcClient:
         tenant_id: str,
         refresh_fn: AsyncRefreshFn | None = None,
         custom_ca: str | None = None,
+        client_cert: str | bytes | None = None,
+        client_key: str | bytes | None = None,
     ) -> None:
         """Async twin of :meth:`AuthzGrpcClient.__init__` — opens a
         strict-TLS ``grpc.aio`` secure channel to ``target`` with the async
         auth/tenant interceptor installed. Args are identical except
-        ``refresh_fn`` is an async zero-arg callable."""
+        ``refresh_fn`` is an async zero-arg callable; ``client_cert``/
+        ``client_key`` opt into the same mTLS client identity (CONTRACT.md
+        §6.1)."""
         self._tenant_id = tenant_id
         self._refresh_fn = refresh_fn
 
-        credentials = build_channel_credentials(custom_ca)
+        credentials = build_channel_credentials(custom_ca, client_cert, client_key)
         interceptor = AsyncAuthInterceptor(token_fn=token_fn, tenant_id=tenant_id)
         self._channel = grpc.aio.secure_channel(target, credentials, interceptors=[interceptor])
         self._stub = authorization_pb2_grpc.AuthorizationServiceStub(  # type: ignore[no-untyped-call]
