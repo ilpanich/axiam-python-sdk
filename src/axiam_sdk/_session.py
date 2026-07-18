@@ -22,15 +22,42 @@ kwarg — see ``sync_client``/``async_client`` below.
 
 from __future__ import annotations
 
+import os
+import ssl
+import tempfile
 import threading
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from axiam_sdk._tls_identity import normalize_pem, validate_client_identity
 from axiam_sdk.token.refresh_guard import RefreshGuard
 
 if TYPE_CHECKING:
     from http.cookiejar import CookieJar
+
+
+def _looks_like_pem(value: str) -> bool:
+    """Heuristically decide whether ``custom_ca`` is inline PEM text rather
+    than a filesystem path.
+
+    ``custom_ca`` has historically been a CA-bundle *file path* (the existing,
+    still-supported form). When the mTLS ``SSLContext`` path is active, the
+    same value may instead be inline PEM (``str``/``bytes`` content), which
+    must be fed to ``load_verify_locations(cadata=...)`` rather than treated as
+    a path. A value containing a PEM ``BEGIN`` armor line is inline data; any
+    other value is treated as a path (``cafile``), preserving current
+    behavior.
+
+    Args:
+        value: The ``custom_ca`` string to classify.
+
+    Returns:
+        ``True`` if ``value`` contains a PEM armor line (inline data),
+        ``False`` if it should be treated as a filesystem path.
+    """
+    return "-----BEGIN" in value
+
 
 # HTTP methods that echo the captured CSRF token per CONTRACT.md §3
 # (non-browser: capture-from-response-header, echo-on-state-changing-request).
@@ -64,6 +91,8 @@ class _Session:
         tenant_slug: str,
         *,
         custom_ca: str | None = None,
+        client_cert: str | bytes | None = None,
+        client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
         logger: Any = None,
     ) -> None:
@@ -76,12 +105,25 @@ class _Session:
                 :meth:`_prepare_request`.
             tenant_slug: Injected as ``X-Tenant-ID`` on every same-origin
                 request (CONTRACT.md §5).
-            custom_ca: The sole TLS-bypass escape hatch (§6) — a PEM CA
-                bundle path/string, or ``None`` for strict default
+            custom_ca: The sole *server*-trust override (§6) — a PEM CA
+                bundle path (or inline PEM), or ``None`` for strict default
                 verification. Never a boolean.
+            client_cert: Optional PEM client-certificate chain (``str`` or
+                ``bytes``) presented for mTLS client authentication
+                (CONTRACT.md §6.1). Must be given together with
+                ``client_key``. Presenting it never relaxes server
+                verification.
+            client_key: Optional PEM private key (``str`` or ``bytes``)
+                matching ``client_cert`` (CONTRACT.md §6.1). Secret material:
+                it is loaded straight into the TLS stack and is never stored
+                as an attribute, logged, or exposed via a getter (§7).
             timeout: Overrides the default httpx connect/read/write/pool
                 timeouts when supplied.
             logger: An injectable logger (D-15); stored as-is, not wrapped.
+
+        Raises:
+            ValueError: if exactly one of ``client_cert``/``client_key`` is
+                supplied, or if the supplied client identity is not valid PEM.
         """
         self.base_url = base_url
         # Host of our own origin — used to gate tenant/CSRF header injection
@@ -96,10 +138,22 @@ class _Session:
             pool=_DEFAULT_CONNECT_TIMEOUT,
         )
         # SC#3/CF-03: the ONLY TLS escape hatch is a custom-CA path/bundle —
-        # never a boolean. `custom_ca` is either None (-> True, strict
-        # verification) or a CA bundle path/SSLContext httpx accepts
-        # directly. A boolean value is never assigned here.
-        self._verify: bool | str = custom_ca if custom_ca else True
+        # never a boolean. When no client certificate is configured, `_verify`
+        # is either None->True (strict system-trust verification) or the
+        # custom CA path/bundle httpx accepts directly, EXACTLY as before. A
+        # boolean bypass value is never assigned here.
+        #
+        # When a client certificate IS configured (mTLS, §6.1), `_verify`
+        # becomes a strict `ssl.SSLContext` that (a) keeps full server
+        # verification on and (b) additionally loads the client identity via
+        # `load_cert_chain`. Server-trust and client-identity code stay in
+        # separate methods so the CI TLS-bypass lint gate is never tripped.
+        validate_client_identity(client_cert, client_key)
+        self._verify: bool | str | ssl.SSLContext
+        if client_cert is not None and client_key is not None:
+            self._verify = self._build_mtls_context(custom_ca, client_cert, client_key)
+        else:
+            self._verify = custom_ca if custom_ca else True
 
         # Assumption A1: share ONE raw http.cookiejar.CookieJar between both
         # clients by wrapping it in exactly one cookie-jar wrapper instance
@@ -119,6 +173,69 @@ class _Session:
         self.refresh_guard = RefreshGuard()
 
         self._logger = logger
+
+    def _build_mtls_context(
+        self,
+        custom_ca: str | None,
+        client_cert: str | bytes,
+        client_key: str | bytes,
+    ) -> ssl.SSLContext:
+        """Build a strict ``ssl.SSLContext`` that keeps full server
+        verification on AND presents the configured client identity (mTLS,
+        CONTRACT.md §6.1).
+
+        Starts from :func:`ssl.create_default_context` (``check_hostname`` on,
+        ``verify_mode=CERT_REQUIRED``) so server verification is never weakened
+        by presenting a client certificate (§6.1 rule 2). The existing
+        ``custom_ca`` server-trust override is preserved: an inline PEM value
+        is added via ``load_verify_locations(cadata=...)`` and a path value via
+        ``cafile=...``. The client identity is then loaded with
+        ``load_cert_chain``.
+
+        The PEM cert/key are written to files only because ``load_cert_chain``
+        requires paths; they live in a ``0o700`` temporary directory with
+        ``0o600`` files for the duration of the load and are unlinked
+        immediately afterward (the context holds the parsed identity in
+        memory). The private key is never retained on ``self`` (§7).
+
+        Args:
+            custom_ca: Optional server-trust override (path or inline PEM).
+            client_cert: PEM client-certificate chain (``str`` or ``bytes``).
+            client_key: PEM private key (``str`` or ``bytes``).
+
+        Returns:
+            A configured strict ``ssl.SSLContext`` suitable for httpx
+            ``verify=``.
+
+        Raises:
+            ValueError: if the supplied client identity is not valid PEM.
+        """
+        context = ssl.create_default_context()
+        if custom_ca:
+            if _looks_like_pem(custom_ca):
+                context.load_verify_locations(cadata=custom_ca)
+            else:
+                context.load_verify_locations(cafile=custom_ca)
+
+        cert_pem = normalize_pem(client_cert)
+        key_pem = normalize_pem(client_key)
+        # load_cert_chain needs file paths; hold the secret key on disk for the
+        # shortest possible window — a 0o700 tempdir with 0o600 files, unlinked
+        # as soon as the context has parsed the identity into memory.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = os.path.join(tmpdir, "client_cert.pem")
+            key_path = os.path.join(tmpdir, "client_key.pem")
+            for path, data in ((cert_path, cert_pem), (key_path, key_pem)):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+            try:
+                context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+            except ssl.SSLError as exc:
+                raise ValueError(
+                    "client_cert/client_key is not a valid PEM client identity (CONTRACT.md §6.1)"
+                ) from exc
+        return context
 
     @property
     def sync_client(self) -> httpx.Client:

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Client-certificate / mutual-TLS (mTLS) support (CONTRACT.md §6.1):
+  `AxiamClient` and `AsyncAxiamClient` gained additive `client_cert=` /
+  `client_key=` parameters (PEM certificate chain + PEM private key, each
+  `str` or `bytes`), applied to both the REST (httpx `SSLContext`) and gRPC
+  (`grpc.ssl_channel_credentials`) transports. The gRPC authorization clients
+  and `build_channel_credentials` accept the same parameters. The two must be
+  supplied together (otherwise a construction-time `ValueError`), a non-PEM
+  value is rejected, and presenting a client certificate never relaxes strict
+  server verification (§6). The private key is secret material — never logged,
+  exposed via a getter, or shown in `repr` (§6.1 rule 3 / §7). Conformance
+  statement updated to "§1–§11 (including §6.1 mTLS)".
+
 ## [1.0.0-alpha2] - 2026-07-16
 
 ### Added
