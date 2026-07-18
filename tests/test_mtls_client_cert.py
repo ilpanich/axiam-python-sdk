@@ -33,7 +33,7 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from axiam_sdk import AsyncAxiamClient, AxiamClient
 from axiam_sdk._session import _Session
@@ -71,12 +71,24 @@ def _make_ca() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        # OpenSSL 3.x (Python 3.13) rejects a chain whose leaf lacks an Authority
-        # Key Identifier that matches the issuer's Subject Key Identifier, so the
-        # CA must carry an SKI for the leaves' AKI to reference.
+        # OpenSSL 3.5 (Python 3.13 CI) enforces stricter chain rules than older
+        # releases: the CA must declare KeyUsage(keyCertSign) and carry a Subject
+        # Key Identifier for the leaves' Authority Key Identifier to reference.
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
         )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
     return key, cert
@@ -113,18 +125,40 @@ def _make_leaf(
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
     )
+    builder = builder.add_extension(
+        x509.BasicConstraints(ca=False, path_length=None), critical=True
+    )
     if server:
         builder = builder.add_extension(
             x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False
         )
-    # SKI + an AKI referencing the issuer CA's key: OpenSSL 3.x (Python 3.13)
-    # requires the leaf's AKI for chain building, else "Missing Authority Key
-    # Identifier" verification failures (older OpenSSL on 3.11 was lenient).
-    builder = builder.add_extension(
-        x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
-    ).add_extension(
-        x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
-        critical=False,
+    # SKI + an AKI referencing the issuer CA's key, plus KeyUsage and the matching
+    # ExtendedKeyUsage: OpenSSL 3.5 (Python 3.13 CI) requires all of these for
+    # chain building (older OpenSSL on 3.11 was lenient).
+    eku = ExtendedKeyUsageOID.SERVER_AUTH if server else ExtendedKeyUsageOID.CLIENT_AUTH
+    builder = (
+        builder.add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.ExtendedKeyUsage([eku]), critical=False)
     )
     cert = builder.sign(ca_key, hashes.SHA256())
     return cert.public_bytes(serialization.Encoding.PEM), _key_pem(key)
