@@ -71,6 +71,12 @@ def _make_ca() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        # OpenSSL 3.x (Python 3.13) rejects a chain whose leaf lacks an Authority
+        # Key Identifier that matches the issuer's Subject Key Identifier, so the
+        # CA must carry an SKI for the leaves' AKI to reference.
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
         .sign(key, hashes.SHA256())
     )
     return key, cert
@@ -111,6 +117,15 @@ def _make_leaf(
         builder = builder.add_extension(
             x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False
         )
+    # SKI + an AKI referencing the issuer CA's key: OpenSSL 3.x (Python 3.13)
+    # requires the leaf's AKI for chain building, else "Missing Authority Key
+    # Identifier" verification failures (older OpenSSL on 3.11 was lenient).
+    builder = builder.add_extension(
+        x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+    ).add_extension(
+        x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+        critical=False,
+    )
     cert = builder.sign(ca_key, hashes.SHA256())
     return cert.public_bytes(serialization.Encoding.PEM), _key_pem(key)
 
