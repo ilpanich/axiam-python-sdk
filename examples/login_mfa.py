@@ -31,6 +31,7 @@ def getenv(key: str, fallback: str) -> str:
 def sync_login_mfa() -> None:
     base_url = getenv("AXIAM_BASE_URL", "https://localhost:8443")
     tenant_slug = getenv("AXIAM_TENANT_SLUG", "acme")
+    org_slug = getenv("AXIAM_ORG_SLUG", "acme")
     email = getenv("AXIAM_EMAIL", "user@example.com")
     password = getenv("AXIAM_PASSWORD", "changeme")
     totp_code = getenv("AXIAM_TOTP_CODE", "000000")
@@ -39,7 +40,9 @@ def sync_login_mfa() -> None:
     # value raises AuthError, never a silent default. TLS is always
     # verify=True (§6, SC#3) — the only escape hatch is an explicit
     # custom_ca parameter, never a boolean bypass.
-    with AxiamClient(base_url=base_url, tenant_slug=tenant_slug) as client:
+    # §5.1: login/refresh also require organization context (a tenant slug is
+    # only unique within an org) — supply org_slug alongside tenant_slug.
+    with AxiamClient(base_url=base_url, tenant_slug=tenant_slug, org_slug=org_slug) as client:
         try:
             result = client.login(email, password)
         except AuthError as exc:
@@ -65,6 +68,7 @@ def sync_login_mfa() -> None:
 async def async_login_mfa() -> None:
     base_url = getenv("AXIAM_BASE_URL", "https://localhost:8443")
     tenant_slug = getenv("AXIAM_TENANT_SLUG", "acme")
+    org_slug = getenv("AXIAM_ORG_SLUG", "acme")
     email = getenv("AXIAM_EMAIL", "user@example.com")
     password = getenv("AXIAM_PASSWORD", "changeme")
     totp_code = getenv("AXIAM_TOTP_CODE", "000000")
@@ -72,8 +76,11 @@ async def async_login_mfa() -> None:
     # AsyncAxiamClient (SDK-Q08) is a SEPARATE class from the sync
     # AxiamClient above (D-01/SC#1) — its own session, own cookie jar, own
     # single-flight refresh guard — exposing the same canonical method names
-    # (`login`, `verify_mfa`, ...) as `async def`.
-    async with AsyncAxiamClient(base_url=base_url, tenant_slug=tenant_slug) as client:
+    # (`login`, `verify_mfa`, ...) as `async def`. §5.1: org_slug supplies the
+    # organization context login/refresh require alongside tenant_slug.
+    async with AsyncAxiamClient(
+        base_url=base_url, tenant_slug=tenant_slug, org_slug=org_slug
+    ) as client:
         try:
             result = await client.login(email, password)
         except AuthError as exc:

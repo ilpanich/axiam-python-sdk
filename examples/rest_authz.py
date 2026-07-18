@@ -26,11 +26,14 @@ def getenv(key: str, fallback: str) -> str:
 def main() -> None:
     base_url = getenv("AXIAM_BASE_URL", "https://localhost:8443")
     tenant_slug = getenv("AXIAM_TENANT_SLUG", "acme")
+    org_slug = getenv("AXIAM_ORG_SLUG", "acme")
     email = getenv("AXIAM_EMAIL", "user@example.com")
     password = getenv("AXIAM_PASSWORD", "changeme")
     resource_id = getenv("AXIAM_RESOURCE_ID", "00000000-0000-0000-0000-000000000000")
 
-    with AxiamClient(base_url=base_url, tenant_slug=tenant_slug) as client:
+    # §5.1: login requires organization context alongside tenant context —
+    # supply org_slug so the login body carries an org identifier.
+    with AxiamClient(base_url=base_url, tenant_slug=tenant_slug, org_slug=org_slug) as client:
         try:
             result = client.login(email, password)
         except AuthError as exc:
