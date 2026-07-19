@@ -68,9 +68,11 @@ site's paradigm.
 from axiam_sdk import AxiamClient
 
 # tenant_slug is required — AXIAM is multi-tenant and there is no default
-# tenant (§5). TLS is always verify=True (§6); the only escape hatch is an
-# explicit custom_ca parameter, never a boolean bypass.
-with AxiamClient(base_url="https://localhost:8443", tenant_slug="acme") as client:
+# tenant (§5). login/refresh also require organization context (§5.1) — a
+# tenant slug is only unique within an org — so pass org_slug too. TLS is
+# always verify=True (§6); the only escape hatch is an explicit custom_ca
+# parameter, never a boolean bypass.
+with AxiamClient(base_url="https://localhost:8443", tenant_slug="acme", org_slug="acme") as client:
     result = client.login(email, password)
     if result.mfa_required:
         result = client.verify_mfa(result.mfa_token, totp_code)
@@ -82,7 +84,7 @@ import asyncio
 from axiam_sdk import AsyncAxiamClient
 
 async def main() -> None:
-    async with AsyncAxiamClient(base_url="https://localhost:8443", tenant_slug="acme") as client:
+    async with AsyncAxiamClient(base_url="https://localhost:8443", tenant_slug="acme", org_slug="acme") as client:
         result = await client.login(email, password)
         if result.mfa_required:
             result = await client.verify_mfa(result.mfa_token, totp_code)

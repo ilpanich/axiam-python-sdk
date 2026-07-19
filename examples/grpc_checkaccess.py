@@ -52,13 +52,16 @@ def sync_grpc_checkaccess() -> None:
     base_url = getenv("AXIAM_BASE_URL", "https://localhost:8443")
     grpc_target = getenv("AXIAM_GRPC_TARGET", "localhost:9443")
     tenant_slug = getenv("AXIAM_TENANT_SLUG", "acme")
+    org_slug = getenv("AXIAM_ORG_SLUG", "acme")
     email = getenv("AXIAM_EMAIL", "user@example.com")
     password = getenv("AXIAM_PASSWORD", "changeme")
     resource_id = getenv("AXIAM_RESOURCE_ID", "00000000-0000-0000-0000-000000000000")
     subject_id = getenv("AXIAM_SUBJECT_ID", "00000000-0000-0000-0000-000000000000")
     tenant_id = getenv("AXIAM_TENANT_ID", "00000000-0000-0000-0000-000000000000")
 
-    rest = AxiamClient(base_url=base_url, tenant_slug=tenant_slug)
+    # §5.1: the REST login/refresh calls below require organization context —
+    # supply org_slug alongside tenant_slug.
+    rest = AxiamClient(base_url=base_url, tenant_slug=tenant_slug, org_slug=org_slug)
     try:
         result = rest.login(email, password)
     except AuthError as exc:
@@ -108,6 +111,7 @@ async def async_grpc_checkaccess() -> None:
     base_url = getenv("AXIAM_BASE_URL", "https://localhost:8443")
     grpc_target = getenv("AXIAM_GRPC_TARGET", "localhost:9443")
     tenant_slug = getenv("AXIAM_TENANT_SLUG", "acme")
+    org_slug = getenv("AXIAM_ORG_SLUG", "acme")
     email = getenv("AXIAM_EMAIL", "user@example.com")
     password = getenv("AXIAM_PASSWORD", "changeme")
     resource_id = getenv("AXIAM_RESOURCE_ID", "00000000-0000-0000-0000-000000000000")
@@ -116,7 +120,8 @@ async def async_grpc_checkaccess() -> None:
 
     # AsyncAxiamClient (SDK-Q08) is a dedicated async client — a separate
     # class from the sync AxiamClient above, not an `async_*`-prefixed twin.
-    rest = AsyncAxiamClient(base_url=base_url, tenant_slug=tenant_slug)
+    # §5.1: org_slug supplies the organization context login/refresh require.
+    rest = AsyncAxiamClient(base_url=base_url, tenant_slug=tenant_slug, org_slug=org_slug)
     try:
         result = await rest.login(email, password)
     except AuthError as exc:
