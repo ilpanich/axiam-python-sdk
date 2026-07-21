@@ -72,3 +72,23 @@ class BatchCheckResult(BaseModel):
     results: list[AccessResult]
 
     model_config = {"frozen": True}
+
+
+class UserInfo(BaseModel):
+    """The authenticated caller's OIDC-style identity claims returned by the
+    gRPC-only ``get_user_info`` operation (CONTRACT.md §1.1) — the low-latency
+    counterpart of the server's REST ``GET /oauth2/userinfo`` endpoint.
+
+    ``sub``, ``tenant_id`` and ``org_id`` are always populated. ``email`` is
+    present only when the access token carries the ``email`` scope, and
+    ``preferred_username`` only with the ``profile`` scope; the server gates
+    these exactly as the REST endpoint does, and the SDK maps an absent
+    protobuf ``optional`` field to ``None``."""
+
+    sub: str
+    tenant_id: str
+    org_id: str
+    email: str | None = None
+    preferred_username: str | None = None
+
+    model_config = {"frozen": True}

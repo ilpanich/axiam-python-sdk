@@ -5,8 +5,8 @@ Re-exports the public surface: the sync :class:`AxiamClient` and async
 :class:`AsyncAxiamClient` REST entry points, the ``AuthError``/``AuthzError``/
 ``NetworkError`` exception taxonomy (CONTRACT.md §2), and the request/response
 models (``LoginResult``, ``User``, ``AccessCheck``, ``AccessResult``,
-``BatchCheckResult``). See CONTRACT.md §1-§10 for the cross-language
-behavioral contract this SDK conforms to.
+``BatchCheckResult``, ``UserInfo``). See CONTRACT.md §1-§10 for the
+cross-language behavioral contract this SDK conforms to.
 
 This module MUST remain importable with ONLY the runtime dependencies
 declared in ``[project.dependencies]`` (httpx, grpcio, aio-pika, pydantic,
@@ -18,7 +18,14 @@ imported from here.
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
-from axiam_sdk._models import AccessCheck, AccessResult, BatchCheckResult, LoginResult, User
+from axiam_sdk._models import (
+    AccessCheck,
+    AccessResult,
+    BatchCheckResult,
+    LoginResult,
+    User,
+    UserInfo,
+)
 
 __version__ = "1.0.0a15"
 
@@ -31,6 +38,7 @@ __all__ = [
     "AccessCheck",
     "AccessResult",
     "BatchCheckResult",
+    "UserInfo",
     "AuthError",
     "AuthzError",
     "NetworkError",

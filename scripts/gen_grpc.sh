@@ -34,42 +34,49 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROTO_DIR="${REPO_ROOT}/proto/axiam/v1"
 OUT_DIR="${REPO_ROOT}/src/axiam_sdk/grpc/gen"
-PROTO_FILE="authorization.proto"
+# Every service proto that gets Python client stubs. `userinfo.proto`
+# (CONTRACT.md §1.1, added 2026-07) joins `authorization.proto` here; both
+# emit flat into OUT_DIR and both need the Pitfall-1 package-relative import
+# fixup below on their generated `_pb2_grpc.py`.
+PROTO_FILES=("authorization.proto" "userinfo.proto")
 
 mkdir -p "${OUT_DIR}"
 
 cd "${REPO_ROOT}"
 
-# -I points directly at the directory containing authorization.proto so
+# -I points directly at the directory containing the protos so
 # grpc_tools.protoc emits the generated files flat into OUT_DIR (no
 # axiam/v1/ subdirectory mirroring) — matching the plan's committed-stub
-# layout (grpc/gen/authorization_pb2*.py).
+# layout (grpc/gen/<name>_pb2*.py).
 python3 -m grpc_tools.protoc \
   -I "${PROTO_DIR}" \
   --python_out="${OUT_DIR}" \
   --grpc_python_out="${OUT_DIR}" \
   --pyi_out="${OUT_DIR}" \
-  "${PROTO_FILE}"
+  "${PROTO_FILES[@]}"
 
-GRPC_FILE="${OUT_DIR}/authorization_pb2_grpc.py"
+for PROTO_FILE in "${PROTO_FILES[@]}"; do
+  BASE="${PROTO_FILE%.proto}"
+  GRPC_FILE="${OUT_DIR}/${BASE}_pb2_grpc.py"
 
-if [ ! -f "${GRPC_FILE}" ]; then
-  echo "ERROR: expected generated file not found: ${GRPC_FILE}" >&2
-  exit 1
-fi
+  if [ ! -f "${GRPC_FILE}" ]; then
+    echo "ERROR: expected generated file not found: ${GRPC_FILE}" >&2
+    exit 1
+  fi
 
-# Pitfall-1 fixup: rewrite the bare top-level import to a package-relative
-# import. Targeted at the exact generated import statement so unrelated
-# lines are never touched.
-python3 - "${GRPC_FILE}" <<'PYEOF'
+  # Pitfall-1 fixup: rewrite the bare top-level import to a package-relative
+  # import. Targeted at the exact generated import statement so unrelated
+  # lines are never touched.
+  python3 - "${GRPC_FILE}" "${BASE}" <<'PYEOF'
 import sys
 
 path = sys.argv[1]
+base = sys.argv[2]
 with open(path, "r", encoding="utf-8") as f:
     content = f.read()
 
-old_import = "import authorization_pb2 as authorization__pb2"
-new_import = "from . import authorization_pb2 as authorization__pb2"
+old_import = f"import {base}_pb2 as {base}__pb2"
+new_import = f"from . import {base}_pb2 as {base}__pb2"
 
 if old_import not in content:
     if new_import in content:
@@ -85,5 +92,6 @@ with open(path, "w", encoding="utf-8") as f:
 
 print(f"Fixed up import in {path}")
 PYEOF
+done
 
 echo "gRPC stubs generated and import-fixed at ${OUT_DIR}"
