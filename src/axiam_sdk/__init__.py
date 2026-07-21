@@ -20,7 +20,7 @@ from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
 from axiam_sdk._models import AccessCheck, AccessResult, BatchCheckResult, LoginResult, User
 
-__version__ = "1.0.0a12"
+__version__ = "1.0.0a15"
 
 __all__ = [
     "__version__",
