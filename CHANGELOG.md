@@ -33,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- gRPC-only `get_user_info` operation (CONTRACT.md §1.1, contract 1.3): the
+  low-latency counterpart of the server's REST `GET /oauth2/userinfo`
+  endpoint, invoking `axiam.v1.UserInfoService/GetUserInfo` (new vendored
+  `proto/axiam/v1/userinfo.proto`) over the SDK's existing gRPC channel,
+  reusing the same `authorization`/`x-tenant-id` metadata as `check_access`.
+  Exposed as `get_user_info()` on both `AuthzGrpcClient` (sync) and
+  `AsyncAuthzGrpcClient` (async); the request is empty (identity from the
+  bearer token) and it returns a typed `UserInfo(sub, tenant_id, org_id,
+  email, preferred_username)` where `email`/`preferred_username` are `None`
+  unless the token carries the `email`/`profile` scope respectively. A
+  no-token call raises `AuthError` client-side without a wire call, and a gRPC
+  `UNAUTHENTICATED` drives the same single-flight refresh-and-retry-once path
+  as `check_access` (§9). `UserInfo` is re-exported from the package root.
+  Conformance statement unchanged (§1–§11; the new operation lives in §1).
 - Client-certificate / mutual-TLS (mTLS) support (CONTRACT.md §6.1):
   `AxiamClient` and `AsyncAxiamClient` gained additive `client_cert=` /
   `client_key=` parameters (PEM certificate chain + PEM private key, each

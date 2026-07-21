@@ -1,7 +1,8 @@
-"""Sync + async gRPC authorization clients (D-12, CONTRACT.md §1/§6/§9).
+"""Sync + async gRPC authorization clients (D-12, CONTRACT.md §1/§1.1/§6/§9).
 
 ``AuthzGrpcClient`` (sync, ``grpcio``) and ``AsyncAuthzGrpcClient`` (async,
-``grpc.aio``) both perform ``CheckAccess``/``BatchCheckAccess`` over a
+``grpc.aio``) both perform ``CheckAccess``/``BatchCheckAccess`` and the
+gRPC-only ``GetUserInfo`` (``get_user_info``, CONTRACT.md §1.1) over a
 strict-TLS channel (``_tls.build_channel_credentials``), with a sync-safe
 auth/tenant interceptor (``_interceptor.py``) and exactly-once
 UNAUTHENTICATED refresh-and-retry (§9.3) via a caller-supplied refresh
@@ -17,11 +18,16 @@ from typing import cast
 import grpc
 import grpc.aio
 
-from axiam_sdk._errors import error_from_grpc_status
-from axiam_sdk._models import AccessResult
+from axiam_sdk._errors import AuthError, error_from_grpc_status
+from axiam_sdk._models import AccessResult, UserInfo
 from axiam_sdk.grpc._interceptor import AsyncAuthInterceptor, SyncAuthInterceptor
 from axiam_sdk.grpc._tls import build_channel_credentials
-from axiam_sdk.grpc.gen import authorization_pb2, authorization_pb2_grpc
+from axiam_sdk.grpc.gen import (
+    authorization_pb2,
+    authorization_pb2_grpc,
+    userinfo_pb2,
+    userinfo_pb2_grpc,
+)
 
 # Sync refresh_fn: a zero-arg callable that performs the caller-owned
 # single-flight refresh (§9) and returns once a fresh access token is
@@ -48,6 +54,26 @@ def _to_wire(
     if scope is not None:
         wire.scope = scope
     return wire
+
+
+def _to_user_info(response: userinfo_pb2.GetUserInfoResponse) -> UserInfo:
+    """Map a ``GetUserInfoResponse`` protobuf message to the typed
+    :class:`~axiam_sdk._models.UserInfo` record (CONTRACT.md §1.1), shared by
+    both the sync and async ``get_user_info`` call sites.
+
+    ``sub``/``tenant_id``/``org_id`` are always present; the ``optional``
+    ``email`` and ``preferred_username`` proto fields map to ``None`` when the
+    server omitted them (scope-gated), distinguished from an empty string via
+    ``HasField``."""
+    return UserInfo(
+        sub=response.sub,
+        tenant_id=response.tenant_id,
+        org_id=response.org_id,
+        email=response.email if response.HasField("email") else None,
+        preferred_username=(
+            response.preferred_username if response.HasField("preferred_username") else None
+        ),
+    )
 
 
 class AuthzGrpcClient:
@@ -91,16 +117,24 @@ class AuthzGrpcClient:
         """
         self._tenant_id = tenant_id
         self._refresh_fn = refresh_fn
+        # Retained for the get_user_info pre-flight token check (CONTRACT.md
+        # §1.1.3) — a no-token call must raise AuthError client-side without a
+        # wire call. This is a plain non-blocking cache read, same accessor the
+        # interceptor holds; it MUST NOT touch the refresh lock (T-19-13).
+        self._token_fn = token_fn
 
         credentials = build_channel_credentials(custom_ca, client_cert, client_key)
         interceptor = SyncAuthInterceptor(token_fn=token_fn, tenant_id=tenant_id)
         channel = grpc.secure_channel(target, credentials)
         self._channel = grpc.intercept_channel(channel, interceptor)
-        # authorization_pb2_grpc.py is generated code with no .pyi stub for
-        # the service stub class (only the message types in
-        # authorization_pb2.pyi are typed) — pre-existing gap from 19-01's
+        # authorization_pb2_grpc.py / userinfo_pb2_grpc.py are generated code
+        # with no .pyi stub for the service stub classes (only the message
+        # types in the *_pb2.pyi are typed) — pre-existing gap from 19-01's
         # codegen, out of this plan's file scope.
         self._stub = authorization_pb2_grpc.AuthorizationServiceStub(  # type: ignore[no-untyped-call]
+            self._channel
+        )
+        self._userinfo_stub = userinfo_pb2_grpc.UserInfoServiceStub(  # type: ignore[no-untyped-call]
             self._channel
         )
 
@@ -141,6 +175,27 @@ class AuthzGrpcClient:
             AccessResult(allowed=result.allowed, reason=result.deny_reason or None)
             for result in response.results
         ]
+
+    def get_user_info(self) -> UserInfo:
+        """``GetUserInfo`` — the gRPC-only userinfo operation (CONTRACT.md
+        §1.1). Identity is derived server-side entirely from the bearer token
+        the interceptor attaches (the request body is empty), so this takes no
+        arguments and returns the caller's own :class:`~axiam_sdk._models.UserInfo`.
+
+        A no-token call raises :class:`~axiam_sdk._errors.AuthError` client-side
+        *without* a wire call (§1.1.3). On UNAUTHENTICATED it invokes the
+        caller-supplied ``refresh_fn`` exactly once then retries the RPC exactly
+        once (§9.3), sharing the same single-flight-retry path as
+        :meth:`check_access`; any other status maps via
+        ``error_from_grpc_status``."""
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = userinfo_pb2.GetUserInfoRequest()
+        try:
+            response = self._userinfo_stub.GetUserInfo(wire)
+        except grpc.RpcError as exc:
+            response = self._retry_after_refresh(exc, lambda: self._userinfo_stub.GetUserInfo(wire))
+        return _to_user_info(response)
 
     def _retry_after_refresh(self, exc: grpc.RpcError, retry: Callable[[], object]) -> object:
         """On UNAUTHENTICATED (and only when a ``refresh_fn`` was supplied),
@@ -194,11 +249,17 @@ class AsyncAuthzGrpcClient:
         §6.1)."""
         self._tenant_id = tenant_id
         self._refresh_fn = refresh_fn
+        # Retained for the get_user_info pre-flight token check (CONTRACT.md
+        # §1.1.3); see the sync client's __init__ for the rationale.
+        self._token_fn = token_fn
 
         credentials = build_channel_credentials(custom_ca, client_cert, client_key)
         interceptor = AsyncAuthInterceptor(token_fn=token_fn, tenant_id=tenant_id)
         self._channel = grpc.aio.secure_channel(target, credentials, interceptors=[interceptor])
         self._stub = authorization_pb2_grpc.AuthorizationServiceStub(  # type: ignore[no-untyped-call]
+            self._channel
+        )
+        self._userinfo_stub = userinfo_pb2_grpc.UserInfoServiceStub(  # type: ignore[no-untyped-call]
             self._channel
         )
 
@@ -238,6 +299,23 @@ class AsyncAuthzGrpcClient:
             AccessResult(allowed=result.allowed, reason=result.deny_reason or None)
             for result in response.results
         ]
+
+    async def get_user_info(self) -> UserInfo:
+        """Async twin of :meth:`AuthzGrpcClient.get_user_info` (CONTRACT.md
+        §1.1) — pre-flight :class:`~axiam_sdk._errors.AuthError` on a no-token
+        call (no wire call), else ``GetUserInfo`` over the shared channel with
+        the same await-once-refresh / retry-once UNAUTHENTICATED path as
+        :meth:`check_access`."""
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = userinfo_pb2.GetUserInfoRequest()
+        try:
+            response = await self._userinfo_stub.GetUserInfo(wire)
+        except grpc.RpcError as exc:
+            response = await self._retry_after_refresh(
+                exc, lambda: self._userinfo_stub.GetUserInfo(wire)
+            )
+        return _to_user_info(response)
 
     async def _retry_after_refresh(
         self, exc: grpc.RpcError, retry: Callable[[], Awaitable[object]]

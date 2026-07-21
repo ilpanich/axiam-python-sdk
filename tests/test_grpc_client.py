@@ -24,9 +24,14 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from axiam_sdk._errors import AuthzError
+from axiam_sdk._errors import AuthError, AuthzError
 from axiam_sdk.grpc.client import AsyncAuthzGrpcClient, AuthzGrpcClient
-from axiam_sdk.grpc.gen import authorization_pb2, authorization_pb2_grpc
+from axiam_sdk.grpc.gen import (
+    authorization_pb2,
+    authorization_pb2_grpc,
+    userinfo_pb2,
+    userinfo_pb2_grpc,
+)
 
 
 def _free_port() -> int:
@@ -103,15 +108,45 @@ class _ScriptedServicer(authorization_pb2_grpc.AuthorizationServiceServicer):
         return authorization_pb2.BatchCheckAccessResponse(results=results)
 
 
+class _UserInfoServicer(userinfo_pb2_grpc.UserInfoServiceServicer):
+    """A scriptable ``UserInfoService`` servicer for the get_user_info tests
+    (CONTRACT.md §1.1): controls which scope-gated optional claims are
+    returned and can fail UNAUTHENTICATED exactly once to exercise the
+    single-flight refresh-and-retry path."""
+
+    def __init__(self) -> None:
+        self.unauthenticated_once = False
+        self._already_failed_once = False
+        self.include_email = True
+        self.include_username = True
+        self.received_metadata: list[tuple[str, str]] = []
+
+    def GetUserInfo(self, request, context):  # noqa: N802
+        self.received_metadata = list(context.invocation_metadata() or [])
+        if self.unauthenticated_once and not self._already_failed_once:
+            self._already_failed_once = True
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "token expired")
+        response = userinfo_pb2.GetUserInfoResponse(
+            sub="user-uuid", tenant_id="tenant-uuid", org_id="org-uuid"
+        )
+        if self.include_email:
+            response.email = "alice@example.com"
+        if self.include_username:
+            response.preferred_username = "alice"
+        return response
+
+
 class _TestServer:
     def __init__(self) -> None:
         self.servicer = _ScriptedServicer()
+        self.userinfo_servicer = _UserInfoServicer()
         self.cert_pem, self.key_pem = _generate_self_signed_cert()
         self.port = _free_port()
         self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
         authorization_pb2_grpc.add_AuthorizationServiceServicer_to_server(
             self.servicer, self.server
         )
+        userinfo_pb2_grpc.add_UserInfoServiceServicer_to_server(self.userinfo_servicer, self.server)
         credentials = grpc.ssl_server_credentials([(self.key_pem, self.cert_pem)])
         self.server.add_secure_port(f"localhost:{self.port}", credentials)
 
@@ -276,6 +311,91 @@ class TestSyncAuthzGrpcClient:
         finally:
             client.close()
 
+    def test_get_user_info_maps_all_claims(self, test_server: _TestServer, tmp_path) -> None:
+        # Full claim set (email + profile scopes present): all five fields map
+        # onto UserInfo, and the auth/tenant metadata reaches the server
+        # (CONTRACT.md §1.1.2/§1.1.5).
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AuthzGrpcClient(
+            test_server.target,
+            token_fn=lambda: "sync-token",
+            tenant_id="tenant-1",
+            custom_ca=ca_file,
+        )
+        try:
+            info = client.get_user_info()
+            assert info.sub == "user-uuid"
+            assert info.tenant_id == "tenant-uuid"
+            assert info.org_id == "org-uuid"
+            assert info.email == "alice@example.com"
+            assert info.preferred_username == "alice"
+            meta = test_server.userinfo_servicer.received_metadata
+            assert ("authorization", "Bearer sync-token") in meta
+            assert ("x-tenant-id", "tenant-1") in meta
+        finally:
+            client.close()
+
+    def test_get_user_info_absent_optionals_map_to_none(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        # Neither the email nor profile scope present: the optional proto
+        # fields are unset and MUST map to None (not "") — CONTRACT.md §1.1.5.
+        test_server.userinfo_servicer.include_email = False
+        test_server.userinfo_servicer.include_username = False
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AuthzGrpcClient(
+            test_server.target, token_fn=lambda: "tok", tenant_id="t1", custom_ca=ca_file
+        )
+        try:
+            info = client.get_user_info()
+            assert info.sub == "user-uuid"
+            assert info.email is None
+            assert info.preferred_username is None
+        finally:
+            client.close()
+
+    def test_get_user_info_no_token_raises_without_wire_call(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        # Pre-flight: a no-token call MUST raise AuthError client-side without
+        # ever reaching the server (CONTRACT.md §1.1.3).
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AuthzGrpcClient(
+            test_server.target, token_fn=lambda: None, tenant_id="t1", custom_ca=ca_file
+        )
+        try:
+            with pytest.raises(AuthError):
+                client.get_user_info()
+            assert test_server.userinfo_servicer.received_metadata == []
+        finally:
+            client.close()
+
+    def test_get_user_info_unauthenticated_triggers_exactly_one_refresh_and_one_retry(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        test_server.userinfo_servicer.unauthenticated_once = True
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+
+        refresh_calls = 0
+
+        def refresh_fn() -> None:
+            nonlocal refresh_calls
+            refresh_calls += 1
+
+        client = AuthzGrpcClient(
+            test_server.target,
+            token_fn=lambda: "tok",
+            tenant_id="t1",
+            refresh_fn=refresh_fn,
+            custom_ca=ca_file,
+        )
+        try:
+            info = client.get_user_info()
+            assert info.sub == "user-uuid"
+            assert refresh_calls == 1, "refresh_fn must be called exactly once"
+        finally:
+            client.close()
+
 
 class TestAsyncAuthzGrpcClient:
     @pytest.mark.asyncio
@@ -376,5 +496,86 @@ class TestAsyncAuthzGrpcClient:
                     timeout=5,
                 )
             assert exc_info.value.code() == grpc.StatusCode.UNAVAILABLE
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_maps_all_claims(self, test_server: _TestServer, tmp_path) -> None:
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AsyncAuthzGrpcClient(
+            test_server.target,
+            token_fn=lambda: "async-token",
+            tenant_id="tenant-2",
+            custom_ca=ca_file,
+        )
+        try:
+            info = await client.get_user_info()
+            assert info.sub == "user-uuid"
+            assert info.tenant_id == "tenant-uuid"
+            assert info.org_id == "org-uuid"
+            assert info.email == "alice@example.com"
+            assert info.preferred_username == "alice"
+            meta = test_server.userinfo_servicer.received_metadata
+            assert ("authorization", "Bearer async-token") in meta
+            assert ("x-tenant-id", "tenant-2") in meta
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_absent_optionals_map_to_none(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        test_server.userinfo_servicer.include_email = False
+        test_server.userinfo_servicer.include_username = False
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AsyncAuthzGrpcClient(
+            test_server.target, token_fn=lambda: "tok", tenant_id="t1", custom_ca=ca_file
+        )
+        try:
+            info = await client.get_user_info()
+            assert info.email is None
+            assert info.preferred_username is None
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_no_token_raises_without_wire_call(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+        client = AsyncAuthzGrpcClient(
+            test_server.target, token_fn=lambda: None, tenant_id="t1", custom_ca=ca_file
+        )
+        try:
+            with pytest.raises(AuthError):
+                await client.get_user_info()
+            assert test_server.userinfo_servicer.received_metadata == []
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_unauthenticated_triggers_exactly_one_refresh_and_one_retry(
+        self, test_server: _TestServer, tmp_path
+    ) -> None:
+        test_server.userinfo_servicer.unauthenticated_once = True
+        ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+
+        refresh_calls = 0
+
+        async def refresh_fn() -> None:
+            nonlocal refresh_calls
+            refresh_calls += 1
+
+        client = AsyncAuthzGrpcClient(
+            test_server.target,
+            token_fn=lambda: "tok",
+            tenant_id="t1",
+            refresh_fn=refresh_fn,
+            custom_ca=ca_file,
+        )
+        try:
+            info = await client.get_user_info()
+            assert info.sub == "user-uuid"
+            assert refresh_calls == 1, "refresh_fn must be called exactly once"
         finally:
             await client.close()

@@ -133,6 +133,26 @@ decision = client.check_access(subject_id, "resource:read", resource_id)
 
 See [`examples/grpc_checkaccess.py`](./examples/grpc_checkaccess.py).
 
+#### gRPC-only userinfo — `get_user_info` (§1.1)
+
+`get_user_info` is the low-latency gRPC counterpart of the server's REST
+`GET /oauth2/userinfo` endpoint (CONTRACT.md §1.1, contract 1.3). It has no
+REST form in the SDK vocabulary. The request is empty — identity is derived
+entirely server-side from the bearer token — and it returns a typed
+`UserInfo(sub, tenant_id, org_id, email, preferred_username)`. `email` is
+populated only when the access token carries the `email` scope and
+`preferred_username` only with the `profile` scope (both `None` otherwise);
+`sub`/`tenant_id`/`org_id` are always present. Calling it with no token raises
+`AuthError` client-side without a wire call, and a gRPC `UNAUTHENTICATED`
+drives the same single-flight refresh-and-retry-once path as `check_access`
+(§9). It is exposed as `get_user_info()` on both `AuthzGrpcClient` (sync) and
+`AsyncAuthzGrpcClient` (async).
+
+```python
+info = client.get_user_info()
+print(info.sub, info.tenant_id, info.org_id, info.email, info.preferred_username)
+```
+
 ### AMQP event consumer (§8)
 
 ```python
