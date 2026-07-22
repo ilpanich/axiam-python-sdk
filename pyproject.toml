@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axiam-sdk"
-version = "1.0.0a15"
+version = "1.0.0a16"
 description = "Official Python client SDK for AXIAM IAM"
 license = "Apache-2.0"
 readme = "README.md"

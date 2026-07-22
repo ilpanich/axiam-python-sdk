@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha16] - 2026-07-22
+
+### Added
+
+- Implement get_user_info (CONTRACT.md §1.1)
+
+### Changed
+
+- Vendor userinfo.proto + CONTRACT 1.3 (§1.1 gRPC userinfo)
+
 ## [1.0.0-alpha15] - 2026-07-21
 
 ### Changed
