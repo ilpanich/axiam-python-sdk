@@ -170,6 +170,27 @@
 
             </li>
             <li>
+                    <a class="class" href="#UserInfo">UserInfo</a>
+                            <ul class="memberlist">
+                        <li>
+                                <a class="variable" href="#UserInfo.sub">sub</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#UserInfo.tenant_id">tenant_id</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#UserInfo.org_id">org_id</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#UserInfo.email">email</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#UserInfo.preferred_username">preferred_username</a>
+                        </li>
+                </ul>
+
+            </li>
+            <li>
                     <a class="class" href="#AuthError">AuthError</a>
                             <ul class="memberlist">
                         <li>
@@ -234,8 +255,8 @@ Authorization Management).</p>
 <code><a href="#AsyncAxiamClient">AsyncAxiamClient</a></code> REST entry points, the <code><a href="#AuthError">AuthError</a></code>/<code><a href="#AuthzError">AuthzError</a></code>/
 <code><a href="#NetworkError">NetworkError</a></code> exception taxonomy (CONTRACT.md §2), and the request/response
 models (<code><a href="#LoginResult">LoginResult</a></code>, <code><a href="#User">User</a></code>, <code><a href="#AccessCheck">AccessCheck</a></code>, <code><a href="#AccessResult">AccessResult</a></code>,
-<code><a href="#BatchCheckResult">BatchCheckResult</a></code>). See CONTRACT.md §1-§10 for the cross-language
-behavioral contract this SDK conforms to.</p>
+<code><a href="#BatchCheckResult">BatchCheckResult</a></code>, <code><a href="#UserInfo">UserInfo</a></code>). See CONTRACT.md §1-§10 for the
+cross-language behavioral contract this SDK conforms to.</p>
 
 <p>This module MUST remain importable with ONLY the runtime dependencies
 declared in <code>[project.dependencies]</code> (httpx, grpcio, aio-pika, pydantic,
@@ -255,8 +276,8 @@ imported from here.</p>
 </span><span id="L-5"><a href="#L-5"><span class="linenos"> 5</span></a><span class="sd">:class:`AsyncAxiamClient` REST entry points, the ``AuthError``/``AuthzError``/</span>
 </span><span id="L-6"><a href="#L-6"><span class="linenos"> 6</span></a><span class="sd">``NetworkError`` exception taxonomy (CONTRACT.md §2), and the request/response</span>
 </span><span id="L-7"><a href="#L-7"><span class="linenos"> 7</span></a><span class="sd">models (``LoginResult``, ``User``, ``AccessCheck``, ``AccessResult``,</span>
-</span><span id="L-8"><a href="#L-8"><span class="linenos"> 8</span></a><span class="sd">``BatchCheckResult``). See CONTRACT.md §1-§10 for the cross-language</span>
-</span><span id="L-9"><a href="#L-9"><span class="linenos"> 9</span></a><span class="sd">behavioral contract this SDK conforms to.</span>
+</span><span id="L-8"><a href="#L-8"><span class="linenos"> 8</span></a><span class="sd">``BatchCheckResult``, ``UserInfo``). See CONTRACT.md §1-§10 for the</span>
+</span><span id="L-9"><a href="#L-9"><span class="linenos"> 9</span></a><span class="sd">cross-language behavioral contract this SDK conforms to.</span>
 </span><span id="L-10"><a href="#L-10"><span class="linenos">10</span></a>
 </span><span id="L-11"><a href="#L-11"><span class="linenos">11</span></a><span class="sd">This module MUST remain importable with ONLY the runtime dependencies</span>
 </span><span id="L-12"><a href="#L-12"><span class="linenos">12</span></a><span class="sd">declared in ``[project.dependencies]`` (httpx, grpcio, aio-pika, pydantic,</span>
@@ -268,23 +289,31 @@ imported from here.</p>
 </span><span id="L-18"><a href="#L-18"><span class="linenos">18</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._async_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncAxiamClient</span>
 </span><span id="L-19"><a href="#L-19"><span class="linenos">19</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._client</span><span class="w"> </span><span class="kn">import</span> <span class="n">AxiamClient</span>
 </span><span id="L-20"><a href="#L-20"><span class="linenos">20</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._errors</span><span class="w"> </span><span class="kn">import</span> <span class="n">AuthError</span><span class="p">,</span> <span class="n">AuthzError</span><span class="p">,</span> <span class="n">NetworkError</span>
-</span><span id="L-21"><a href="#L-21"><span class="linenos">21</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._models</span><span class="w"> </span><span class="kn">import</span> <span class="n">AccessCheck</span><span class="p">,</span> <span class="n">AccessResult</span><span class="p">,</span> <span class="n">BatchCheckResult</span><span class="p">,</span> <span class="n">LoginResult</span><span class="p">,</span> <span class="n">User</span>
-</span><span id="L-22"><a href="#L-22"><span class="linenos">22</span></a>
-</span><span id="L-23"><a href="#L-23"><span class="linenos">23</span></a><span class="n">__version__</span> <span class="o">=</span> <span class="s2">&quot;1.0.0a15&quot;</span>
-</span><span id="L-24"><a href="#L-24"><span class="linenos">24</span></a>
-</span><span id="L-25"><a href="#L-25"><span class="linenos">25</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
-</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a>    <span class="s2">&quot;__version__&quot;</span><span class="p">,</span>
-</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a>    <span class="s2">&quot;AxiamClient&quot;</span><span class="p">,</span>
-</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a>    <span class="s2">&quot;AsyncAxiamClient&quot;</span><span class="p">,</span>
-</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a>    <span class="s2">&quot;LoginResult&quot;</span><span class="p">,</span>
-</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a>    <span class="s2">&quot;User&quot;</span><span class="p">,</span>
-</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a>    <span class="s2">&quot;AccessCheck&quot;</span><span class="p">,</span>
-</span><span id="L-32"><a href="#L-32"><span class="linenos">32</span></a>    <span class="s2">&quot;AccessResult&quot;</span><span class="p">,</span>
-</span><span id="L-33"><a href="#L-33"><span class="linenos">33</span></a>    <span class="s2">&quot;BatchCheckResult&quot;</span><span class="p">,</span>
-</span><span id="L-34"><a href="#L-34"><span class="linenos">34</span></a>    <span class="s2">&quot;AuthError&quot;</span><span class="p">,</span>
-</span><span id="L-35"><a href="#L-35"><span class="linenos">35</span></a>    <span class="s2">&quot;AuthzError&quot;</span><span class="p">,</span>
-</span><span id="L-36"><a href="#L-36"><span class="linenos">36</span></a>    <span class="s2">&quot;NetworkError&quot;</span><span class="p">,</span>
-</span><span id="L-37"><a href="#L-37"><span class="linenos">37</span></a><span class="p">]</span>
+</span><span id="L-21"><a href="#L-21"><span class="linenos">21</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._models</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="L-22"><a href="#L-22"><span class="linenos">22</span></a>    <span class="n">AccessCheck</span><span class="p">,</span>
+</span><span id="L-23"><a href="#L-23"><span class="linenos">23</span></a>    <span class="n">AccessResult</span><span class="p">,</span>
+</span><span id="L-24"><a href="#L-24"><span class="linenos">24</span></a>    <span class="n">BatchCheckResult</span><span class="p">,</span>
+</span><span id="L-25"><a href="#L-25"><span class="linenos">25</span></a>    <span class="n">LoginResult</span><span class="p">,</span>
+</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a>    <span class="n">User</span><span class="p">,</span>
+</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a>    <span class="n">UserInfo</span><span class="p">,</span>
+</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a><span class="p">)</span>
+</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a>
+</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a><span class="n">__version__</span> <span class="o">=</span> <span class="s2">&quot;1.0.0a16&quot;</span>
+</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a>
+</span><span id="L-32"><a href="#L-32"><span class="linenos">32</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
+</span><span id="L-33"><a href="#L-33"><span class="linenos">33</span></a>    <span class="s2">&quot;__version__&quot;</span><span class="p">,</span>
+</span><span id="L-34"><a href="#L-34"><span class="linenos">34</span></a>    <span class="s2">&quot;AxiamClient&quot;</span><span class="p">,</span>
+</span><span id="L-35"><a href="#L-35"><span class="linenos">35</span></a>    <span class="s2">&quot;AsyncAxiamClient&quot;</span><span class="p">,</span>
+</span><span id="L-36"><a href="#L-36"><span class="linenos">36</span></a>    <span class="s2">&quot;LoginResult&quot;</span><span class="p">,</span>
+</span><span id="L-37"><a href="#L-37"><span class="linenos">37</span></a>    <span class="s2">&quot;User&quot;</span><span class="p">,</span>
+</span><span id="L-38"><a href="#L-38"><span class="linenos">38</span></a>    <span class="s2">&quot;AccessCheck&quot;</span><span class="p">,</span>
+</span><span id="L-39"><a href="#L-39"><span class="linenos">39</span></a>    <span class="s2">&quot;AccessResult&quot;</span><span class="p">,</span>
+</span><span id="L-40"><a href="#L-40"><span class="linenos">40</span></a>    <span class="s2">&quot;BatchCheckResult&quot;</span><span class="p">,</span>
+</span><span id="L-41"><a href="#L-41"><span class="linenos">41</span></a>    <span class="s2">&quot;UserInfo&quot;</span><span class="p">,</span>
+</span><span id="L-42"><a href="#L-42"><span class="linenos">42</span></a>    <span class="s2">&quot;AuthError&quot;</span><span class="p">,</span>
+</span><span id="L-43"><a href="#L-43"><span class="linenos">43</span></a>    <span class="s2">&quot;AuthzError&quot;</span><span class="p">,</span>
+</span><span id="L-44"><a href="#L-44"><span class="linenos">44</span></a>    <span class="s2">&quot;NetworkError&quot;</span><span class="p">,</span>
+</span><span id="L-45"><a href="#L-45"><span class="linenos">45</span></a><span class="p">]</span>
 </span></pre></div>
 
 
@@ -292,7 +321,7 @@ imported from here.</p>
                 <section id="__version__">
                     <div class="attr variable">
             <span class="name">__version__</span>        =
-<span class="default_value">&#39;1.0.0a15&#39;</span>
+<span class="default_value">&#39;1.0.0a16&#39;</span>
 
         
     </div>
@@ -1557,6 +1586,111 @@ resolved locally from a verified JWT's claims.</p>
         
     </div>
     <a class="headerlink" href="#BatchCheckResult.results"></a>
+    
+    
+
+                            </div>
+                </section>
+                <section id="UserInfo">
+                            <input id="UserInfo-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr class">
+            
+    <span class="def">class</span>
+    <span class="name">UserInfo</span><wbr>(<span class="base">pydantic.main.BaseModel</span>):
+
+                <label class="view-source-button" for="UserInfo-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#UserInfo"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="UserInfo-78"><a href="#UserInfo-78"><span class="linenos">78</span></a><span class="k">class</span><span class="w"> </span><span class="nc">UserInfo</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+</span><span id="UserInfo-79"><a href="#UserInfo-79"><span class="linenos">79</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;The authenticated caller&#39;s OIDC-style identity claims returned by the</span>
+</span><span id="UserInfo-80"><a href="#UserInfo-80"><span class="linenos">80</span></a><span class="sd">    gRPC-only ``get_user_info`` operation (CONTRACT.md §1.1) — the low-latency</span>
+</span><span id="UserInfo-81"><a href="#UserInfo-81"><span class="linenos">81</span></a><span class="sd">    counterpart of the server&#39;s REST ``GET /oauth2/userinfo`` endpoint.</span>
+</span><span id="UserInfo-82"><a href="#UserInfo-82"><span class="linenos">82</span></a>
+</span><span id="UserInfo-83"><a href="#UserInfo-83"><span class="linenos">83</span></a><span class="sd">    ``sub``, ``tenant_id`` and ``org_id`` are always populated. ``email`` is</span>
+</span><span id="UserInfo-84"><a href="#UserInfo-84"><span class="linenos">84</span></a><span class="sd">    present only when the access token carries the ``email`` scope, and</span>
+</span><span id="UserInfo-85"><a href="#UserInfo-85"><span class="linenos">85</span></a><span class="sd">    ``preferred_username`` only with the ``profile`` scope; the server gates</span>
+</span><span id="UserInfo-86"><a href="#UserInfo-86"><span class="linenos">86</span></a><span class="sd">    these exactly as the REST endpoint does, and the SDK maps an absent</span>
+</span><span id="UserInfo-87"><a href="#UserInfo-87"><span class="linenos">87</span></a><span class="sd">    protobuf ``optional`` field to ``None``.&quot;&quot;&quot;</span>
+</span><span id="UserInfo-88"><a href="#UserInfo-88"><span class="linenos">88</span></a>
+</span><span id="UserInfo-89"><a href="#UserInfo-89"><span class="linenos">89</span></a>    <span class="n">sub</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="UserInfo-90"><a href="#UserInfo-90"><span class="linenos">90</span></a>    <span class="n">tenant_id</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="UserInfo-91"><a href="#UserInfo-91"><span class="linenos">91</span></a>    <span class="n">org_id</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="UserInfo-92"><a href="#UserInfo-92"><span class="linenos">92</span></a>    <span class="n">email</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="UserInfo-93"><a href="#UserInfo-93"><span class="linenos">93</span></a>    <span class="n">preferred_username</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="UserInfo-94"><a href="#UserInfo-94"><span class="linenos">94</span></a>
+</span><span id="UserInfo-95"><a href="#UserInfo-95"><span class="linenos">95</span></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;frozen&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">}</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>The authenticated caller's OIDC-style identity claims returned by the
+gRPC-only <code>get_user_info</code> operation (CONTRACT.md §1.1) — the low-latency
+counterpart of the server's REST <code>GET /oauth2/userinfo</code> endpoint.</p>
+
+<p><code><a href="#UserInfo.sub">sub</a></code>, <code><a href="#UserInfo.tenant_id">tenant_id</a></code> and <code><a href="#UserInfo.org_id">org_id</a></code> are always populated. <code><a href="#UserInfo.email">email</a></code> is
+present only when the access token carries the <code><a href="#UserInfo.email">email</a></code> scope, and
+<code><a href="#UserInfo.preferred_username">preferred_username</a></code> only with the <code>profile</code> scope; the server gates
+these exactly as the REST endpoint does, and the SDK maps an absent
+protobuf <code>optional</code> field to <code>None</code>.</p>
+</div>
+
+
+                            <div id="UserInfo.sub" class="classattr">
+                                <div class="attr variable">
+            <span class="name">sub</span><span class="annotation">: str</span>        =
+<span class="default_value">PydanticUndefined</span>
+
+        
+    </div>
+    <a class="headerlink" href="#UserInfo.sub"></a>
+    
+    
+
+                            </div>
+                            <div id="UserInfo.tenant_id" class="classattr">
+                                <div class="attr variable">
+            <span class="name">tenant_id</span><span class="annotation">: str</span>        =
+<span class="default_value">PydanticUndefined</span>
+
+        
+    </div>
+    <a class="headerlink" href="#UserInfo.tenant_id"></a>
+    
+    
+
+                            </div>
+                            <div id="UserInfo.org_id" class="classattr">
+                                <div class="attr variable">
+            <span class="name">org_id</span><span class="annotation">: str</span>        =
+<span class="default_value">PydanticUndefined</span>
+
+        
+    </div>
+    <a class="headerlink" href="#UserInfo.org_id"></a>
+    
+    
+
+                            </div>
+                            <div id="UserInfo.email" class="classattr">
+                                <div class="attr variable">
+            <span class="name">email</span><span class="annotation">: str | None</span>        =
+<span class="default_value">None</span>
+
+        
+    </div>
+    <a class="headerlink" href="#UserInfo.email"></a>
+    
+    
+
+                            </div>
+                            <div id="UserInfo.preferred_username" class="classattr">
+                                <div class="attr variable">
+            <span class="name">preferred_username</span><span class="annotation">: str | None</span>        =
+<span class="default_value">None</span>
+
+        
+    </div>
+    <a class="headerlink" href="#UserInfo.preferred_username"></a>
     
     
 
