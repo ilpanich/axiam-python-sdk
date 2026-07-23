@@ -83,12 +83,16 @@ with AxiamClient(base_url="https://localhost:8443", tenant_slug="acme", org_slug
 import asyncio
 from axiam_sdk import AsyncAxiamClient
 
+
 async def main() -> None:
-    async with AsyncAxiamClient(base_url="https://localhost:8443", tenant_slug="acme", org_slug="acme") as client:
+    async with AsyncAxiamClient(
+        base_url="https://localhost:8443", tenant_slug="acme", org_slug="acme"
+    ) as client:
         result = await client.login(email, password)
         if result.mfa_required:
             result = await client.verify_mfa(result.mfa_token, totp_code)
         print(result.session_id, result.expires_in)
+
 
 asyncio.run(main())
 ```
@@ -102,10 +106,13 @@ result = client.check_access("resource:read", resource_id)
 can_write = client.can("resource:write", resource_id)
 
 from axiam_sdk import AccessCheck
-results = client.batch_check([
-    AccessCheck(action="resource:read", resource_id=resource_id),
-    AccessCheck(action="resource:delete", resource_id=resource_id, scope="admin"),
-])
+
+results = client.batch_check(
+    [
+        AccessCheck(action="resource:read", resource_id=resource_id),
+        AccessCheck(action="resource:delete", resource_id=resource_id, scope="admin"),
+    ]
+)
 ```
 
 `AsyncAxiamClient` exposes the same `check_access`/`can`/`batch_check` names
@@ -158,10 +165,12 @@ print(info.sub, info.tenant_id, info.org_id, info.email, info.preferred_username
 ```python
 from axiam_sdk.amqp import ErrDrop, consume
 
+
 async def handler(event: dict) -> None:
     if "action" not in event:
         raise ErrDrop("poison message")  # nack without requeue
     ...  # None return -> ack; any other exception -> nack with requeue
+
 
 await consume(channel, "axiam.authz.request", signing_key, handler, prefetch=10)
 ```
@@ -180,6 +189,7 @@ verifier = JwksVerifier(base_url)
 authenticated_user = require_authenticated_user(verifier, "acme")
 
 app = FastAPI()
+
 
 @app.get("/protected")
 async def protected(user: AxiamUser = Depends(authenticated_user)):
@@ -239,11 +249,14 @@ require_doc_read = require_access(
     verifier, "acme", authz_client, "documents:read", resource_param="doc_id"
 )
 
+
 @app.get("/docs/{doc_id}")
 async def get_doc(doc_id: str, user: AxiamUser = Depends(require_doc_read)):
     return {"message": f"user {user.user_id} may read document {doc_id}"}
 
+
 require_admin_role = require_role(verifier, "acme", "admin")
+
 
 @app.delete("/admin/cache")
 async def reset_cache(user: AxiamUser = Depends(require_admin_role)):
@@ -265,10 +278,12 @@ from axiam_sdk.django.decorators import require_access, require_role
 
 authz_client = AxiamClient(base_url="https://localhost:8443", tenant_slug="acme")
 
+
 @require_access(authz_client, "documents:read", resource_param="doc_id")
 def get_document(request, doc_id):
     user = request.axiam_user
     return JsonResponse({"message": f"user {user.user_id} may read document {doc_id}"})
+
 
 @require_role("admin")
 def reset_cache_view(request):
@@ -324,8 +339,8 @@ client = AxiamClient(
     base_url="https://axiam.example.com",
     tenant_slug="acme",
     custom_ca="/etc/axiam/org-ca.pem",  # server trust (optional; system roots by default)
-    client_cert=client_cert,            # PEM cert chain (str or bytes)
-    client_key=client_key,              # PEM private key (str or bytes)
+    client_cert=client_cert,  # PEM cert chain (str or bytes)
+    client_key=client_key,  # PEM private key (str or bytes)
 )
 # AsyncAxiamClient(...) takes the identical client_cert=/client_key= parameters.
 ```
