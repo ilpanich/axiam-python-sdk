@@ -33,7 +33,7 @@ django = ["django"]
 dev = [
     "grpcio-tools>=1.78,<1.83",
     "mypy",
-    "ruff",
+    "ruff>=0.16.0,<0.17.0",
     "interrogate",
     "build",
     "twine",
