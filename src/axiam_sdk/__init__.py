@@ -27,7 +27,7 @@ from axiam_sdk._models import (
     UserInfo,
 )
 
-__version__ = "1.0.0a16"
+__version__ = "1.0.0a18"
 
 __all__ = [
     "__version__",

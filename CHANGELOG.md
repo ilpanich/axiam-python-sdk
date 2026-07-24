@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha18] - 2026-07-24
+
+### Changed
+
+- Bump actions/setup-python from 6.3.0 to 7.0.0 (#13)
+- Bump pypa/gh-action-pypi-publish from 1.14.0 to 1.14.1 (#14)
+- Bump actions/checkout from 7.0.0 to 7.0.1 (#15)
+- Ratchet coverage floor 96%->97% (#17)
+
+### Fixed
+
+- Format README code blocks for ruff 0.16 and pin ruff (#18)
+
 ## [1.0.0-alpha16] - 2026-07-22
 
 ### Added
