@@ -52,23 +52,38 @@ class JwksVerifier:
     """Fetches, caches, and locally verifies AXIAM access tokens against the
     organization-wide EdDSA JWKS."""
 
-    def __init__(self, base_url: str, *, lifespan: int = _DEFAULT_LIFESPAN_SECONDS) -> None:
-        """Build a verifier against ``{base_url}{JWKS_PATH}``.
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        lifespan: int = _DEFAULT_LIFESPAN_SECONDS,
+        jwks_url: str | None = None,
+    ) -> None:
+        """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
+        explicit ``jwks_url`` when supplied.
 
         Args:
             base_url: The AXIAM server's base URL; ``JWKS_PATH`` is appended
-                after stripping any trailing slash.
+                after stripping any trailing slash. Ignored when
+                ``jwks_url`` is supplied.
             lifespan: Normal (non-forced) JWKS cache TTL in seconds, passed
                 through to :class:`~jwt.PyJWKClient`'s ``cache_jwk_set``
                 lifespan (default :data:`_DEFAULT_LIFESPAN_SECONDS`).
+            jwks_url: An explicit, full JWKS document URL, overriding the
+                ``{base_url}{JWKS_PATH}`` derivation. Used by the OIDC
+                relying-party helpers (CONTRACT.md §12.3 rule 6), which read
+                ``jwks_uri`` from the discovery document rather than
+                hardcoding ``/oauth2/jwks`` — the discovery document's
+                ``jwks_uri`` may legitimately differ from
+                ``{base_url}{JWKS_PATH}`` (e.g. behind a proxy).
         """
-        jwks_url = base_url.rstrip("/") + JWKS_PATH
+        resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
         # The per-key LRU cache (opt-in via a separate constructor flag,
         # intentionally left at its default/disabled state here) has no
         # TTL/expiration (Pattern 5 Pitfall); relying solely on the TTL'd
         # jwk_set_cache (cache_jwk_set=True) avoids serving a rotated/revoked
         # key indefinitely.
-        self._client = PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=lifespan)
+        self._client = PyJWKClient(resolved_jwks_url, cache_jwk_set=True, lifespan=lifespan)
         self._last_forced_refetch: float | None = None
         self._refetch_lock = threading.Lock()
 
@@ -92,6 +107,15 @@ class JwksVerifier:
             algorithms=["EdDSA"],
             options={"require": ["sub"]},
         )
+
+    def get_signing_key(self, token: str) -> Any:
+        """Public wrapper around :meth:`_get_signing_key` (CONTRACT.md
+        §12.4 rule 2): the unknown-``kid``-triggers-one-forced-refetch
+        resolution logic, exposed for the OIDC ID-token validation checklist
+        (``_oidc_idtoken.py``), which needs the raw signing key without
+        going through :meth:`verify`'s fixed ``require: ["sub"]`` decode
+        step — §12 extends this verifier rather than forking it."""
+        return self._get_signing_key(token)
 
     def _get_signing_key(self, token: str) -> Any:
         """Resolve the signing key for *token*, single-flighted through

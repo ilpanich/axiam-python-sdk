@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from pydantic import SecretStr
 
 from axiam_sdk._client import (
     ACCESS_COOKIE,
@@ -28,7 +29,19 @@ from axiam_sdk._client import (
     _AxiamClientBase,
 )
 from axiam_sdk._errors import AuthError, error_from_http_status
-from axiam_sdk._models import AccessCheck, AccessResult, BatchCheckResult, LoginResult
+from axiam_sdk._models import (
+    AccessCheck,
+    AccessResult,
+    AuthorizationRequest,
+    BatchCheckResult,
+    IntrospectionResult,
+    LoginResult,
+    OidcConfiguration,
+    OidcTokenSet,
+    SsoCompleteResult,
+    SsoStartResult,
+)
+from axiam_sdk._oidc import DISCOVERY_PATH, SSO_CALLBACK_PATH, SSO_START_PATH
 
 
 class AsyncAxiamClient(_AxiamClientBase):
@@ -213,3 +226,219 @@ class AsyncAxiamClient(_AxiamClientBase):
             },
         )
         return await self._session._send_async(retry_request)
+
+    # ------------------------------------------------------------------
+    # OIDC / SSO relying-party helpers (CONTRACT.md §12, Task T3, SDK-Q08)
+    # ------------------------------------------------------------------
+
+    async def oidc_discover(self) -> OidcConfiguration:
+        """``GET /.well-known/openid-configuration`` (CONTRACT.md §12.1) —
+        fetch the OIDC discovery document, cached per origin with a
+        ≥5-minute TTL and single-flight de-duplication of concurrent calls
+        (§12.3 rule 6)."""
+
+        async def fetch() -> OidcConfiguration:
+            """Perform the actual discovery-document GET; called by the
+            discovery cache at most once per cache miss/expiry."""
+            request = self._session.async_client.build_request("GET", DISCOVERY_PATH)
+            response = await self._session._send_async(request)
+            return self._parse_discovery_response(response)
+
+        return await self._discovery_cache.get_async(self._discovery_origin_key(), fetch)
+
+    async def oidc_begin(
+        self,
+        *,
+        configuration: OidcConfiguration,
+        redirect_uri: str,
+        scope: str | list[str] | None = None,
+        extra_params: dict[str, str] | None = None,
+    ) -> AuthorizationRequest:
+        """Build an authorization request (CONTRACT.md §12.1) — **pure
+        local computation, no network I/O**; this ``async def`` has no
+        internal ``await`` (CONTRACT.md §12.2's Python naming table gives
+        ``oidc_begin`` no synchronous carve-out the way it does for C#).
+        Nothing is stored: persist the returned ``state``, ``nonce``, and
+        ``code_verifier`` yourself (§12.3 rule 1)."""
+        return self._oidc_begin_impl(
+            configuration=configuration,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            extra_params=extra_params,
+        )
+
+    async def oidc_exchange(
+        self,
+        *,
+        code: str,
+        code_verifier: SecretStr | str,
+        redirect_uri: str,
+        nonce: str,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with ``grant_type=authorization_code``
+        (CONTRACT.md §12.1) — exchange an authorization code for a token
+        set, validating the returned ID token in full before returning
+        (§12.4). On ANY §12.4 failure the whole token set is discarded and
+        ``AuthError`` is raised with the matching reason code (§12.4
+        rule 7) — the access/refresh token from the same response is never
+        returned."""
+        config = configuration or await self.oidc_discover()
+        form = self._exchange_form(
+            code=code, code_verifier=code_verifier, redirect_uri=redirect_uri
+        )
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        return self._handle_token_response(response, config, nonce)
+
+    async def oidc_refresh(
+        self,
+        *,
+        refresh_token: SecretStr | str,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with ``grant_type=refresh_token``
+        (CONTRACT.md §12.1) — refresh an ``OidcTokenSet``.
+
+        A **distinct operation** from :meth:`refresh`, which drives the
+        cookie/opaque-token session path at ``POST /api/v1/auth/refresh``
+        (§12.1 "``oidc_refresh`` vs ``refresh``") — the two are never
+        merged, aliased, or made to fall back to one another. Concurrent
+        ``oidc_refresh`` calls collapse into exactly one wire call, and the
+        selected caller's wire call additionally runs inside the same §9
+        single-flight guard the cookie-session :meth:`refresh` uses, so an
+        ``oidc_refresh`` and a concurrent cookie-session refresh can never
+        interleave.
+        """
+
+        async def do_refresh() -> OidcTokenSet:
+            """Perform the actual ``refresh_token`` grant call; run inside
+            :meth:`~axiam_sdk.token.refresh_guard.RefreshGuard.run_exclusive_async`
+            by ``under_guard``, and de-duplicated across concurrent callers
+            by the single-flight coalescer below."""
+            config = configuration or await self.oidc_discover()
+            form = self._refresh_form(refresh_token=refresh_token, scope=scope)
+            url = self._token_endpoint_url(config, tenant_id)
+            request = self._session.async_client.build_request("POST", url, data=form)
+            response = await self._session._send_async(request)
+            # No nonce: rule 6 does not apply to a refresh-issued ID token.
+            return self._handle_token_response(response, config, None)
+
+        async def under_guard() -> OidcTokenSet:
+            """Run ``do_refresh`` inside the shared §9 refresh-guard lock,
+            so it can never interleave with a concurrent cookie-session
+            :meth:`refresh` call."""
+            token_set: OidcTokenSet = await self._session.refresh_guard.run_exclusive_async(
+                do_refresh
+            )
+            return token_set
+
+        result: OidcTokenSet = await self._oidc_refresh_single_flight_async.run(under_guard)
+        return result
+
+    async def login_client_credentials(
+        self,
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with ``grant_type=client_credentials``
+        (CONTRACT.md §12.1) — service-account machine-to-machine login.
+        Requests no ``openid`` scope, so the response carries no
+        ``id_token``.
+
+        Raises:
+            AuthError: when no ``client_secret`` was configured — this
+                grant cannot be performed by a public client.
+        """
+        config = configuration or await self.oidc_discover()
+        form = self._client_credentials_form(scope=scope)
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        # No nonce: rule 6 does not apply to this grant.
+        return self._handle_token_response(response, config, None)
+
+    async def introspect(
+        self,
+        *,
+        token: SecretStr | str,
+        token_type_hint: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> IntrospectionResult:
+        """``POST /oauth2/introspect`` (RFC 7662, CONTRACT.md §12.1) — ask
+        the server whether a token is active and, if so, for its metadata.
+        Requires confidential-client credentials (§12.1 note 4). A ``401``
+        here is a client-credential failure surfaced as
+        ``OAuthProtocolError``; it never enters the §9 single-flight
+        refresh guard (a client-credential failure is not a session
+        expiry)."""
+        config = configuration or await self.oidc_discover()
+        form = self._introspect_form(token=token, token_type_hint=token_type_hint)
+        url = self._endpoint_url_for_introspect(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        return self._handle_introspect_response(response)
+
+    async def revoke(
+        self,
+        *,
+        token: SecretStr | str,
+        token_type_hint: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> None:
+        """``POST /oauth2/revoke`` (RFC 7009, CONTRACT.md §12.1) — revoke
+        an access or refresh token. Idempotent: any ``200`` (including for
+        a token the server has never seen) is success (§12.1 note 5); only
+        a ``401`` (client authentication failed) is an error."""
+        config = configuration or await self.oidc_discover()
+        form = self._revoke_form(token=token, token_type_hint=token_type_hint)
+        url = self._endpoint_url_for_revoke(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        self._handle_revoke_response(response)
+
+    async def sso_start(
+        self,
+        *,
+        federation_config_id: str,
+        redirect_uri: str,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+        org_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> SsoStartResult:
+        """``POST /api/v1/auth/federation/oidc/start`` (CONTRACT.md §12.1)
+        — step 1 of first-time SSO against an upstream IdP. One tenant
+        form and one org form must be resolvable, from the arguments or
+        from the client's construction-time/resolved context (§5.1)."""
+        body = self._sso_start_body(
+            federation_config_id=federation_config_id,
+            redirect_uri=redirect_uri,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            org_id=org_id,
+            org_slug=org_slug,
+        )
+        request = self._session.async_client.build_request("POST", SSO_START_PATH, json=body)
+        response = await self._session._send_async(request)
+        return self._handle_sso_start_response(response)
+
+    async def sso_complete(self, *, state: str, code: str) -> SsoCompleteResult:
+        """``POST /api/v1/auth/federation/oidc/callback`` (CONTRACT.md
+        §12.1) — step 2 of upstream SSO: consumes the single-use ``state``,
+        provisions or links the user, and establishes the session via
+        ``Set-Cookie`` (§4 cookie jar). §12.4 does not apply here — no ID
+        token ever reaches the SDK on the federation path."""
+        request = self._session.async_client.build_request(
+            "POST", SSO_CALLBACK_PATH, json={"state": state, "code": code}
+        )
+        response = await self._session._send_async(request)
+        return self._handle_sso_complete_response(response)

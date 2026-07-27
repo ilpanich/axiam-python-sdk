@@ -176,6 +176,34 @@ class RefreshGuard:
         expiry (unix seconds). Acquires no lock."""
         return self._cached_exp
 
+    def run_exclusive_sync(self, fn: Callable[[], Any]) -> Any:
+        """Run ``fn()`` while holding the SAME OS-level lock the
+        cookie-session refresh path uses (CONTRACT.md §9), so a
+        ``oidc_refresh`` call (``_oidc.py``) and a cookie-session
+        :meth:`refresh_if_needed_sync` call can never execute concurrently.
+
+        Unlike :meth:`refresh_if_needed_sync` there is no cached-access
+        double-check here — every acquisition runs ``fn()`` exactly once;
+        request coalescing for concurrent ``oidc_refresh`` callers is a
+        separate, dedicated single-flight layer in ``_oidc.py`` that sits in
+        front of this method, so by the time this is reached at most one
+        caller is already selected to perform the real wire call.
+        """
+        with self._lock:
+            return fn()
+
+    async def run_exclusive_async(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+        """Async twin of :meth:`run_exclusive_sync` — offloads the blocking
+        ``acquire()`` to the default thread-pool executor (same pattern as
+        :meth:`refresh_if_needed_async`) so the event loop is never blocked
+        while waiting for a concurrent cookie-session refresh to finish."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._lock.acquire)
+        try:
+            return await fn()
+        finally:
+            self._lock.release()
+
     def seed(self, access: str, refresh: str | None, exp: int | None) -> None:
         """Prime the guard's cache with an already-known token triple, used
         by the client after a successful ``login``/``verify_mfa`` — before
