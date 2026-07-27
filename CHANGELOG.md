@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `revoke()` (sync and async): a `2xx` other than the literal `200` — e.g. a
+  `204 No Content` — is now treated as success, matching CONTRACT.md §12.1
+  note 5 as corrected in contract 1.5 ("any 2xx MAY be treated as success,
+  RECOMMENDED") and every other SDK's behavior. Previously only `200` was
+  accepted and a legal `204` revocation response would incorrectly raise
+  (cross-SDK conformance review F-08). A `5xx` still raises `NetworkError`
+  and a `401` carrying an `OAuth2ErrorResponse` body still raises
+  `OAuthProtocolError` without entering the §9 refresh guard, both unchanged.
+
 ### Added
 
 - OIDC / SSO relying-party helpers (CONTRACT.md §12, contract 1.4): the nine

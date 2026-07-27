@@ -627,15 +627,21 @@ class _OidcMixin:
         """Handle ``POST /oauth2/revoke``'s response.
 
         Per RFC 7009 the server answers ``200`` for unknown, expired, or
-        already-revoked tokens alike, so revocation is **idempotent**: any
-        ``200`` is success and no error is raised for a token the server
-        has never seen. Only a ``401`` (client authentication failed) is an
-        error, surfaced as :class:`~axiam_sdk._errors.OAuthProtocolError`
-        (§12.1 note 5, §12.3 rule 3). A ``5xx`` stays a network error — it
-        does not become "success" just because the contract says ``revoke``
-        returns void (port-brief-addendum item 20).
+        already-revoked tokens alike, so revocation is **idempotent**: a
+        ``200`` MUST be treated as success and no error is raised for a
+        token the server has never seen. CONTRACT.md §12.1 note 5 (as
+        corrected in contract 1.5) additionally makes any other ``2xx``
+        (e.g. a ``204 No Content``) success too — RECOMMENDED, and what
+        every sibling SDK's HTTP client reports natively — so this checks
+        :attr:`httpx.Response.is_success` rather than pinning the literal
+        ``200`` (cross-SDK conformance review F-08). Only a ``401`` (client
+        authentication failed) is an error, surfaced as
+        :class:`~axiam_sdk._errors.OAuthProtocolError` (§12.3 rule 3). A
+        ``5xx`` stays a network error — it does not become "success" just
+        because the contract says ``revoke`` returns void
+        (port-brief-addendum item 20).
         """
-        if response.status_code != httpx.codes.OK:
+        if not response.is_success:
             raise error_from_oauth2_response(
                 response.status_code, response, "revoke request failed"
             )

@@ -141,6 +141,33 @@ def test_revoke_returns_none_on_200(respx_mock: respx.MockRouter) -> None:
     assert result is None
 
 
+def test_revoke_returns_none_on_204(respx_mock: respx.MockRouter) -> None:
+    """CONTRACT.md §12.1 note 5 (corrected in contract 1.5, cross-SDK
+    conformance review F-08): any 2xx is success, not only the literal
+    ``200`` — a ``204 No Content`` is a perfectly legal revocation
+    response and MUST NOT raise."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/revoke").mock(return_value=httpx.Response(204))
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    result = client.revoke(token="some-token", tenant_id=TENANT_ID)
+    assert result is None
+
+
+def test_revoke_returns_none_on_202(respx_mock: respx.MockRouter) -> None:
+    """F-08: a ``202 Accepted`` is likewise a success 2xx."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/revoke").mock(return_value=httpx.Response(202))
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    result = client.revoke(token="some-token", tenant_id=TENANT_ID)
+    assert result is None
+
+
 def test_revoke_is_idempotent_on_an_unknown_token(respx_mock: respx.MockRouter) -> None:
     """RFC 7009: the server answers 200 for unknown/expired/already-revoked
     tokens alike (§12.1 note 5)."""
@@ -206,3 +233,59 @@ async def test_async_revoke_happy_path(respx_mock: respx.MockRouter) -> None:
     )
 
     assert await client.revoke(token="t", tenant_id=TENANT_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_async_revoke_returns_none_on_204(respx_mock: respx.MockRouter) -> None:
+    """F-08 on the async client path: a ``204`` must succeed here too —
+    both clients share ``_OidcMixin._handle_revoke_response``, but this
+    proves the async transport wiring actually reaches it."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/revoke").mock(return_value=httpx.Response(204))
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    assert await client.revoke(token="t", tenant_id=TENANT_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_async_revoke_5xx_stays_a_network_error(respx_mock: respx.MockRouter) -> None:
+    """F-08 / port-brief-addendum item 20 on the async client path: a 5xx
+    must still raise :class:`NetworkError`, never "success"."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/revoke").mock(
+        return_value=httpx.Response(500, json={"error": "internal"})
+    )
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    with pytest.raises(NetworkError):
+        await client.revoke(token="t", tenant_id=TENANT_ID)
+
+
+@pytest.mark.asyncio
+async def test_async_revoke_401_maps_to_oauth_protocol_error_and_skips_refresh_guard(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """F-08 DoD: a 401 with an OAuth2ErrorResponse body must still raise
+    ``OAuthProtocolError`` and still never enter the §9 refresh guard, on
+    the async client path too."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/revoke").mock(
+        return_value=httpx.Response(
+            401, json={"error": "invalid_client", "error_description": "bad credentials"}
+        )
+    )
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret="wrong-secret"
+    )
+    guard_spy = MagicMock(wraps=client._session.refresh_guard.refresh_if_needed_async)
+    client._session.refresh_guard.refresh_if_needed_async = guard_spy  # type: ignore[method-assign]
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.revoke(token="t", tenant_id=TENANT_ID)
+
+    assert str(excinfo.value) == "invalid_client: bad credentials"
+    guard_spy.assert_not_called()
