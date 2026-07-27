@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§11 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§12 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -30,12 +30,13 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 Implemented (Phase 19). `AxiamClient` (sync) and the dedicated
 `AsyncAxiamClient` (async, SDK-Q08) each expose the same canonical operation
 names — `login`, `verify_mfa`, `refresh`, `logout`, `check_access`, `can`,
-`batch_check` — as sync or `async def` methods respectively (never an
-`async_*`-prefixed twin on the sync class). Each client owns its own session,
-cookie jar, and single-flight refresh guard. gRPC (sync `grpcio` + async
-`grpc.aio`), AMQP (async-only `aio-pika`), a FastAPI dependency, and a Django
-middleware are all available. Six runnable examples live under
-[`examples/`](./examples).
+`batch_check`, and the nine §12 OIDC/SSO relying-party operations (see below)
+— as sync or `async def` methods respectively (never an `async_*`-prefixed
+twin on the sync class). Each client owns its own session, cookie jar, and
+single-flight refresh guard. gRPC (sync `grpcio` + async `grpc.aio`), AMQP
+(async-only `aio-pika`), a FastAPI dependency plus an `oidc_login_router`,
+and a Django middleware plus `oidc_login_views`, are all available. Seven
+runnable examples live under [`examples/`](./examples).
 
 ## Installation
 
@@ -297,6 +298,98 @@ URL path converters typically bind a captured resource identifier to.
 
 See [`examples/fastapi_dependency.py`](./examples/fastapi_dependency.py) and
 [`examples/django_middleware.py`](./examples/django_middleware.py).
+
+## OIDC / SSO relying-party helpers (§12)
+
+`AxiamClient`/`AsyncAxiamClient` expose the nine canonical §12 operations
+directly (this SDK has no browser-bundle constraint, so — unlike the
+TypeScript SDK's dedicated `OidcClient` — the methods live on the same
+client used for everything else). They let a backend application offer
+"Login with AXIAM" (authorization-code + PKCE against AXIAM's own OIDC
+provider), authenticate itself as a service account (`client_credentials`),
+introspect/revoke tokens, and drive the server's upstream-IdP federation
+endpoints:
+
+| Operation | Purpose |
+|-----------|---------|
+| `oidc_discover()` | `GET /.well-known/openid-configuration` — cached per origin, ≥5-minute TTL, single-flight |
+| `oidc_begin(...)` | Build the authorization URL + PKCE verifier/state/nonce — **pure local computation, no network I/O** |
+| `oidc_exchange(...)` | `POST /oauth2/token` (`authorization_code`) — validates the returned ID token in full (§12.4) before returning |
+| `oidc_refresh(...)` | `POST /oauth2/token` (`refresh_token`) — a **distinct** operation from `refresh()`, under the same §9 single-flight guard |
+| `login_client_credentials(...)` | `POST /oauth2/token` (`client_credentials`) — service-account M2M login, no `id_token` |
+| `introspect(...)` | `POST /oauth2/introspect` (RFC 7662) — requires confidential-client credentials |
+| `revoke(...)` | `POST /oauth2/revoke` (RFC 7009) — idempotent; any `200` (including for an unknown token) is success |
+| `sso_start(...)` | `POST /api/v1/auth/federation/oidc/start` — step 1 of upstream-IdP SSO |
+| `sso_complete(...)` | `POST /api/v1/auth/federation/oidc/callback` — step 2; the session arrives via `Set-Cookie`, no token in the body |
+
+Both `AxiamClient` (sync) and `AsyncAxiamClient` (async, `async def` twins
+under the *same* names, SDK-Q08) expose all nine — including `oidc_begin`,
+which performs no I/O but is still `async def` on the async client, per
+CONTRACT.md §12.2's Python naming table.
+
+**The caller owns the login state (§12.3 rule 1).** `oidc_begin` returns
+`state`, `nonce`, and `code_verifier` and stores none of them anywhere — no
+process-global cache, no implicit session. Persist all three yourself
+(typically in your own HTTP session) between the login redirect and the
+callback, and pass `nonce`/`code_verifier` back into `oidc_exchange`
+explicitly. `MemoryOidcStateStore` (single-use `consume`, 10-minute TTL) is
+available for framework integrations that need somewhere to park that
+triple across the two HTTP requests of a redirect flow — it is optional and
+per-instance, never process-global.
+
+```python
+from axiam_sdk import AxiamClient, OAuthProtocolError, AuthError
+
+client = AxiamClient(
+    base_url="https://localhost:8443",
+    tenant_slug="acme",
+    client_id="my-backend-app",
+    client_secret="changeme",  # omit for a public client
+)
+
+configuration = client.oidc_discover()
+request = client.oidc_begin(
+    configuration=configuration,
+    redirect_uri="https://app.example.com/oidc/callback",
+    scope="openid profile email",
+)
+# ... persist request.state / request.nonce / request.code_verifier,
+# redirect the browser to request.url, and receive the callback ...
+
+try:
+    tokens = client.oidc_exchange(
+        code=callback_code,
+        code_verifier=request.code_verifier,
+        redirect_uri="https://app.example.com/oidc/callback",
+        nonce=request.nonce,
+        tenant_id="00000000-0000-0000-0000-000000000000",
+    )
+except OAuthProtocolError as exc:
+    print(f"{exc.error}: {exc.error_description}")
+except AuthError as exc:
+    print(f"login failed ({exc.reason}): {exc}")
+else:
+    print(tokens.id_claims.sub if tokens.id_claims else "no id_token")
+```
+
+`OAuthProtocolError` is a language-idiomatic **sub-type of `AuthError`**
+(CONTRACT.md §2/§12.3 rule 3) — existing `except AuthError:` code keeps
+matching it unchanged. It carries `error`/`error_description` and
+`str(exc) == "<error>: <error_description>"`. Every §12.4 ID-token
+validation failure raises the plain `AuthError` with a stable
+`reason` — one of `invalid_alg`, `unknown_kid`, `invalid_signature`,
+`invalid_issuer`, `invalid_audience`, `token_expired`, `nonce_mismatch`.
+
+`access_token`, `refresh_token`, `id_token`, `client_secret`, and
+`code_verifier` are all `pydantic.SecretStr` (§7/§12.5) — never printed or
+serialized in the clear; read the raw value via `.get_secret_value()`.
+`state`/`nonce` are plain strings (§12.3 rule 2 — not secrets).
+
+**Framework glue.** `axiam_sdk.fastapi.oidc_login_router(client, redirect_uri=...)`
+builds a two-route `APIRouter` (login redirect + callback); `axiam_sdk.django.oidc.oidc_login_views(client, redirect_uri=...)`
+builds a `(login_view, callback_view)` pair sharing one state store. Both
+delegate entirely to the operations above and to the existing session/cookie
+machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
 
 ## gRPC stub generation (D-04)
 

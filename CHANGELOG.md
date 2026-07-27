@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- OIDC / SSO relying-party helpers (CONTRACT.md §12, contract 1.4): the nine
+  canonical operations — `oidc_discover`, `oidc_begin`, `oidc_exchange`,
+  `oidc_refresh`, `login_client_credentials`, `introspect`, `revoke`,
+  `sso_start`, `sso_complete` — added directly to both `AxiamClient` (sync)
+  and `AsyncAxiamClient` (`async def` twins under the same names, SDK-Q08).
+  Shared pure logic (PKCE via `secrets`/`hashlib`/`base64`, ID-token
+  validation, discovery cache, tenant/client-credential resolution) lives in
+  new `_oidc.py`/`_oidc_pkce.py`/`_oidc_idtoken.py`/`_oidc_state.py` modules;
+  no new runtime dependency was added. New public types: `OidcConfiguration`,
+  `IdTokenClaims`, `AuthorizationRequest`, `OidcTokenSet`,
+  `IntrospectionResult`, `SsoStartResult`, `SsoCompleteResult`,
+  `OidcStateStore`/`OidcStateEntry`/`MemoryOidcStateStore`, and
+  `OAuthProtocolError` — a language-idiomatic sub-type of the existing
+  `AuthError`, so existing `except AuthError:` code keeps matching it
+  unchanged. `access_token`/`refresh_token`/`id_token`/`client_secret`/
+  `code_verifier` are `pydantic.SecretStr`; `state`/`nonce` remain plain
+  strings (not secrets, per §12.3 rule 2). ID-token validation (§12.4)
+  reuses the existing `JwksVerifier` (extended, not forked) and raises
+  `AuthError` with a stable `reason` — `invalid_alg`, `unknown_kid`,
+  `invalid_signature`, `invalid_issuer`, `invalid_audience`,
+  `token_expired`, or `nonce_mismatch`. `oidc_refresh` runs under the
+  existing §9 single-flight refresh guard (extended with
+  `run_exclusive_sync`/`run_exclusive_async`), so it can never interleave
+  with a concurrent cookie-session `refresh()`, and de-duplicates its own
+  concurrent callers. New framework glue: `axiam_sdk.fastapi.oidc_login_router`
+  (a two-route `APIRouter`) and `axiam_sdk.django.oidc.oidc_login_views` (a
+  `(login_view, callback_view)` pair). Conformance statement updated to
+  "§1–§12 (including §6.1 mTLS)".
+
 ## [1.0.0-alpha18] - 2026-07-24
 
 ### Changed

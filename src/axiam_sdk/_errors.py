@@ -30,12 +30,59 @@ class AuthError(Exception):
     """Authentication failure: wrong credentials, expired session, MFA
     failure, or a 401 on refresh (CONTRACT.md §2)."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, reason: str | None = None) -> None:
         """Build the exception with ``message`` describing the failure
         (CONTRACT.md §2 construction rule); the exception's own ``str()``
-        prefixes it with ``"authentication failed: "``."""
+        prefixes it with ``"authentication failed: "``.
+
+        ``reason`` is an optional stable, machine-readable code (CONTRACT.md
+        §12.3 rule 3 / §12.4) — populated by the OIDC ID-token validation
+        checklist with one of the seven contract-fixed reason codes
+        (``invalid_alg``, ``unknown_kid``, ``invalid_signature``,
+        ``invalid_issuer``, ``invalid_audience``, ``token_expired``,
+        ``nonce_mismatch``); ``None`` for every other ``AuthError``. It is a
+        code, never free text, so callers can branch on it without parsing
+        ``message``.
+        """
         super().__init__(f"authentication failed: {message}")
         self.message = message
+        self.reason = reason
+
+
+class OAuthProtocolError(AuthError):
+    """An RFC 6749 protocol error returned by an ``/oauth2/*`` endpoint as an
+    ``OAuth2ErrorResponse`` body (CONTRACT.md §2 sub-type table, §12.3 rule 3,
+    port-brief-addendum item 17).
+
+    A **sub-type of** :class:`AuthError`, not a fourth peer error type:
+    existing ``except AuthError:`` blocks keep matching it unchanged — that
+    backward compatibility is precisely what makes contract 1.4 "non-breaking,
+    additive". Raised for a ``400`` from ``POST /oauth2/token`` (e.g.
+    ``invalid_grant``) and for a ``401`` from ``POST /oauth2/introspect`` /
+    ``POST /oauth2/revoke`` (client authentication failed) — neither of which
+    may collapse into the generic §2 ``400 -> NetworkError`` / ``401 ->
+    AuthError`` rows.
+
+    ``str(exc)`` is always exactly ``"<error>: <error_description>"``, built
+    from the two ``OAuth2ErrorResponse`` wire fields, which are also exposed
+    individually as :attr:`error`/:attr:`error_description`. This
+    deliberately bypasses :class:`AuthError`'s own ``"authentication failed:
+    "`` message-prefixing convention: §12.3 rule 3 fixes this class's message
+    to exactly ``"<error>: <error_description>"``, so ``Exception.__init__``
+    is called directly rather than via ``AuthError.__init__``.
+    """
+
+    def __init__(self, error: str, error_description: str) -> None:
+        """Build the exception from the two ``OAuth2ErrorResponse`` wire
+        fields (CONTRACT.md §12.3 rule 3); ``error``/``error_description``
+        are exposed as public attributes, and ``str(self)`` is exactly
+        ``"<error>: <error_description>"``."""
+        message = f"{error}: {error_description}"
+        Exception.__init__(self, message)
+        self.message = message
+        self.reason = None
+        self.error = error
+        self.error_description = error_description
 
 
 class AuthzError(Exception):
@@ -217,6 +264,57 @@ def error_from_http_status(
     if response is not None:
         cause = RuntimeError(_sanitize_response(response))
     return NetworkError(message, cause=cause)
+
+
+def _oauth2_error_body(response: httpx.Response) -> dict[str, str] | None:
+    """Narrow ``response``'s parsed JSON body to an ``OAuth2ErrorResponse``
+    shape (``{"error": str, "error_description": str}``, CONTRACT.md §12.1).
+
+    Both fields must be present and string-typed — a body carrying only one
+    of them is NOT an ``OAuth2ErrorResponse`` and the caller falls back to
+    the generic §2 mapping (a generic error beats a fabricated
+    ``error_description``), mirroring ``the TypeScript SDK's
+    core/errorMapper.ts``'s ``isOAuth2ErrorBody``.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    description = body.get("error_description")
+    if isinstance(error, str) and isinstance(description, str):
+        return {"error": error, "description": description}
+    return None
+
+
+def error_from_oauth2_response(
+    status: int,
+    response: httpx.Response,
+    fallback_message: str,
+) -> Exception:
+    """Map a ``/oauth2/token``, ``/oauth2/introspect``, or ``/oauth2/revoke``
+    response's failure onto the §12.3 rule 3 taxonomy: a ``400``/``401``
+    carrying an ``OAuth2ErrorResponse`` body is :class:`OAuthProtocolError`,
+    which MUST NOT collapse into the generic §2 ``400 -> NetworkError`` /
+    ``401 -> AuthError`` rows (CONTRACT.md §12.1 note 4,
+    port-brief-addendum item 4).
+
+    This is a **dedicated** entry point for the three ``/oauth2/*``
+    endpoints §12 adds — it does not alter :func:`error_from_http_status`'s
+    behavior for any other call site, so the existing §2 mapping used by
+    ``login``/``refresh``/``check_access`` etc. is untouched.
+
+    Falls back to :func:`error_from_http_status` (generic §2 mapping) when
+    the body is not ``OAuth2ErrorResponse``-shaped, so an unexpected error
+    body still produces a sensible ``AuthError``/``NetworkError`` rather than
+    a fabricated protocol error.
+    """
+    oauth2_body = _oauth2_error_body(response)
+    if oauth2_body is not None:
+        return OAuthProtocolError(oauth2_body["error"], oauth2_body["description"])
+    return error_from_http_status(status, fallback_message, response=response)
 
 
 def error_from_grpc_status(code: object, message: str) -> Exception:

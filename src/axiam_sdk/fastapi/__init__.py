@@ -69,11 +69,15 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from fastapi import HTTPException, Request
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
 from axiam_sdk._jwks import JwksVerifier
+from axiam_sdk._models import OidcTokenSet
+from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 
 #: Standardized "missing credentials" / "invalid or expired token" / tenant
 #: mismatch failures all surface as 401 (CONTRACT.md §10, mirrors
@@ -467,10 +471,196 @@ def require_role(
     return _dependency
 
 
+#: §12 login-glue HTTP status mapping (port-brief-addendum item 19,
+#: CONTRACT.md §12) — framework-handler behavior, not contract-specified.
+_OIDC_INVALID_REQUEST_STATUS = 400
+_OIDC_AUTH_FAILED_STATUS = 401
+_OIDC_UNAVAILABLE_STATUS = 503
+
+
+def _oidc_unavailable_detail(message: str) -> dict[str, str]:
+    """Standardized 503 ``{"error": "oidc_unavailable", ...}`` body
+    (port-brief-addendum item 19)."""
+    return {"error": "oidc_unavailable", "message": message}
+
+
+def _oidc_auth_failed_detail(message: str) -> dict[str, str]:
+    """Standardized 401 ``{"error": "authentication_failed", ...}`` body
+    (port-brief-addendum item 19)."""
+    return {"error": "authentication_failed", "message": message}
+
+
+def oidc_login_router(
+    client: AsyncAxiamClient,
+    *,
+    redirect_uri: str,
+    store: OidcStateStore | None = None,
+    scope: str | list[str] | None = None,
+    tenant_id: str | None = None,
+    login_path: str = "/login",
+    callback_path: str = "/callback",
+    success_redirect: str | None = None,
+    on_success: Callable[[OidcTokenSet, OidcStateEntry], Awaitable[None]] | None = None,
+) -> APIRouter:
+    """Build a two-route "Login with AXIAM" :class:`~fastapi.APIRouter`
+    (CONTRACT.md §12): ``GET {login_path}`` starts the authorization-code +
+    PKCE flow and redirects the browser to AXIAM's authorization endpoint;
+    ``GET {callback_path}`` completes it.
+
+    Delegates entirely to the shared §12 core already on ``client``
+    (``oidc_discover``/``oidc_begin``/``oidc_exchange``, CONTRACT.md §12.3
+    rule 1's stateless-by-default operations) and to the existing session
+    cookie machinery in ``_session.py`` — this factory adds no token
+    handling of its own beyond parking the ``state``/``nonce``/
+    ``code_verifier`` triple in ``store`` between the two requests (the
+    SDK itself is stateless; a redirect flow's two HTTP requests need
+    somewhere to keep that triple, since only ``state`` survives the round
+    trip through the IdP).
+
+    Args:
+        client: The :class:`~axiam_sdk.AsyncAxiamClient` driving the flow —
+            already configured with ``client_id``/``client_secret``.
+        redirect_uri: The relying party's own callback URL — must be the
+            public URL of ``callback_path`` and is replayed verbatim on the
+            token exchange.
+        store: Where in-flight login state is parked. Defaults to a fresh
+            :class:`~axiam_sdk.MemoryOidcStateStore` (single-process only —
+            supply a shared store for a multi-instance deployment).
+        scope: Requested scope; ``openid`` is added automatically when
+            absent (§12.1 rule 4).
+        tenant_id: Tenant UUID for the token endpoint's required
+            ``tenant_id`` query parameter (CONTRACT.md §12.3 rule 4).
+            Defaults to the client's own resolved tenant context (e.g. from
+            a prior ``login()``) when omitted.
+        login_path: The login-redirect route path, relative to the router.
+        callback_path: The callback route path, relative to the router.
+        success_redirect: Where to send the browser after a successful
+            login. Falls back to the ``return_to`` query parameter captured
+            at login time, then to a JSON summary.
+        on_success: Called with the validated token set and the consumed
+            state entry once the exchange succeeds — the hook where an
+            application establishes its OWN session (sign a cookie, write a
+            session row, ...). The SDK deliberately does not do this: what a
+            session means is the application's decision.
+
+    Returns:
+        An :class:`~fastapi.APIRouter` with the two routes, ready to
+        ``app.include_router(...)``.
+    """
+    state_store: OidcStateStore = store if store is not None else MemoryOidcStateStore()
+    router = APIRouter()
+
+    @router.get(login_path)
+    async def login(return_to: str | None = None) -> RedirectResponse:
+        """Step 1 — build the authorization request, park its state, and
+        redirect the browser (CONTRACT.md §12.1 ``oidc_begin``)."""
+        try:
+            configuration = await client.oidc_discover()
+            request = await client.oidc_begin(
+                configuration=configuration, redirect_uri=redirect_uri, scope=scope
+            )
+        except (AuthError, NetworkError, httpx.HTTPError) as exc:
+            # A login route that cannot reach AXIAM must fail closed with
+            # 503 rather than redirect the browser somewhere half-built.
+            # `httpx.HTTPError` covers a raw transport failure (connection
+            # refused, timeout, DNS, TLS) that this SDK's transport layer
+            # does not itself wrap into `NetworkError`.
+            raise HTTPException(
+                status_code=_OIDC_UNAVAILABLE_STATUS,
+                detail=_oidc_unavailable_detail("could not start the OIDC login flow"),
+            ) from exc
+
+        state_store.save(
+            OidcStateEntry(
+                state=request.state,
+                nonce=request.nonce,
+                code_verifier=request.code_verifier,
+                redirect_uri=redirect_uri,
+                return_to=return_to,
+            )
+        )
+        return RedirectResponse(url=request.url, status_code=302)
+
+    @router.get(callback_path)
+    async def callback(
+        state: str | None = None,
+        code: str | None = None,
+        error: str | None = None,
+        error_description: str | None = None,
+    ) -> Response:
+        """Step 2 — validate the callback, consume the stored state,
+        exchange the code, and respond (CONTRACT.md §12.1 ``oidc_exchange``).
+
+        Failure mapping (port-brief-addendum item 19): IdP returned
+        ``error=...`` -> 401; ``state``/``code`` missing -> 400; ``state``
+        unknown/expired/already-used -> 401; any §12.4 ID-token failure or
+        ``OAuthProtocolError`` -> 401; a transport failure -> 503.
+        """
+        if error:
+            raise HTTPException(
+                status_code=_OIDC_AUTH_FAILED_STATUS,
+                detail=_oidc_auth_failed_detail(
+                    f"{error}: {error_description}" if error_description else error
+                ),
+            )
+        if not state or not code:
+            raise HTTPException(
+                status_code=_OIDC_INVALID_REQUEST_STATUS,
+                detail={
+                    "error": "invalid_request",
+                    "message": "callback is missing the state or code query parameter",
+                },
+            )
+
+        # Single-use consume (§12.3 rule 1): a replayed callback finds nothing.
+        entry = state_store.consume(state)
+        if entry is None:
+            raise HTTPException(
+                status_code=_OIDC_AUTH_FAILED_STATUS,
+                detail=_oidc_auth_failed_detail("unknown, expired, or already-used login state"),
+            )
+
+        try:
+            tokens = await client.oidc_exchange(
+                code=code,
+                code_verifier=entry.code_verifier,
+                redirect_uri=entry.redirect_uri,
+                nonce=entry.nonce,
+                tenant_id=tenant_id,
+            )
+        except (NetworkError, httpx.HTTPError) as exc:
+            raise HTTPException(
+                status_code=_OIDC_UNAVAILABLE_STATUS,
+                detail=_oidc_unavailable_detail("the AXIAM token endpoint is unreachable"),
+            ) from exc
+        except AuthError as exc:
+            # AuthError (including OAuthProtocolError and every §12.4 reason
+            # code): a login that cannot be proven is a failed login.
+            raise HTTPException(
+                status_code=_OIDC_AUTH_FAILED_STATUS,
+                detail=_oidc_auth_failed_detail(exc.message),
+            ) from exc
+
+        if on_success is not None:
+            await on_success(tokens, entry)
+
+        destination = success_redirect or entry.return_to
+        if destination:
+            return RedirectResponse(url=destination, status_code=302)
+
+        body: dict[str, object] = {"authenticated": True, "expires_in": tokens.expires_in}
+        if tokens.id_claims is not None:
+            body["sub"] = tokens.id_claims.sub
+        return JSONResponse(body)
+
+    return router
+
+
 __all__ = [
     "AsyncAxiamClient",
     "AxiamUser",
     "JwksVerifier",
+    "oidc_login_router",
     "require_access",
     "require_authenticated_user",
     "require_role",
