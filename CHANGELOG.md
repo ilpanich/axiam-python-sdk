@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oidc_refresh` single-flight coalescer (CONTRACT.md §9 rule 6, contract
+  1.6): the async coalescer vacated its in-flight slot **before** publishing
+  the outcome (rule 6a, the same shape as the Go SDK bug) and its joiners
+  awaited the shared `asyncio.Future` directly, so a single cancelled joiner
+  — an `asyncio.wait_for` timeout, a cancelled request task — cancelled that
+  *shared* future: the leader's own publication then raised
+  `InvalidStateError` after a **successful** wire call (losing the rotated
+  token set), and every other participant got a spurious `CancelledError`
+  instead of the outcome. Cancelling the caller that *started* the burst
+  likewise tore the shared wire call down under all the joiners. The slot now
+  holds one `asyncio.Task` that every participant joins via
+  `asyncio.shield`, so per-caller cancellation only cancels that caller; the
+  slot is cleared by an identity-checked done callback on that same task, so
+  publication provably precedes vacating (6a), a settled-but-uncleared slot
+  is joined rather than re-dialled (6b), a lagging attempt cannot clear a
+  newer attempt's entry (6c), and a caller arriving after full settlement
+  performs its own fresh refresh (6d). The sync coalescer's waiters re-tested
+  *slot occupancy* to decide whether their own refresh was still in flight
+  (rule 6b), so a waiter that had not yet been rescheduled when a newly
+  arrived caller legitimately started the next refresh was handed **that**
+  refresh's outcome — typically the `invalid_grant` of replaying the token
+  the waiter's own (successful) refresh had just consumed. Waiters now hold
+  and block on the publication of the attempt they joined. Unchanged:
+  exactly one wire call per burst with the outcome shared (§9 rules 1–2), no
+  retry on refresh failure (§9.3 — the same exception object reaches every
+  caller), and no lock held across the network call.
+
 - `revoke()` (sync and async): a `2xx` other than the literal `200` — e.g. a
   `204 No Content` — is now treated as success, matching CONTRACT.md §12.1
   note 5 as corrected in contract 1.5 ("any 2xx MAY be treated as success,
