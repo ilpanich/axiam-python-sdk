@@ -225,6 +225,53 @@ class _DiscoveryCache:
             return document
 
 
+class _SyncFlight:
+    """One sync ``oidc_refresh`` attempt's **publication** — the object a
+    waiter joins, holds, and reads its outcome from (CONTRACT.md §9 rule 6).
+
+    The in-flight slot is a *result-sharing channel, not a busy flag*: each
+    attempt gets its own publication, and a waiter that joined this attempt
+    blocks on **this** object's event and reads **this** object's outcome.
+    That is what makes rule 6b hold on the waiter side — a waiter asks "has
+    the attempt I joined settled?" (:meth:`is_settled`), never "is the
+    coalescer's slot occupied?", so a *newer* attempt occupying the slot can
+    never be misread by a lagging waiter as "my own refresh is still on the
+    wire" (which would hand it a different burst's outcome, breaking §9
+    rule 2).
+    """
+
+    __slots__ = ("_settled", "exc", "result")
+
+    def __init__(self) -> None:
+        """Build an unsettled publication with no outcome yet."""
+        self._settled = threading.Event()
+        self.result: Any = None
+        self.exc: BaseException | None = None
+
+    def publish(self, *, result: Any = None, exc: BaseException | None = None) -> None:
+        """Make this attempt's outcome observable to every joined waiter.
+
+        The fields are assigned *before* the event is set, so a waiter
+        released by the event can never read a half-written outcome.
+        """
+        self.result = result
+        self.exc = exc
+        self._settled.set()
+
+    def is_settled(self) -> bool:
+        """Whether this attempt has published its outcome (rule 6b: this —
+        not slot occupancy — is the liveness test for *this* attempt)."""
+        return self._settled.is_set()
+
+    def outcome(self) -> Any:
+        """Block until this attempt publishes, then return its result or
+        re-raise its exception **as-is** (§9.3: no retry, ever)."""
+        self._settled.wait()
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
 class _SyncSingleFlight:
     """Collapse N concurrent sync callers of an operation into exactly one
     real invocation, all sharing its result/exception — the request-
@@ -236,76 +283,171 @@ class _SyncSingleFlight:
     by the ONE selected caller's ``fn``) provides the "inside the existing
     §9 guard" half, so an ``oidc_refresh`` and a concurrent cookie-session
     ``refresh()`` still cannot interleave.
+
+    **Rule 6 invariants (CONTRACT.md §9 rule 6, contract 1.6) — do not
+    regress these:**
+
+    * **(6a) publish-before-vacate** — :meth:`_publish_then_vacate` sets the
+      attempt's publication *first* and clears the slot *second*, so a
+      caller can only ever find the slot (i) occupied by a live attempt (it
+      joins and waits), (ii) occupied by an already-settled attempt (it
+      joins and gets that outcome immediately, with **no** second wire
+      call), or (iii) empty — which now means "the previous attempt settled
+      *and published*", so leading a fresh attempt is correct. The fourth,
+      forbidden state — *empty with nothing published* — is unreachable,
+      and that is the state that would let a second caller replay an
+      already-consumed single-use refresh token.
+    * **(6b) occupancy is not liveness** — waiters block on their own
+      :class:`_SyncFlight`, so slot occupancy is never used as a proxy for
+      "my refresh is still on the wire".
+    * **(6c) only the owner vacates** — the clear is identity-checked
+      (``self._in_flight is flight``), so an attempt unwinding late (a
+      failure, or a signal delivered during teardown) can never clear a
+      *newer* attempt's entry.
+    * **(6d) late callers lead** — once the slot is vacated, the next caller
+      finds it empty and performs its own new wire call; a settled
+      publication is never retained as a one-entry cache.
     """
 
     def __init__(self) -> None:
         """Build an idle single-flight coalescer with no call in progress."""
         self._lock = threading.Lock()
-        self._condition = threading.Condition(self._lock)
-        self._in_flight = False
-        self._result: Any = None
-        self._exc: BaseException | None = None
+        self._in_flight: _SyncFlight | None = None
+        # Test-only seam: invoked inside the publish -> vacate window so a
+        # test can deterministically land a caller there (rule 6a). NEVER
+        # set in production — nothing in the SDK assigns it.
+        self._after_publish: Callable[[], None] | None = None
 
     def run(self, fn: Callable[[], Any]) -> Any:
         """Run ``fn()`` exactly once across any number of concurrent
         callers; every other concurrent caller blocks and then receives the
         same result or re-raises the same exception."""
         with self._lock:
-            if self._in_flight:
-                while self._in_flight:
-                    self._condition.wait()
-                if self._exc is not None:
-                    raise self._exc
-                return self._result
-            self._in_flight = True
+            joined = self._in_flight
+            if joined is None:
+                mine = _SyncFlight()
+                self._in_flight = mine
+
+        if joined is not None:
+            # Waiter: wait on the publication we joined — never on the slot.
+            return joined.outcome()
 
         try:
             result = fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised to every waiter as-is
-            with self._lock:
-                self._exc = exc
-                self._in_flight = False
-                self._condition.notify_all()
+            self._publish_then_vacate(mine, exc=exc)
             raise
 
-        with self._lock:
-            self._result = result
-            self._exc = None
-            self._in_flight = False
-            self._condition.notify_all()
+        self._publish_then_vacate(mine, result=result)
         return result
+
+    def _publish_then_vacate(
+        self, flight: _SyncFlight, *, result: Any = None, exc: BaseException | None = None
+    ) -> None:
+        """Publish ``flight``'s outcome, then release the slot — in that
+        order (rule 6a), clearing only our own entry (rule 6c)."""
+        flight.publish(result=result, exc=exc)
+        if self._after_publish is not None:
+            self._after_publish()
+        with self._lock:
+            if self._in_flight is flight:
+                self._in_flight = None
 
 
 class _AsyncSingleFlight:
     """Async twin of :class:`_SyncSingleFlight`.
 
-    Safe under asyncio's single-threaded cooperative scheduling: checking
-    and setting ``self._pending`` happens with no ``await`` in between, so
-    two concurrent callers can never both decide to start a fresh call.
+    The in-flight slot holds one :class:`asyncio.Task` per burst — the
+    "shared future/promise" mechanism §9 rule 5 permits — and **every**
+    participant, the caller that created it included, joins it through
+    :func:`asyncio.shield`. Electing a leader is a single synchronous step
+    (:meth:`_claim_or_join`, no ``await`` inside), so asyncio's cooperative
+    scheduling makes the check-then-claim atomic and two callers can never
+    both start a wire call.
+
+    **Rule 6 invariants (CONTRACT.md §9 rule 6, contract 1.6) — do not
+    regress these:**
+
+    * **(6a) publish-before-vacate** — the outcome *is* the task, so it is
+      observable the instant the task completes; the slot is cleared by
+      :meth:`_vacate`, a **done callback** on that same task, which by
+      construction cannot run before the task has settled. The forbidden
+      "slot empty, nothing published" instant is therefore structurally
+      unreachable — there is no ordering left to get wrong. (The previous
+      implementation did the opposite: it cleared ``_pending`` and *then*
+      called ``set_result``/``set_exception`` on a bare future — the exact
+      shape of the Go bug, and reachable in practice because a joining
+      caller's cancellation could make the publication step fail outright.)
+    * **(6b) occupancy is not liveness** — a task in the slot may already be
+      done (the bookkeeping window before its done callback runs); a caller
+      landing there joins that settled outcome instead of starting a second
+      wire call. A *cancelled* task, conversely, will never publish
+      anything, so it is treated as **absent** and the arriving caller leads
+      a fresh attempt rather than inheriting a spurious
+      :exc:`asyncio.CancelledError`.
+    * **(6c) only the owner vacates** — :meth:`_vacate` clears the slot only
+      when it still holds the very task it was attached to, so a task
+      unwinding after a newer leader has claimed the slot cannot clear the
+      newer one's entry.
+    * **(6d) late callers lead** — once vacated, the next caller finds the
+      slot empty and performs its own new wire call.
+
+    Cancellation (rule 6c's main source in asyncio): every participant awaits
+    ``asyncio.shield(task)``, so cancelling *any* caller — the one that
+    created the task included — cancels only that caller's await. The shared
+    wire call is never torn down under the other participants, and the
+    publication can never be destroyed by a joiner (awaiting a bare
+    ``Future`` directly, as the previous implementation did, let a cancelled
+    joiner cancel the *shared* future: its waiters got a spurious
+    ``CancelledError`` and the leader's own ``set_result`` raised
+    ``InvalidStateError``, losing an already-rotated token set).
     """
 
     def __init__(self) -> None:
         """Build an idle single-flight coalescer with no call in progress."""
-        self._pending: asyncio.Future[Any] | None = None
+        self._pending: asyncio.Task[Any] | None = None
+        # Test-only seam: invoked inside the publish -> vacate window so a
+        # test can deterministically land a caller there (rule 6a). NEVER
+        # set in production — nothing in the SDK assigns it.
+        self._after_publish: Callable[[], None] | None = None
+
+    def _claim_or_join(self, fn: Callable[[], Awaitable[Any]]) -> asyncio.Task[Any]:
+        """Elect this caller a leader or a waiter and return the task
+        carrying this burst's single wire call.
+
+        Fully synchronous — there is no ``await`` between reading the slot
+        and claiming it, which is what makes the election atomic under
+        asyncio's cooperative scheduling (§9 rule 4).
+        """
+        task = self._pending
+        if task is not None and not task.cancelled():
+            # Live, or settled-but-not-yet-vacated: join it either way
+            # (rules 6a/6b). A cancelled task publishes nothing, so it does
+            # not qualify and this caller leads instead.
+            return task
+        task = asyncio.ensure_future(fn())
+        self._pending = task
+        # Chaining the clear onto the task itself is what orders publication
+        # before vacating (rule 6a) — a done callback cannot run earlier.
+        task.add_done_callback(self._vacate)
+        return task
+
+    def _vacate(self, task: asyncio.Task[Any]) -> None:
+        """Release the slot once ``task`` has settled — clearing it only if
+        it is still *our* entry (rule 6c)."""
+        if not task.cancelled():
+            # Mark a failure as retrieved: every participant re-raises it
+            # from its own ``shield``, but a burst whose callers all went
+            # away must not log "exception was never retrieved".
+            task.exception()
+        if self._after_publish is not None:
+            self._after_publish()
+        if self._pending is task:
+            self._pending = None
 
     async def run(self, fn: Callable[[], Awaitable[Any]]) -> Any:
         """Async twin of :meth:`_SyncSingleFlight.run`."""
-        pending = self._pending
-        if pending is not None:
-            return await pending
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[Any] = loop.create_future()
-        self._pending = future
-        try:
-            result = await fn()
-        except BaseException as exc:  # noqa: BLE001 - re-raised to every waiter as-is
-            self._pending = None
-            future.set_exception(exc)
-            raise
-        self._pending = None
-        future.set_result(result)
-        return result
+        return await asyncio.shield(self._claim_or_join(fn))
 
 
 class _OidcMixin:
