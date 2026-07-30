@@ -35,7 +35,7 @@ from axiam_sdk._models import (
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 
-__version__ = "1.0.0a18"
+__version__ = "1.0.0a21"
 
 __all__ = [
     "__version__",

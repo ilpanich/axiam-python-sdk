@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha21] - 2026-07-30
+
+### Added
+
+- Implement OIDC/SSO relying-party helpers (CONTRACT.md §12)
+
+### Changed
+
+- Re-sync vendored CONTRACT.md to contract 1.6
+- Update grpcio requirement from <1.83,>=1.78 to >=1.78,<1.84
+- Update grpcio-tools requirement
+- Bump coverallsapp/github-action from 2.3.7 to 2.3.8
+- Re-sync vendored CONTRACT.md to contract 1.5
+
+### Fixed
+
+- Enforce §9 rule 6 invariants in the oidc_refresh coalescer
+- Accept any 2xx as success in revoke()
+
 ## [Unreleased]
 
 ### Fixed
