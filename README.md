@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§12 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -390,6 +390,50 @@ builds a two-route `APIRouter` (login redirect + callback); `axiam_sdk.django.oi
 builds a `(login_view, callback_view)` pair sharing one state store. Both
 delegate entirely to the operations above and to the existing session/cookie
 machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
+
+## Webhook signature verification (§13)
+
+`axiam_sdk.webhook.verify_webhook(secret, signature_header, body)` verifies the
+`X-Axiam-Signature: t=<unix_seconds>,v1=<hex>` header AXIAM sends on every webhook
+delivery — HMAC-SHA256 over `"<timestamp>.<raw_body>"`, compared in constant time,
+with a two-sided freshness window (default 300s):
+
+```python
+from axiam_sdk.webhook import WebhookVerifyError, verify_webhook
+
+
+# Flask: request.get_data() is the RAW bytes off the wire. Do NOT verify
+# against request.get_json() re-dumped — re-serializing changes key order/
+# whitespace and breaks the MAC (CONTRACT.md §13.3 rule 1).
+@app.post("/webhooks/axiam")
+def axiam_webhook():
+    try:
+        event = verify_webhook(
+            secret=WEBHOOK_SECRET,  # a pydantic.SecretStr or plain str
+            signature_header=request.headers["X-Axiam-Signature"],
+            body=request.get_data(),  # raw bytes, NOT re-serialized JSON
+        )
+    except WebhookVerifyError:
+        return "invalid signature", 400
+
+    # X-Axiam-Delivery (event.delivery_id, if you pass it through — see
+    # below) is the at-least-once dedup key: retries replay a validly-
+    # signed delivery inside the freshness window, so keep a short-lived
+    # seen-set if double-processing an event would be unsafe.
+    ...
+    return "", 200
+```
+
+FastAPI is the same shape with `await request.body()` in place of
+`request.get_data()` — both give you the exact raw bytes the server signed;
+`await request.json()` does not, for the same re-serialization reason.
+
+`verify_webhook` also accepts `event_type`/`delivery_id` (pass the raw
+`X-Axiam-Event`/`X-Axiam-Delivery` header values straight through — neither
+is covered by the MAC) so the returned `WebhookEvent` carries them, a
+`tolerance` override (seconds, default 300), and a `now` injection seam for
+tests. `WebhookVerifyError`'s message never includes the expected/computed
+signature or the secret.
 
 ## gRPC stub generation (D-04)
 

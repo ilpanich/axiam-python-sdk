@@ -1256,6 +1256,80 @@ machine-to-machine use.
 
 ---
 
+## §13 Webhook Signature Verification
+
+Every SDK MUST ship a webhook-signature verifier. AXIAM signs each webhook delivery with a
+Stripe-style signed timestamp; without an SDK helper every integrator hand-rolls the HMAC
+comparison (or skips it), which is the `T-145` gap this section closes.
+
+### 13.1 The wire format (server side, normative)
+
+The delivery `POST` carries:
+
+| Header | Value |
+|---|---|
+| `X-Axiam-Timestamp` | unix seconds, decimal ASCII |
+| `X-Axiam-Signature` | `t=<unix_seconds>,v1=<hex_lowercase>` |
+| `X-Axiam-Event` | event type |
+| `X-Axiam-Delivery` | delivery UUID (at-least-once dedup key) |
+
+`v1 = HMAC-SHA256(secret_utf8_bytes, "<timestamp>.<raw_body>")`, hex-encoded lowercase, where
+`<timestamp>` is byte-identical to the `t=` field.
+
+### 13.2 Required helper
+
+| SDK | Entry point |
+|---|---|
+| Rust | `axiam_sdk::webhook::verify_webhook` |
+| TypeScript | `verifyWebhook` |
+| Python | `axiam_sdk.webhook.verify_webhook` |
+| Java | `io.axiam.sdk.webhook.AxiamWebhooks.verify` |
+| Kotlin | `io.axiam.sdk.webhook.AxiamWebhooks.verify` |
+| C# | `Axiam.Sdk.Webhooks.AxiamWebhooks.Verify` |
+| PHP | `Axiam\Sdk\Webhook\AxiamWebhooks::verify` |
+| Go | `webhook.Verify` |
+| Swift | `AxiamWebhooks.verify` |
+| C | `axiam_webhook_verify` |
+| C++ | `axiam::webhook::verify` |
+
+Parameters: the plaintext `secret` (wrapped in `Sensitive<T>` per §7 wherever the SDK has that
+type), the raw `X-Axiam-Signature` header value, the **raw request body bytes**, and a
+freshness `tolerance` defaulting to **300 s**. A `now` injection seam for tests is required.
+
+### 13.3 Rules
+
+1. **Raw body only.** The helper MUST accept the untouched bytes received off the wire.
+   Re-serializing parsed JSON changes key order/whitespace and breaks the MAC; every SDK's
+   documentation MUST state this.
+2. **Parse `t=` from the signature header**, not from `X-Axiam-Timestamp` — only the former is
+   covered by the MAC. If the SDK also reads the separate header it MUST require the two to be
+   equal.
+3. **A header with no `v1` is a failure.** Unknown keys and future schemes are ignored for
+   forward compatibility, but "nothing to verify" MUST NOT be treated as success.
+4. **Constant-time comparison** over the decoded MAC bytes. Never `==` on hex strings, never an
+   early-return byte loop. Failed hex decode fails closed.
+5. **Freshness is two-sided.** Reject when `abs(now - t) > tolerance`, so a future-dated
+   timestamp is rejected as well as a stale one.
+6. **Fail closed and quiet.** Return a typed error or `false`; never surface the expected
+   signature in an error message, and never log the secret or the computed MAC at any level.
+7. **Dedup is the receiver's job.** Document that `X-Axiam-Delivery` is the at-least-once dedup
+   key, since a retry replays a valid signature inside the freshness window.
+
+### 13.4 Required tests
+
+Valid-and-fresh accepted; tampered body rejected; wrong secret rejected; stale `t` rejected;
+future `t` beyond tolerance rejected; malformed header (missing `v1`, non-numeric `t`, empty)
+rejected. Plus a cross-SDK pin: compute the MAC for the shared vector below in test setup and
+assert the helper accepts it.
+
+```
+secret    = "whsec_test_0123456789abcdef"
+timestamp = 1785700000
+body      = {"event":"user.created","id":"01JQ0000000000000000000000"}
+```
+
+---
+
 ## Closing Notes
 
 ### Conformance Statement
@@ -1273,8 +1347,13 @@ An SDK that additionally ships the §12 OIDC/SSO relying-party helpers updates i
 
 > "This SDK conforms to CONTRACT.md §1–§12."
 
+An SDK that additionally ships the §13 webhook-signature verifier updates its statement to:
+
+> "This SDK conforms to CONTRACT.md §1–§13."
+
 The three SDKs that defer §12 ([§12.6](#§126-deferred-sdks-swift-c-c)) keep their existing
-statement and MUST NOT claim §12.
+statement and MUST NOT claim §12; §13 has no deferred SDKs — every SDK receives webhook
+deliveries and MUST ship the verifier regardless of its §12 status.
 
 Phase acceptance criteria in each SDK plan include: "CONTRACT.md §1–§10 conformance
 verified." (and §1–§11 where the §11 helpers are shipped, §1–§12 where the §12 helpers are
@@ -1504,6 +1583,6 @@ recorded here until one exists.
 
 ---
 
-*Contract version: 1.6 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07*
+*Contract version: 1.7 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07; §13 webhook signature verification (`verify_webhook`, T-145) added 2026-08*
 *Binding since: 2026-06-30*
 *Reference: D-09, D-10 in `.planning/phases/15-sdk-foundation/15-CONTEXT.md`*
