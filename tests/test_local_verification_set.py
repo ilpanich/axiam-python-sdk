@@ -24,6 +24,7 @@ Both are closed by ``verify_access_token``, and both are asserted here.
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from typing import Any
 
@@ -646,3 +647,95 @@ def test_django_middleware_rejects_an_unbounded_configured_skew(monkeypatch) -> 
     monkeypatch.setattr(django_settings, "AXIAM_CLOCK_SKEW_SECONDS", 10**9, raising=False)
     with pytest.raises(ValueError, match="clock_skew_seconds"):
         AxiamAuthMiddleware(_sync_get_response)
+
+
+# --- §13.4 observation 5: the skew ceiling matches the recommendation -------
+
+
+def test_skew_ceiling_equals_the_recommended_leeway() -> None:
+    """§13.4 observation 5. 300s satisfied rule 7 — it was named and bounded —
+    but it was 5x the RECOMMENDED leeway and 5x what every sibling SDK fixes its
+    value at, so an operator could widen the acceptance window on an expired
+    token to five minutes and still be "conformant". The ceiling now equals the
+    recommendation."""
+    assert MAX_CLOCK_SKEW_SECONDS == 60
+    assert MAX_CLOCK_SKEW_SECONDS == DEFAULT_CLOCK_SKEW_SECONDS
+
+
+def test_the_old_ceiling_is_now_refused() -> None:
+    """The specific value the observation objected to must no longer construct."""
+    with pytest.raises(ValueError, match="clock_skew_seconds"):
+        JwksVerifier("https://axiam.example.test", clock_skew_seconds=300)
+
+
+# --- §13.4 observation 6: slug-vs-UUID comparand diagnostic ----------------
+#
+# AXIAM tokens carry the tenant UUID in `tenant_id`, but this SDK's client is
+# commonly configured with a tenant slug. A guard handed that slug rejects 100%
+# of traffic — fail-closed and safe, but it presents as "every token is invalid"
+# with nothing pointing at the cause.
+
+_UUID_TENANT = "11111111-2222-3333-4444-555555555555"
+
+
+def test_slug_comparand_is_diagnosed_with_an_actionable_message(
+    keypair, valid_claims, caplog
+) -> None:
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "tenant_id": _UUID_TENANT})
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(AuthError):
+            verifier.verify_access_token(token, expected_tenant_id="acme-tenant")
+
+    warnings = [r for r in caplog.records if "acme-tenant" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "not a UUID" in warnings[0].getMessage()
+
+
+def test_the_diagnostic_is_emitted_once_per_verifier(keypair, valid_claims, caplog) -> None:
+    """It must be a configuration diagnostic, not a log-flood lever an attacker
+    can drive by replaying bad tokens."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "tenant_id": _UUID_TENANT})
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            with pytest.raises(AuthError):
+                verifier.verify_access_token(token, expected_tenant_id="acme-tenant")
+
+    assert len([r for r in caplog.records if "acme-tenant" in r.getMessage()]) == 1
+
+
+def test_a_genuine_cross_tenant_rejection_stays_silent(keypair, valid_claims, caplog) -> None:
+    """UUID vs UUID is a real cross-tenant rejection and must never be reported
+    as a configuration error."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "tenant_id": _UUID_TENANT})
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(AuthError):
+            verifier.verify_access_token(
+                token, expected_tenant_id="99999999-8888-7777-6666-555555555555"
+            )
+
+    assert [r for r in caplog.records if "not a UUID" in r.getMessage()] == []
+
+
+def test_the_diagnostic_does_not_change_the_verification_outcome(
+    keypair, valid_claims, caplog
+) -> None:
+    """It only ever explains a failure — a correctly-configured guard still
+    accepts, and still says nothing."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "tenant_id": _UUID_TENANT})
+
+    with caplog.at_level(logging.WARNING):
+        claims = verifier.verify_access_token(token, expected_tenant_id=_UUID_TENANT)
+
+    assert claims["tenant_id"] == _UUID_TENANT
+    assert [r for r in caplog.records if "not a UUID" in r.getMessage()] == []

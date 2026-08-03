@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed — BREAKING (configuration)
+
+- **`MAX_CLOCK_SKEW_SECONDS` lowered 300 → 60 (§13.4 observation 5).** The old
+  ceiling satisfied CONTRACT.md §10.1 rule 7 — it was named and bounded — but it
+  was 5× the RECOMMENDED leeway and 5× what every sibling SDK fixes its value
+  at, so an operator could widen the acceptance window on an expired token to
+  five minutes and still be "conformant". The ceiling now equals the
+  recommendation, matching the C++ SDK.
+
+  `JwksVerifier(..., clock_skew_seconds=...)` above 60 now raises `ValueError`
+  at construction instead of being accepted. The default (60) is unchanged, so
+  this affects only deployments that explicitly widened the leeway.
+
+### Fixed
+
+- **Slug-vs-UUID tenant comparand now diagnoses itself (§13.4 observation 6).**
+  AXIAM access tokens carry the tenant **UUID** in `tenant_id`, but this SDK's
+  client is commonly configured with a tenant **slug**. A guard handed that slug
+  rejects 100% of traffic — fail-closed and safe, but it presents as "every token
+  is invalid" with nothing pointing at the cause. `JwksVerifier` now logs a
+  single `WARNING` naming the real problem. It fires **once per verifier**, only
+  when the configured value is not UUID-shaped while the claim is, and strictly
+  *after* the rejection is decided — so it cannot be used as a log-flood lever
+  and does not alter the verification outcome. A genuine cross-tenant rejection
+  (UUID vs UUID) stays silent.
+
 ## [1.0.0-alpha23] - 2026-08-02
 
 ### Changed
