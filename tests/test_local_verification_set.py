@@ -739,3 +739,55 @@ def test_the_diagnostic_does_not_change_the_verification_outcome(
 
     assert claims["tenant_id"] == _UUID_TENANT
     assert [r for r in caplog.records if "not a UUID" in r.getMessage()] == []
+
+
+# --- CONTRACT.md §10.1 rule 8: the decision is about the caller token --------
+#
+# Rules 1-7 ask whether the token is good; rule 8 asks whether it is the token
+# the decision is about. SEC-085 satisfied all seven and was still an
+# authentication bypass, because the PHP guard routed a failed verification into
+# a second, successful one against the application's own session.
+#
+# This SDK is structurally safe from that shape: the guard is handed a verifier
+# and a configured tenant, never a logged-in client session, so there is no
+# second credential in scope to substitute. These tests pin that property rather
+# than assume it — the guardrail §15.3.1 asks for.
+
+
+def test_the_guard_verifies_the_caller_token_and_no_other(keypair, valid_claims) -> None:
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+
+    expired = _sign(private_key, {**valid_claims, "exp": time.time() - 3600})
+    healthy = _sign(private_key, valid_claims)
+
+    seen: list[str] = []
+    real_verify = verifier.verify_access_token
+
+    def recording(token: str, *, expected_tenant_id: str | None):
+        seen.append(token)
+        return real_verify(token, expected_tenant_id=expected_tenant_id)
+
+    verifier.verify_access_token = recording  # type: ignore[method-assign]
+
+    with pytest.raises(AuthError):
+        verifier.verify_access_token(expired, expected_tenant_id=_TENANT)
+
+    assert seen == [expired]
+    assert healthy not in seen, (
+        "a failed verification must not be followed by one against another credential"
+    )
+
+
+def test_the_guard_signature_exposes_no_second_credential() -> None:
+    """The shape of SEC-085: PHP's guard reached a stateful session through the
+    client it held. Keep the guard's parameters free of anything like that."""
+    import inspect as _inspect
+
+    from axiam_sdk.fastapi import _authenticate
+
+    params = set(_inspect.signature(_authenticate).parameters)
+    assert params == {"request", "verifier", "configured_tenant"}, (
+        "the guard must take only the request, a verifier and the configured "
+        f"tenant; a client/session parameter would make rule 8 violable: {params}"
+    )

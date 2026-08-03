@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CONTRACT §10.1 rule-8 regression tests (§15.3.1).** Rule 8 — "the decision is
+  about the caller's credential and no other" — was enforced only by inspection
+  here. SEC-085 satisfied rules 1–7 and was still an authentication bypass, so
+  the absence of a guardrail is the condition that let it survive three reviews.
+
+  This SDK is structurally safe from that shape: `_authenticate` is handed a
+  verifier and a configured tenant, **never a logged-in client session**, so
+  there is no second credential in scope to substitute. The new tests pin that
+  property rather than assume it — one asserts a failed verification is not
+  followed by one against another token, the other asserts the guard's signature
+  is exactly `(request, verifier, configured_tenant)` and would fail the moment a
+  client or session parameter were threaded in, which is how the PHP bug became
+  reachable.
+
 ### Changed — BREAKING (configuration)
 
 - **`MAX_CLOCK_SKEW_SECONDS` lowered 300 → 60 (§13.4 observation 5).** The old
