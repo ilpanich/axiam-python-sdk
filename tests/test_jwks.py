@@ -108,7 +108,7 @@ def test_verify_valid_eddsa_token_succeeds(eddsa_keypair) -> None:
         private_key, "test-kid-1", {"sub": "user-1", "tenant_id": "tenant-1", "exp": 9999999999}
     )
 
-    claims = verifier.verify(token)
+    claims = verifier.verify_signature_only_unchecked(token)
 
     assert claims["sub"] == "user-1"
     assert claims["tenant_id"] == "tenant-1"
@@ -126,7 +126,7 @@ def test_verify_rejects_non_eddsa_alg_before_any_network_fetch(eddsa_keypair) ->
     )
 
     with pytest.raises(ValueError, match="only EdDSA is accepted"):
-        verifier.verify(hs256_token)
+        verifier.verify_signature_only_unchecked(hs256_token)
 
     assert endpoint.call_count == 0, "no JWKS network fetch should occur for a non-EdDSA alg"
 
@@ -147,7 +147,7 @@ def test_verify_rejects_none_alg_before_any_network_fetch(eddsa_keypair) -> None
     none_token = (header + b"." + payload + b".").decode("ascii")
 
     with pytest.raises(ValueError, match="only EdDSA is accepted"):
-        verifier.verify(none_token)
+        verifier.verify_signature_only_unchecked(none_token)
 
     assert endpoint.call_count == 0
 
@@ -162,7 +162,7 @@ def test_wrong_key_signature_is_rejected(eddsa_keypair) -> None:
     )
 
     with pytest.raises(jwt.InvalidSignatureError):
-        verifier.verify(forged_token)
+        verifier.verify_signature_only_unchecked(forged_token)
 
 
 def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
@@ -182,7 +182,7 @@ def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
     # retry also fails, so the wrapper's own forced-refetch-once path is what
     # we exercise below.
     with pytest.raises(jwt.PyJWKClientError):
-        verifier.verify(token)
+        verifier.verify_signature_only_unchecked(token)
     calls_after_first_attempt = endpoint.call_count
     assert calls_after_first_attempt >= 1
 
@@ -191,7 +191,7 @@ def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
     verifier._last_forced_refetch = None  # bypass the 60s rate limit for this test
     endpoint.jwk_dicts = [jwk_dict]
 
-    claims = verifier.verify(token)
+    claims = verifier.verify_signature_only_unchecked(token)
     assert claims["sub"] == "user-1"
     # Exactly one additional forced refetch should have occurred for the
     # successful retry (not an unbounded retry loop).
@@ -210,14 +210,14 @@ def test_empty_keyset_triggers_forced_refetch(eddsa_keypair) -> None:
     )
 
     with pytest.raises(PyJWKSetError):
-        verifier.verify(token)
+        verifier.verify_signature_only_unchecked(token)
     calls_after_first_attempt = endpoint.call_count
     assert calls_after_first_attempt >= 1
 
     verifier._last_forced_refetch = None  # bypass the 60s rate limit for this test
     endpoint.jwk_dicts = [jwk_dict]
 
-    claims = verifier.verify(token)
+    claims = verifier.verify_signature_only_unchecked(token)
     assert claims["sub"] == "user-1"
     assert endpoint.call_count == calls_after_first_attempt + 1
 
@@ -241,7 +241,7 @@ def test_concurrent_cache_miss_burst_triggers_exactly_one_fetch(eddsa_keypair) -
     def worker(index: int) -> None:
         barrier.wait()
         try:
-            results[index] = verifier.verify(token)
+            results[index] = verifier.verify_signature_only_unchecked(token)
         except BaseException as exc:  # noqa: BLE001 - captured for the main thread's assertions
             results[index] = exc
 

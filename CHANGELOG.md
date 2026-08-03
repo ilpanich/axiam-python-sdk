@@ -32,6 +32,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Local token verification now applies the complete CONTRACT.md §10.1
+  minimum local-verification set.** Both §10 guards — the FastAPI
+  `Depends(require_authenticated_user)` dependency (and the §11
+  `require_access`/`require_role` helpers that compose with it) and the Django
+  `AxiamAuthMiddleware` — route through a single new entry point,
+  `JwksVerifier.verify_access_token(token, expected_tenant_id=...)`. This
+  **tightens acceptance**; tokens the AXIAM server mints are unaffected (they
+  always carry `exp` and never a future `nbf`), but a guard fed tokens from
+  another signer sharing the organization-wide JWKS may start rejecting what
+  it previously accepted. That is the intent.
+
+  What changed in behaviour:
+
+  - **`exp` is now REQUIRED (§10.1 rule 2).** Previously the guards checked
+    `exp` only *if present*, so a signature-valid token carrying **no** `exp`
+    — a permanent credential — was accepted. This is the `SEC-080` defect and
+    it was not closed by the JWT library: PyJWT's `verify_exp` default only
+    fires when the claim is present (its own `Options` docstring says so), so
+    `jwt.decode` accepts a no-`exp` token. `exp` is now in an explicit
+    `require` list. An `exp` of the wrong JSON type is also rejected,
+    including a numeric *string* such as `"9999999999"`, which PyJWT silently
+    coerces with `int()`.
+  - **`nbf` is now honoured explicitly (§10.1 rule 3).** PyJWT enforced this
+    by default already, but implicitly and untested; it is now pinned by
+    tests and covered by the documented clock skew.
+  - **Absent `tenant_id`, or no configured tenant, now fails closed
+    (§10.1 rule 4)**, and a non-string `tenant_id` is rejected rather than
+    compared.
+  - **`iss` and `aud` are checked when configured (§10.1 rules 5-6).** Both
+    are new, **optional, and unset by default** — no issuer or audience is
+    ever assumed or hardcoded, so an existing deployment that configures
+    neither sees no change from these two rules. Configure them via the new
+    `JwksVerifier(expected_issuer=..., expected_audience=...)` keyword
+    arguments, or, for Django, the new `AXIAM_EXPECTED_ISSUER` /
+    `AXIAM_EXPECTED_AUDIENCE` settings. `RECOMMENDED_RESOURCE_SERVER_AUDIENCE`
+    (`"axiam:user"`) is exported for guards fronting a user-facing resource
+    server.
+  - **Clock skew is now a named, bounded constant (§10.1 rule 7).** Rules 2
+    and 3 allow `DEFAULT_CLOCK_SKEW_SECONDS` (60 s, the RECOMMENDED value)
+    of leeway, overridable via `clock_skew_seconds` / Django's
+    `AXIAM_CLOCK_SKEW_SECONDS` but hard-bounded by `MAX_CLOCK_SKEW_SECONDS`
+    (300 s) — a value outside that range raises `ValueError` at construction
+    rather than silently widening acceptance. Previously there was no leeway
+    at all, so a token within 60 s of expiry that used to be rejected on a
+    skewed clock is now accepted.
+
+- **`JwksVerifier.verify()` has been renamed to
+  `JwksVerifier.verify_signature_only_unchecked()`** (source-breaking for
+  anyone who called it directly). The method is unchanged: it verifies the
+  EdDSA signature and *nothing else*. §10.1 permits such a raw primitive but
+  requires that its name make the omission obvious at the call site and that
+  it not be the documented guard entry point — `verify_access_token` is now
+  that entry point. Callers doing their own policy should switch to the new
+  name; callers who expected `verify()` to be a guard were relying on a
+  behaviour it never had and should switch to `verify_access_token`.
+
 ### Added
 
 - Webhook signature verification (CONTRACT.md §13, T-145, contract 1.7):

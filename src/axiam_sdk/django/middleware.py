@@ -10,16 +10,27 @@ This module is imported ONLY as ``axiam_sdk.django.middleware`` (never from
 the top-level ``axiam_sdk/__init__.py``), so pure-REST/gRPC/AMQP consumers
 of ``axiam-sdk`` are never forced to install ``django``.
 
-Security-critical invariant — cross-tenant token replay defense (T-19-19):
-the AXIAM JWKS is organization-wide, not tenant-scoped, so a token that is
-signature-valid may still belong to a *different* tenant. ``_authenticate``
-enforces ``claims["tenant_id"] == configured_tenant`` BEFORE any claim is
-trusted further — mirrors ``the Go SDK's middleware/nethttp.go`` lines 78-95.
+Security-critical invariant — the CONTRACT.md §10.1 minimum local-verification
+set: this middleware turns a token into an identity without asking the server,
+so it MUST apply every §10.1 rule, and it does so through the single
+:meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` entry point —
+EdDSA-pinned signature before key lookup, **required** numeric ``exp``, ``nbf``
+when present, **required** ``tenant_id`` asserted against the configured
+tenant, and ``iss``/``aud`` when configured with an expected value, all under
+a bounded, named clock skew. The signature-only primitive
+(``verify_signature_only_unchecked``) is deliberately never called here.
 
-Security-critical invariant — expiry (T-19-20): ``JwksVerifier.verify()``
-checks the signature only, not ``exp`` (documented on that class).
-``_authenticate`` independently rejects an expired-but-signature-valid
-token.
+Security-critical invariant — cross-tenant token replay defense (T-19-19,
+§10.1 rule 4): the AXIAM JWKS is organization-wide, not tenant-scoped, so a
+token that is signature-valid may still belong to a *different* tenant.
+``tenant_id`` is required and asserted against ``AXIAM_TENANT_SLUG`` before
+any claim is trusted further — mirrors ``the Go SDK's middleware/nethttp.go``
+lines 78-95.
+
+Security-critical invariant — expiry (T-19-20, §10.1 rule 2): ``exp`` is
+REQUIRED. A token carrying no ``exp`` at all is a permanent credential and is
+rejected, not treated as "no expiry constraint" (the SEC-080 defect); so is a
+non-numeric ``exp``.
 
 Security-critical invariant — no token leakage (T-19-21): no raw token
 value is ever included in any response body.
@@ -41,7 +52,6 @@ applied to the Spring integration.
 from __future__ import annotations
 
 import hmac
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,7 +59,7 @@ from asgiref.sync import iscoroutinefunction, markcoroutinefunction
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
-from axiam_sdk._jwks import JwksVerifier
+from axiam_sdk._jwks import DEFAULT_CLOCK_SKEW_SECONDS, JwksVerifier
 
 #: Standardized 401 JSON error body shape (CONTRACT.md §10), no raw token
 #: value ever included — mirrors nethttp.go's errorBody{Error, Message}.
@@ -201,6 +211,19 @@ class AxiamAuthMiddleware:
         :class:`~axiam_sdk._jwks.JwksVerifier`).
       - ``AXIAM_TENANT_SLUG`` — the configured tenant this deployment serves;
         enforced against every token's ``tenant_id`` claim (T-19-19).
+      - ``AXIAM_EXPECTED_ISSUER`` — *optional*, unset by default. When set,
+        every token's ``iss`` claim must equal it (CONTRACT.md §10.1 rule 5,
+        conditional: no configuration means no check). Never defaulted to a
+        guessed issuer.
+      - ``AXIAM_EXPECTED_AUDIENCE`` — *optional*, unset by default. When set,
+        every token's ``aud`` claim must contain it (§10.1 rule 6). A
+        user-facing resource server should set it to
+        ``axiam_sdk._jwks.RECOMMENDED_RESOURCE_SERVER_AUDIENCE``
+        (``"axiam:user"``).
+      - ``AXIAM_CLOCK_SKEW_SECONDS`` — *optional*, defaults to the
+        RECOMMENDED :data:`~axiam_sdk._jwks.DEFAULT_CLOCK_SKEW_SECONDS`
+        (60 s) and bounded by
+        :data:`~axiam_sdk._jwks.MAX_CLOCK_SKEW_SECONDS` (§10.1 rule 7).
 
     Declares ``sync_capable``/``async_capable`` per Django's "Marking
     middleware as async-capable" contract, so it runs correctly whether
@@ -223,7 +246,9 @@ class AxiamAuthMiddleware:
 
         Raises:
             ValueError: if ``settings.AXIAM_JWKS_BASE_URL`` or
-                ``settings.AXIAM_TENANT_SLUG`` is not configured.
+                ``settings.AXIAM_TENANT_SLUG`` is not configured, or if
+                ``settings.AXIAM_CLOCK_SKEW_SECONDS`` is outside the bound
+                CONTRACT.md §10.1 rule 7 places on it.
         """
         self.get_response = get_response
         if iscoroutinefunction(self.get_response):
@@ -239,7 +264,18 @@ class AxiamAuthMiddleware:
             raise ValueError(
                 "AxiamAuthMiddleware requires settings.AXIAM_TENANT_SLUG to be configured"
             )
-        self._verifier = JwksVerifier(base_url)
+        # CONTRACT.md §10.1 rules 5-7: iss/aud are CONDITIONAL — optional,
+        # defaulting to unset, and never given a guessed default. The skew
+        # defaults to the RECOMMENDED named constant and is bounded by
+        # JwksVerifier itself.
+        self._verifier = JwksVerifier(
+            base_url,
+            expected_issuer=getattr(settings, "AXIAM_EXPECTED_ISSUER", None),
+            expected_audience=getattr(settings, "AXIAM_EXPECTED_AUDIENCE", None),
+            clock_skew_seconds=getattr(
+                settings, "AXIAM_CLOCK_SKEW_SECONDS", DEFAULT_CLOCK_SKEW_SECONDS
+            ),
+        )
 
     def __call__(self, request: HttpRequest) -> Any:
         """Dispatch to the sync or async call path depending on whether the
@@ -269,11 +305,13 @@ class AxiamAuthMiddleware:
 
         Extracts the credential (Bearer header, else ``axiam_access``
         cookie); for a cookie-sourced credential on a state-changing method,
-        enforces the CSRF double-submit check (§3) first. Verifies the
-        token's signature (:class:`~axiam_sdk._jwks.JwksVerifier`,
-        signature-only), then independently checks ``exp`` (T-19-20) and
-        that ``tenant_id`` matches the configured tenant (T-19-19,
-        cross-tenant replay defense) before attaching ``request.axiam_user``.
+        enforces the CSRF double-submit check (§3) first. Then applies the
+        COMPLETE CONTRACT.md §10.1 minimum local-verification set via
+        :meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` — signature
+        (EdDSA-pinned before key lookup), required numeric ``exp``, ``nbf``
+        when present, required ``tenant_id`` matched against the configured
+        tenant (T-19-19/T-19-20), and ``iss``/``aud`` when configured — before
+        attaching ``request.axiam_user``.
 
         Returns:
             ``None`` on success (``request.axiam_user`` has been set), or a
@@ -291,27 +329,16 @@ class AxiamAuthMiddleware:
         token = credential.value
 
         try:
-            claims = self._verifier.verify(token)
-            # SDK-11: coerce ``exp`` to float INSIDE the verify try/except so a
-            # signature-valid token carrying a non-numeric ``exp`` (e.g. a
-            # string) degrades to the standardized invalid-token 401 rather
-            # than a ValueError/TypeError propagating as an unhandled 500.
-            # Preserves the "malformed token -> 401" invariant (CONTRACT.md §10).
-            exp = claims.get("exp")
-            exp_ts = float(exp) if exp is not None else None
+            # CONTRACT.md §10.1: a single call applying every rule. Any rule
+            # violation — including a token with no ``exp`` at all, which the
+            # previous ``exp``-if-present check accepted (SEC-080) — degrades
+            # to the standardized 401 below, never a 500 and never a silent
+            # accept.
+            claims = self._verifier.verify_access_token(
+                token, expected_tenant_id=self._configured_tenant
+            )
         except Exception:
             return _error_response("invalid or expired token")
-
-        if exp_ts is not None and time.time() >= exp_ts:
-            return _error_response("invalid or expired token")
-
-        # Cross-tenant replay defense (T-19-19): the JWKS is organization-wide,
-        # not tenant-scoped, so a signature-valid token may belong to a
-        # different tenant. MUST be enforced before any claim is trusted
-        # further (mirrors nethttp.go lines 78-95).
-        tenant_id = claims.get("tenant_id")
-        if not tenant_id or tenant_id != self._configured_tenant:
-            return _error_response("token tenant_id does not match the configured tenant")
 
         # WR-02: a malformed-but-signed claim shape (e.g. scope: null) must
         # degrade to the standardized 401, never an unhandled 500.

@@ -21,7 +21,8 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS).
+This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS and the §10.1
+minimum local-verification set).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -180,6 +181,42 @@ Every delivery's HMAC-SHA256 signature is verified BEFORE the handler is
 ever invoked — an unverified message never reaches your code. See
 [`examples/amqp_consumer.py`](./examples/amqp_consumer.py).
 
+### Local token verification (§10.1)
+
+Both framework guards below verify the access token **locally** and therefore
+apply the complete CONTRACT.md §10.1 minimum local-verification set, through
+the single entry point `JwksVerifier.verify_access_token(...)`:
+
+| # | Claim | What this SDK does |
+|---|-------|--------------------|
+| 1 | signature | `alg` pinned to `EdDSA` and checked **before** any JWKS lookup, so `alg: none` and HS-family confusion are rejected without ever consulting a key |
+| 2 | `exp` | **Required** and must be a JSON number — a token with no `exp` is a permanent credential and is rejected, and a numeric *string* `exp` (which PyJWT would coerce) is rejected too |
+| 3 | `nbf` | Honoured when present; absent is valid |
+| 4 | `tenant_id` | **Required** and asserted against the configured tenant; no configured tenant fails closed |
+| 5 | `iss` | Checked **only** when `expected_issuer` is configured (optional, unset by default — no issuer is ever assumed) |
+| 6 | `aud` | Checked **only** when `expected_audience` is configured; a user-facing resource server should pass `RECOMMENDED_RESOURCE_SERVER_AUDIENCE` (`"axiam:user"`) |
+| 7 | clock skew | `DEFAULT_CLOCK_SKEW_SECONDS` (60 s), bounded by `MAX_CLOCK_SKEW_SECONDS` — never settable to an unbounded value |
+
+```python
+from axiam_sdk._jwks import (
+    DEFAULT_CLOCK_SKEW_SECONDS,
+    RECOMMENDED_RESOURCE_SERVER_AUDIENCE,
+    JwksVerifier,
+)
+
+verifier = JwksVerifier(
+    base_url,
+    expected_issuer="https://axiam.example.com",  # optional
+    expected_audience=RECOMMENDED_RESOURCE_SERVER_AUDIENCE,  # optional
+    clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,  # bounded
+)
+```
+
+`JwksVerifier.verify_signature_only_unchecked(...)` is the raw signature-only
+primitive §10.1 permits for integrators implementing their own policy. Its
+name states the omission: it checks **no** claims at all, and the SDK's own
+guards never call it.
+
 ### FastAPI dependency (§10) — `axiam-sdk[fastapi]`
 
 ```python
@@ -206,6 +243,11 @@ See [`examples/fastapi_dependency.py`](./examples/fastapi_dependency.py).
 MIDDLEWARE = [..., "axiam_sdk.django.middleware.AxiamAuthMiddleware"]
 AXIAM_JWKS_BASE_URL = "https://localhost:8443"
 AXIAM_TENANT_SLUG = "acme"
+
+# Optional §10.1 rule 5-7 settings; all default to unset / the recommended value.
+AXIAM_EXPECTED_ISSUER = "https://localhost:8443"  # unset -> iss not checked
+AXIAM_EXPECTED_AUDIENCE = "axiam:user"  # unset -> aud not checked
+AXIAM_CLOCK_SKEW_SECONDS = 60  # bounded by MAX_CLOCK_SKEW_SECONDS
 ```
 
 ```python
