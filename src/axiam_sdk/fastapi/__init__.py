@@ -11,15 +11,29 @@ deliberately no ASGI-middleware variant. It is imported ONLY as
 see Anti-Pattern/T-19-22) so that pure-REST/gRPC/AMQP consumers of
 ``axiam-sdk`` are never forced to install ``fastapi``.
 
-Security-critical invariant — cross-tenant token replay defense (T-19-19):
-the AXIAM JWKS is organization-wide, not tenant-scoped, so a token that is
-signature-valid may still belong to a *different* tenant. This dependency
-enforces ``claims["tenant_id"] == configured_tenant`` BEFORE any claim is
-trusted further — mirrors ``the Go SDK's middleware/nethttp.go`` lines 78-95.
+Security-critical invariant — the CONTRACT.md §10.1 minimum local-verification
+set: this dependency turns a token into an identity without asking the server,
+so it MUST apply every §10.1 rule, and it does so through the single
+:meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` entry point —
+EdDSA-pinned signature before key lookup, **required** numeric ``exp``, ``nbf``
+when present, **required** ``tenant_id`` asserted against the configured
+tenant, and ``iss``/``aud`` when the verifier is configured with an expected
+value, all under a bounded, named clock skew. The signature-only primitive
+(``verify_signature_only_unchecked``) is deliberately never called here: a
+guard that checks the signature and stops is not a weaker guard, it is not a
+guard.
 
-Security-critical invariant — expiry (T-19-20): ``JwksVerifier.verify()``
-checks the signature only, not ``exp`` (documented on that class). This
-dependency independently rejects an expired-but-signature-valid token.
+Security-critical invariant — cross-tenant token replay defense (T-19-19,
+§10.1 rule 4): the AXIAM JWKS is organization-wide, not tenant-scoped, so a
+token that is signature-valid may still belong to a *different* tenant.
+``tenant_id`` is required and asserted against ``configured_tenant`` before
+any claim is trusted further — mirrors ``the Go SDK's middleware/nethttp.go``
+lines 78-95.
+
+Security-critical invariant — expiry (T-19-20, §10.1 rule 2): ``exp`` is
+REQUIRED. A token carrying no ``exp`` at all is a permanent credential and is
+rejected, not treated as "no expiry constraint" (the SEC-080 defect); so is a
+non-numeric ``exp``.
 
 Security-critical invariant — no token leakage (T-19-21): no raw token
 value is ever included in any ``HTTPException`` detail.
@@ -64,7 +78,6 @@ verified identity's ``roles`` (§11.2.9) — it is NOT a substitute for
 from __future__ import annotations
 
 import hmac
-import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -170,7 +183,7 @@ def _assert_csrf_valid(request: Request) -> None:
 async def _authenticate(
     request: Request, verifier: JwksVerifier, configured_tenant: str
 ) -> AxiamUser:
-    """The shared extract/CSRF/verify/exp/tenant authentication pipeline
+    """The shared extract/CSRF/§10.1-verify authentication pipeline
     (CONTRACT.md §10) underlying both :func:`require_authenticated_user` and
     :func:`require_access` (CONTRACT.md §11.2.1: the declarative
     authorization helper MUST run strictly after, and never duplicate or
@@ -181,11 +194,14 @@ async def _authenticate(
        state-changing (not GET/HEAD/OPTIONS), enforces the CSRF
        double-submit check (CONTRACT.md §3) before verification proceeds —
        raises ``HTTPException`` 403 on failure.
-    3. Verifies it locally via ``verifier.verify()`` (signature + ``sub`` only).
-    4. Independently checks ``exp`` — the verifier does not (T-19-20).
-    5. Enforces ``claims["tenant_id"] == configured_tenant`` BEFORE trusting
-       any claim further (cross-tenant replay defense, T-19-19).
-    6. Returns :class:`AxiamUser` on success; raises ``HTTPException`` 401 on
+    3. Applies the COMPLETE CONTRACT.md §10.1 minimum local-verification set
+       via ``verifier.verify_access_token(...)``: EdDSA-pinned signature
+       (before key lookup), required numeric ``exp``, ``nbf`` when present,
+       required ``tenant_id`` asserted against ``configured_tenant``, and
+       ``iss``/``aud`` when the verifier was configured with an expected
+       value — all under the verifier's bounded, named clock skew. The
+       signature-only primitive is never used here.
+    4. Returns :class:`AxiamUser` on success; raises ``HTTPException`` 401 on
        any authentication failure, never including the raw token value.
     """
     credential = _extract_token(request)
@@ -196,32 +212,18 @@ async def _authenticate(
     token = credential.value
 
     try:
-        claims = verifier.verify(token)
-        # SDK-11: coerce ``exp`` to float INSIDE the verify try/except so a
-        # signature-valid token carrying a non-numeric ``exp`` (e.g. a
-        # string) maps to the normal invalid-token -> 401 path rather than
-        # a ValueError/TypeError propagating as an unhandled 500. Preserves
-        # the "malformed token -> 401" invariant (CONTRACT.md §10).
-        exp = claims.get("exp")
-        exp_ts = float(exp) if exp is not None else None
+        # CONTRACT.md §10.1: a single call applying every rule. Any rule
+        # violation — including a token with no ``exp`` at all, which the
+        # previous ``exp``-if-present check accepted (SEC-080) — raises and
+        # maps to the standardized 401 below, never a 500 and never a
+        # silent accept.
+        claims = verifier.verify_access_token(token, expected_tenant_id=configured_tenant)
     except Exception as exc:
         raise HTTPException(
             status_code=_AUTH_FAILED_STATUS, detail="invalid or expired token"
         ) from exc
 
-    if exp_ts is not None and time.time() >= exp_ts:
-        raise HTTPException(status_code=_AUTH_FAILED_STATUS, detail="invalid or expired token")
-
-    # Cross-tenant replay defense (T-19-19): the JWKS is organization-wide,
-    # not tenant-scoped, so a signature-valid token may belong to a
-    # different tenant. MUST be enforced before any claim is trusted
-    # further (mirrors nethttp.go lines 78-95).
-    tenant_id = claims.get("tenant_id")
-    if not tenant_id or tenant_id != configured_tenant:
-        raise HTTPException(
-            status_code=_AUTH_FAILED_STATUS,
-            detail="token tenant_id does not match the configured tenant",
-        )
+    tenant_id = claims["tenant_id"]
 
     # WR-02: ``dict.get("scope", "")`` returns ``None`` (not ``""``) when
     # the claim is PRESENT with an explicit JSON ``null`` value, and
@@ -254,8 +256,18 @@ def require_authenticated_user(
         async def me(user: AxiamUser = Depends(require_authenticated_user(verifier, "acme"))):
             ...
 
+    CONTRACT.md §10.1 rules 5-7 are configured on the ``verifier``, not here,
+    so every guard built from the same verifier shares one policy::
+
+        verifier = JwksVerifier(
+            base_url,
+            expected_issuer="https://axiam.example.com",   # optional, unset by default
+            expected_audience=RECOMMENDED_RESOURCE_SERVER_AUDIENCE,  # optional
+            clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,  # bounded, named
+        )
+
     The returned dependency delegates to :func:`_authenticate` for the full
-    extract/CSRF/verify/exp/tenant pipeline — see that function's docstring
+    extract/CSRF/§10.1-verify pipeline — see that function's docstring
     for the exact steps. Returns :class:`AxiamUser` on success; raises
     ``HTTPException`` 401 on any authentication failure, never including the
     raw token value.
