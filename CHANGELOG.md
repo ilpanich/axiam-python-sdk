@@ -32,6 +32,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Webhook signature verification (CONTRACT.md §13, T-145, contract 1.7):
+  `axiam_sdk.webhook.verify_webhook(secret, signature_header, body, ...)`
+  verifies the `X-Axiam-Signature: t=<unix_seconds>,v1=<hex>` header AXIAM
+  sends on every webhook delivery — HMAC-SHA256 over
+  `"<timestamp>.<raw_body>"`, keyed by the webhook secret's raw UTF-8 bytes.
+  `body` MUST be the exact raw bytes off the wire (re-serializing parsed
+  JSON breaks the MAC — documented in the README with a Flask/FastAPI
+  example). Verification is constant-time (`hmac.compare_digest` over the
+  *decoded* MAC bytes, never a hex-string `==`) with a two-sided freshness
+  window (`abs(now - t) > tolerance` rejects both stale AND future-dated
+  timestamps, default 300s) and a `now` injection seam for tests. `secret`
+  accepts this SDK's §7 `Sensitive<T>` equivalent (`pydantic.SecretStr`) or
+  a plain `str`. A signature header with no `v1` field is always a
+  failure — never treated as "nothing to verify". On success returns a
+  frozen `WebhookEvent` (`event_type`/`delivery_id` passed through from the
+  caller-supplied `X-Axiam-Event`/`X-Axiam-Delivery` headers, since neither
+  is covered by the MAC); on any failure raises the typed
+  `WebhookVerifyError`, whose message never includes the expected/computed
+  signature or the secret. New public module `axiam_sdk.webhook`
+  (`verify_webhook`, `WebhookEvent`, `WebhookVerifyError`,
+  `DEFAULT_TOLERANCE_SECONDS`); no new runtime dependency. Vendored
+  CONTRACT.md re-synced to contract 1.7 (§13 added).
+
 ### Fixed
 
 - `oidc_refresh` single-flight coalescer (CONTRACT.md §9 rule 6, contract
