@@ -38,6 +38,8 @@ explicit ``require`` list plus a post-decode JSON-type assertion.
 
 from __future__ import annotations
 
+import logging
+import re
 import threading
 import time
 from typing import Any
@@ -48,6 +50,13 @@ from jwt.exceptions import MissingRequiredClaimError, PyJWTError
 from jwt.types import Options
 
 from axiam_sdk._errors import AuthError
+
+_LOGGER = logging.getLogger(__name__)
+
+#: Canonical 8-4-4-4-12 hex UUID shape. Shape only — no version/variant check.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
 
 # The AXIAM JWKS endpoint path — organization-wide, not tenant-scoped
 # (D-16). This is NOT a generic OIDC discovery-style `/.well-known/jwks.json`
@@ -73,7 +82,14 @@ DEFAULT_CLOCK_SKEW_SECONDS = 60
 #: ``clock_skew_seconds``. The leeway MUST NOT be configurable to an
 #: unbounded value, so anything above this (or below zero) is rejected at
 #: construction time rather than silently widening the acceptance window.
-MAX_CLOCK_SKEW_SECONDS = 300
+#:
+#: Lowered 300 -> 60 (§13.4 observation 5). 300s satisfied rule 7 — it was named
+#: and bounded — but it was 5x the recommended leeway and 5x what every sibling
+#: SDK fixes its value at, so an operator could widen the window on an expired
+#: token to five minutes and still be "conformant". The ceiling now equals the
+#: recommendation, matching the C++ SDK, which is the only other SDK that
+#: enforces a ceiling rather than fixing the value outright.
+MAX_CLOCK_SKEW_SECONDS = 60
 
 #: The audience a §10 guard in front of a user-facing resource server SHOULD
 #: expect (CONTRACT.md §10.1 rule 6). Exported for callers to pass as
@@ -151,6 +167,9 @@ class JwksVerifier:
         self._client = PyJWKClient(resolved_jwks_url, cache_jwk_set=True, lifespan=lifespan)
         self._last_forced_refetch: float | None = None
         self._refetch_lock = threading.Lock()
+        # §13.4 observation 6 — latches the slug-vs-UUID diagnostic to one
+        # emission, so a stream of bad tokens cannot turn it into a log flood.
+        self._slug_comparand_warned = False
 
     def verify_signature_only_unchecked(self, token: str) -> dict[str, Any]:
         """Verify ``token``'s EdDSA signature against the cached JWKS and
@@ -299,9 +318,48 @@ class JwksVerifier:
         # Rule 4, assertion half.
         tenant_id = claims.get("tenant_id")
         if not isinstance(tenant_id, str) or tenant_id != expected_tenant_id:
+            self._warn_once_if_comparand_looks_like_a_slug(tenant_id, expected_tenant_id)
             raise AuthError("token tenant_id does not match the configured tenant")
 
         return claims
+
+    def _warn_once_if_comparand_looks_like_a_slug(self, claimed: object, expected: str) -> None:
+        """Name the slug-vs-UUID misconfiguration explicitly (§13.4 observation 6).
+
+        AXIAM access tokens carry the tenant **UUID** in ``tenant_id``, but this
+        SDK's client is commonly configured with a tenant **slug**. A guard handed
+        that slug rejects 100% of traffic — fail-closed and safe, but it presents
+        as "every token is invalid" with nothing pointing at the cause, which is a
+        miserable thing to debug.
+
+        Deliberately:
+
+        * **once per verifier**, so it is a configuration diagnostic and not a
+          log-flood sink an attacker can drive with bad tokens;
+        * keyed on the **shape of the operator-configured value**, never on
+          anything the caller supplies, so it cannot be triggered on demand;
+        * emitted **after** the rejection is decided — it only ever explains a
+          failure, and the verification outcome is byte-for-byte unchanged.
+
+        A UUID-vs-UUID mismatch is a genuine cross-tenant rejection and stays
+        silent.
+        """
+        if self._slug_comparand_warned:
+            return
+        if not isinstance(claimed, str):
+            return
+        if not _UUID_RE.match(claimed) or _UUID_RE.match(expected):
+            return
+
+        self._slug_comparand_warned = True
+        _LOGGER.warning(
+            "AXIAM: the tenant this guard was configured with (%r) is not a UUID, but "
+            "access tokens carry the tenant UUID in their `tenant_id` claim, so this "
+            "guard will reject every request. Configure it with the tenant UUID, not "
+            "the slug. (CONTRACT.md §10.1 rule 4; logged once per verifier, and it "
+            "does not affect the rejection itself.)",
+            expected,
+        )
 
     @staticmethod
     def _assert_numeric_claim(claims: dict[str, Any], name: str, *, required: bool) -> None:
