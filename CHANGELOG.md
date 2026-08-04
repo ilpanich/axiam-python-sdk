@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha24] - 2026-08-04
+
+### Added
+
+- Apply the full CONTRACT §10.1 local-verification set
+- Add verify_webhook signature verification helper (CONTRACT.md §13, T-145)
+
+### Changed
+
+- Device (mTLS) tokens now carry aud=axiam:m2m (#31)
+- Service accounts can use login_client_credentials (#30)
+- Pin CONTRACT §10.1 rule 8 against regression (§15.3.1) (#29)
+- Bump pypa/gh-action-pypi-publish from 1.14.1 to 1.14.2
+
+### Fixed
+
+- Tighten the skew ceiling and diagnose the slug/UUID comparand (#27)
+
 ## [Unreleased]
 
 ### Added
