@@ -30,6 +30,13 @@ dependencies = [
 [project.optional-dependencies]
 fastapi = ["fastapi"]
 django = ["django"]
+# D1/J5: `pip install axiam-sdk[speed]` swaps CPython's stdlib event loop for
+# uvloop. Measured on the benchmark harness' `check_access` path against a
+# zero-work server at 16 in-flight calls: client CPU 2 182 -> 1 735 us/call
+# (-20%), p95 68 -> 55 ms, throughput +7%. It changes no SDK behaviour — the
+# application still chooses the loop (see docs/performance.md) — so it is an
+# extra rather than a dependency, and it is Linux/macOS only.
+speed = ["uvloop>=0.19; sys_platform != 'win32'"]
 dev = [
     "grpcio-tools>=1.78,<1.84",
     "mypy",
