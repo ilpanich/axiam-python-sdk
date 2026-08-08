@@ -16,28 +16,34 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
 from pydantic import SecretStr
 
-from axiam_sdk._errors import AuthError, error_from_http_status
+from axiam_sdk._errors import AuthError, error_from_http_status, error_from_oauth2_response
 from axiam_sdk._models import (
     AccessCheck,
     AccessResult,
     AuthorizationRequest,
     BatchCheckResult,
+    DeviceAuthorization,
+    ExchangedToken,
     IntrospectionResult,
     LoginResult,
     OidcConfiguration,
     OidcTokenSet,
     SsoCompleteResult,
     SsoStartResult,
+    VerifiedLogoutToken,
 )
 from axiam_sdk._oidc import (
     DISCOVERY_PATH,
     SSO_CALLBACK_PATH,
     SSO_START_PATH,
+    PollSchedule,
     _OidcMixin,
 )
 from axiam_sdk._session import _Session
@@ -724,6 +730,237 @@ class AxiamClient(_AxiamClientBase):
         response = self._session._send_sync(request)
         # No nonce: rule 6 does not apply to this grant.
         return self._handle_token_response(response, config, None)
+
+    def device_authorize(
+        self,
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> DeviceAuthorization:
+        """``POST /oauth2/device_authorization`` (CONTRACT.md §14.1) — start
+        the device grant and obtain the code pair.
+
+        **Unauthenticated by design.** A device that cannot show a browser
+        also cannot hold a client secret, so this never sends
+        ``client_secret`` and never refuses a client built without one.
+
+        Raises:
+            AuthError: when the discovery document advertises no
+                ``device_authorization_endpoint``.
+        """
+        config = configuration or self.oidc_discover()
+        form = self._device_authorize_form(scope=scope)
+        url = self._device_authorization_url(config, tenant_id)
+        request = self._session.sync_client.build_request("POST", url, data=form)
+        response = self._session._send_sync(request)
+        if response.status_code != httpx.codes.OK:
+            raise error_from_oauth2_response(
+                response.status_code, response, "device authorization request failed"
+            )
+        return self._build_device_authorization(response.json())
+
+    def device_poll(
+        self,
+        *,
+        device_code: SecretStr | str,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with the device-code grant (§14.1) — **one**
+        poll attempt.
+
+        The raw single call, so an application driving its own loop (a UI
+        rendering a countdown, say) can. The five RFC 8628 §3.5 answers
+        surface as ``OAuthProtocolError`` — ``authorization_pending`` and
+        ``slow_down`` included — so a hand-rolled loop sees exactly what
+        :meth:`device_login` sees. Most callers want :meth:`device_login`.
+        """
+        config = configuration or self.oidc_discover()
+        form = self._device_poll_form(device_code=device_code)
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.sync_client.build_request("POST", url, data=form)
+        response = self._session._send_sync(request)
+        # No nonce: the device grant has no authorization request to carry one.
+        return self._handle_token_response(response, config, None)
+
+    def device_login(
+        self,
+        on_user_code: Callable[[DeviceAuthorization], None],
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """The composed §14.3 helper: start the grant, hand the caller the
+        user code, poll to completion.
+
+        ``on_user_code`` is called with the :class:`DeviceAuthorization`
+        **before the first poll** — §14.3 rule 2 requires the caller to have
+        had the chance to display the code before polling begins. The SDK
+        never prints it: what the device does with it (screen, QR code, e-ink
+        panel) is the application's decision.
+
+        Per §14.3 rule 4 (contract 1.7 errata) this SDK **returns** the token
+        set rather than adopting it, matching its ``login_client_credentials``
+        posture.
+
+        Polling follows §14.2: the interval comes from the response;
+        ``slow_down`` adds 5 s **permanently**; ``authorization_pending``
+        loops; ``access_denied`` and ``expired_token`` raise distinct errors;
+        polling stops at ``expires_in`` even if the server has not yet said
+        ``expired_token``. A 5xx or transport failure mid-poll is **not**
+        terminal (rule 6) — the loop absorbs it and tries again, bounded by
+        the same deadline, because a server restart must not lose a grant the
+        user has already approved.
+        """
+        config = configuration or self.oidc_discover()
+        authorization = self.device_authorize(
+            scope=scope, tenant_id=tenant_id, configuration=config
+        )
+
+        # §14.3 rule 2 — before any polling.
+        on_user_code(authorization)
+
+        schedule = PollSchedule(authorization.interval, authorization.expires_in)
+        while True:
+            if not schedule.tick():
+                raise self._device_expired_error()
+            time.sleep(schedule.interval_seconds)
+            try:
+                return self.device_poll(
+                    device_code=authorization.device_code,
+                    tenant_id=tenant_id,
+                    configuration=config,
+                )
+            except Exception as exc:  # noqa: BLE001 - classified by §14.2
+                outcome = self._device_poll_outcome(exc)
+                if outcome == "pending" or outcome == "retry":
+                    continue
+                if outcome == "slow_down":
+                    schedule.slow_down()
+                    continue
+                raise
+
+    def token_exchange(
+        self,
+        *,
+        subject_token: SecretStr | str,
+        actor_token: SecretStr | str | None = None,
+        scopes: Sequence[str] | None = None,
+        audience: str | None = None,
+        resource: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> ExchangedToken:
+        """``POST /oauth2/token`` with the RFC 8693 grant (CONTRACT.md §15.1)
+        — exchange a token for a **narrower** one.
+
+        What this method deliberately does *not* do:
+
+        * **No default ``actor_token``** (§15.2 rule 1). Passing none asks for
+          *impersonation*; the SDK will not quietly reuse the client's own
+          session token as the actor and turn that into a delegation.
+        * **No retry or downgrade on ``unauthorized_client``** (rule 2) — a
+          registration fact an operator must fix.
+        * **No auto-narrowing on ``invalid_scope``** (rule 3). The server
+          refuses instead of silently narrowing precisely so the caller finds
+          out here.
+        * **No adoption** (rule 5). The returned token is handed onward in one
+          outbound call; adopting it would silently re-privilege every
+          subsequent call this client makes.
+
+        A cross-tenant subject token answers ``invalid_grant``, identically to
+        an expired one. The SDK does not try to tell them apart (§15.3): the
+        server collapses them because distinguishing them is a
+        tenant-enumeration signal.
+
+        Raises:
+            AuthError: when no ``client_secret`` was configured — client-side,
+                with no wire call.
+        """
+        config = configuration or self.oidc_discover()
+        form = self._token_exchange_form(
+            subject_token=subject_token,
+            actor_token=actor_token,
+            scopes=scopes,
+            audience=audience,
+            resource=resource,
+        )
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.sync_client.build_request("POST", url, data=form)
+        response = self._session._send_sync(request)
+        return self._handle_exchange_response(response)
+
+    def logout_url(
+        self,
+        *,
+        id_token: SecretStr | str,
+        post_logout_redirect_uri: str | None = None,
+        state: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> str:
+        """Build the RP-initiated logout URL to redirect the user agent to
+        (CONTRACT.md §12.7.2).
+
+        Performs **no network I/O** beyond the discovery fetch the SDK caches
+        anyway, and does **not** clear this client's own session: whether the
+        local session ends is the application's decision — a backend holding a
+        service-account session must not lose it because a *user* logged out.
+
+        ``end_session_endpoint`` is read from discovery and never synthesised
+        from the issuer (rule 1). ``post_logout_redirect_uri`` is passed
+        through unvalidated against any local list (rule 3): the allow-list
+        lives in the client's server-side registration, and a client-side copy
+        would drift and reject a URI an operator had just registered.
+
+        ``state`` is the caller's to generate and the caller's to check; the
+        SDK never invents one, because the value only means something to the
+        application that will receive it back.
+        """
+        config = configuration or self.oidc_discover()
+        return self._logout_url_impl(
+            config,
+            id_token=id_token,
+            post_logout_redirect_uri=post_logout_redirect_uri,
+            state=state,
+        )
+
+    def verify_logout_token(
+        self,
+        token: str,
+        *,
+        configuration: OidcConfiguration | None = None,
+    ) -> VerifiedLogoutToken:
+        """Verify a back-channel logout token the OP POSTed to this
+        application's ``backchannel_logout_uri`` (CONTRACT.md §12.7.3).
+
+        Every check exists because skipping it has a name:
+
+        1. **Signature**, through the same §12.4 JWKS verifier the ID-token
+           path uses — no second key-fetching path — with the same
+           ``kid``-required discipline.
+        2. **``iss``/``aud``**: a token minted for another RP is not accepted.
+        3. **``events`` carries the back-channel-logout key.** This is what
+           distinguishes a logout token from an ID token; skipping it means
+           accepting a replayed ID token as a logout instruction.
+        4. **``nonce`` is absent.** Back-Channel Logout 1.0 §2.4 forbids it,
+           and its presence is the documented signature of an ID token being
+           replayed. Rejected, not ignored.
+        5. **At least one of ``sid``/``sub``** — a token naming neither
+           identifies nothing.
+        6. **``exp`` in the future, ``iat`` recent.**
+
+        Returns:
+            The ``sid``/``sub``/``jti`` the token names — never a bare
+            ``bool``, because the RP has to know *which* session to end.
+            **Dedup on ``jti`` yourself**: delivery is at-least-once, so a
+            valid token legitimately arrives twice, and an SDK-side guard
+            would have no durable store and would silently drop a real second
+            logout after a restart.
+        """
+        config = configuration or self.oidc_discover()
+        return self._verify_logout_token_impl(token, config)
 
     def introspect(
         self,

@@ -37,15 +37,24 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from pydantic import SecretStr
 
-from axiam_sdk._errors import AuthError, error_from_http_status, error_from_oauth2_response
+from axiam_sdk._errors import (
+    AuthError,
+    NetworkError,
+    OAuthProtocolError,
+    error_from_http_status,
+    error_from_oauth2_response,
+)
 from axiam_sdk._jwks import JwksVerifier
 from axiam_sdk._models import (
     AuthorizationRequest,
+    DeviceAuthorization,
+    ExchangedToken,
     IntrospectionResult,
     OidcConfiguration,
     OidcTokenSet,
     SsoCompleteResult,
     SsoStartResult,
+    VerifiedLogoutToken,
 )
 from axiam_sdk._oidc_idtoken import validate_id_token
 from axiam_sdk._oidc_pkce import (
@@ -72,6 +81,72 @@ SSO_CALLBACK_PATH = "/api/v1/auth/federation/oidc/callback"
 #: Minimum — and default — discovery-cache TTL. CONTRACT.md §12.3 rule 6
 #: sets a floor of 5 minutes; a smaller configured value is raised to it.
 MIN_DISCOVERY_TTL_SECONDS = 300.0
+
+DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+"""``grant_type`` of the device access-token request (RFC 8628 §3.4)."""
+
+DEFAULT_POLL_INTERVAL_SECONDS = 5
+"""Polling interval used when the authorization response omits ``interval``
+(RFC 8628 §3.2, §14.2 rule 2). An SDK MUST NOT hard-code a faster floor."""
+
+SLOW_DOWN_INCREMENT_SECONDS = 5
+"""Seconds added to the polling interval on each ``slow_down`` (§14.2
+rule 1). The increase is permanent and cumulative."""
+
+TOKEN_EXCHANGE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange"
+"""``grant_type`` of an RFC 8693 exchange."""
+
+ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
+"""The only ``subject_token_type``/``actor_token_type`` AXIAM accepts."""
+
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+"""The ``events`` member that distinguishes a logout token from an ID token
+(OIDC Back-Channel Logout 1.0 §2.4)."""
+
+MAX_LOGOUT_TOKEN_AGE_SECONDS = 300
+"""Maximum accepted age for a logout token's ``iat``. AXIAM issues them with
+a 120 s lifetime; this bound is the same order and stops a token captured
+from a mis-configured RP being replayed days later."""
+
+
+class PollSchedule:
+    """The §14.2 polling schedule: the interval, and the deadline it stops at.
+
+    A plain value object with no I/O, so the arithmetic §14.2 rules 1, 2 and 4
+    describe can be tested exhaustively and instantly. Driving that arithmetic
+    through a mock HTTP server would test ``httpx`` and a sleeping event loop
+    rather than the rule, and would take a real half-minute to assert one
+    ``slow_down``.
+    """
+
+    def __init__(self, interval_seconds: int, expires_in_seconds: int) -> None:
+        """Build from a ``DeviceAuthorization``'s ``interval``/``expires_in``."""
+        self._interval = interval_seconds if interval_seconds > 0 else DEFAULT_POLL_INTERVAL_SECONDS
+        self._remaining = expires_in_seconds
+
+    @property
+    def interval_seconds(self) -> int:
+        """The current inter-poll delay, in seconds."""
+        return self._interval
+
+    def slow_down(self) -> None:
+        """Apply one ``slow_down`` (§14.2 rule 1): **cumulative, never reset.**"""
+        self._interval += SLOW_DOWN_INCREMENT_SECONDS
+
+    def tick(self) -> bool:
+        """Consume one interval's worth of the grant's remaining life.
+
+        Returns:
+            ``False`` when the deadline has been reached, at which point the
+            caller MUST stop (§14.2 rule 4) — the deadline is authoritative
+            even if the server is still answering ``authorization_pending``.
+        """
+        if self._interval >= self._remaining:
+            self._remaining = 0
+            return False
+        self._remaining -= self._interval
+        return True
+
 
 #: The ``openid`` scope, which every authorization request must carry
 #: (§12.1 rule 4).
@@ -943,3 +1018,259 @@ class _OidcMixin:
                 "cannot be substituted (CONTRACT.md §12.3 rule 4)."
             )
         return candidate
+
+    # ------------------------------------------------------------------
+    # §14 device authorization grant (RFC 8628)
+    # ------------------------------------------------------------------
+
+    def _device_authorize_form(self, *, scope: str | None) -> dict[str, str]:
+        """Build the ``POST /oauth2/device_authorization`` form body (§14.1).
+
+        **No ``client_secret``**, ever: a device that cannot show a browser
+        also cannot hold one, so §14.1 makes this operation unauthenticated
+        and forbids refusing a client constructed without a secret.
+        """
+        form = {"client_id": self._require_oidc_client_id()}
+        if scope is not None:
+            form["scope"] = scope
+        return form
+
+    def _device_poll_form(self, *, device_code: SecretStr | str) -> dict[str, str]:
+        """Build the device-code ``POST /oauth2/token`` form body (§14.1)."""
+        return {
+            "grant_type": DEVICE_CODE_GRANT_TYPE,
+            "device_code": _expose_secret(device_code),
+            "client_id": self._require_oidc_client_id(),
+        }
+
+    def _device_authorization_url(
+        self, configuration: OidcConfiguration, tenant_id: str | None
+    ) -> str:
+        """The device authorization endpoint URL with the mandatory
+        ``?tenant_id=<uuid>`` query parameter.
+
+        Raises:
+            AuthError: when the discovery document advertises no
+                ``device_authorization_endpoint``. The URL is never built by
+                concatenation onto the issuer — that works against AXIAM and
+                breaks against every other OP the same code is pointed at.
+        """
+        endpoint = configuration.device_authorization_endpoint
+        if not endpoint:
+            raise AuthError(
+                "the authorization server's discovery document advertises no "
+                "device_authorization_endpoint: this server does not support the device "
+                "grant (CONTRACT.md §14.1)."
+            )
+        return self._endpoint_url(endpoint, tenant_id)
+
+    def _build_device_authorization(self, wire: dict[str, Any]) -> DeviceAuthorization:
+        """Convert a ``DeviceAuthorizationResponse`` body into the model."""
+        interval = wire.get("interval")
+        return DeviceAuthorization(
+            device_code=SecretStr(wire["device_code"]),
+            user_code=wire["user_code"],
+            verification_uri=wire["verification_uri"],
+            verification_uri_complete=wire.get("verification_uri_complete"),
+            expires_in=wire["expires_in"],
+            # §14.2 rule 2: the interval comes from the response; only its
+            # absence falls back to the RFC default. A server-sent 0 is
+            # treated as absent — polling with no delay is never what the
+            # server meant, and RFC 8628 §3.2 makes 5 s the floor.
+            interval=(
+                interval
+                if isinstance(interval, int) and interval > 0
+                else DEFAULT_POLL_INTERVAL_SECONDS
+            ),
+        )
+
+    @staticmethod
+    def _device_poll_outcome(exc: BaseException) -> str:
+        """Classify a failed poll per §14.2.
+
+        Returns ``"pending"``, ``"slow_down"``, ``"retry"`` (a transport or
+        5xx failure, which rule 6 makes non-terminal) or ``"terminal"``.
+
+        §14.2 rule 5: all five RFC 8628 §3.5 answers arrive as ``400``, which
+        the §2 taxonomy would map to one indistinguishable error — so this
+        dispatches on the ``error`` field *first*.
+        """
+        code = getattr(exc, "error", None)
+        if code == "authorization_pending":
+            return "pending"
+        if code == "slow_down":
+            return "slow_down"
+        if code is not None:
+            return "terminal"
+        if isinstance(exc, NetworkError):
+            return "retry"
+        return "terminal"
+
+    @staticmethod
+    def _device_expired_error() -> AuthError:
+        """The client-side deadline error (§14.2 rule 4).
+
+        Reported under the same ``expired_token`` code the server would have
+        used, so a caller's branch does not care which side noticed first.
+        """
+        return OAuthProtocolError(
+            "expired_token",
+            "the device authorization expired before the user completed it "
+            "(client-side deadline from expires_in; CONTRACT.md §14.2 rule 4)",
+        )
+
+    # ------------------------------------------------------------------
+    # §15 token exchange (RFC 8693)
+    # ------------------------------------------------------------------
+
+    def _token_exchange_form(
+        self,
+        *,
+        subject_token: SecretStr | str,
+        actor_token: SecretStr | str | None,
+        scopes: Sequence[str] | None,
+        audience: str | None,
+        resource: str | None,
+    ) -> dict[str, str]:
+        """Build the RFC 8693 exchange form body (§15.1).
+
+        The exchanging client **authenticates**: unlike §14's device, this is
+        a confidential service, so a client with no secret fails here —
+        client-side, with no wire call.
+        """
+        form = {
+            "grant_type": TOKEN_EXCHANGE_GRANT_TYPE,
+            "subject_token": _expose_secret(subject_token),
+            "subject_token_type": ACCESS_TOKEN_TYPE,
+            "client_id": self._require_oidc_client_id(),
+            "client_secret": self._require_client_secret("token_exchange"),
+        }
+        if actor_token is not None:
+            form["actor_token"] = _expose_secret(actor_token)
+            # Sent exactly when `actor_token` is: RFC 8693 §2.1 requires the
+            # pair, and the type alone is a malformed request.
+            form["actor_token_type"] = ACCESS_TOKEN_TYPE
+        if scopes is not None:
+            form["scope"] = " ".join(scopes)
+        if audience is not None:
+            form["audience"] = audience
+        if resource is not None:
+            form["resource"] = resource
+        return form
+
+    def _handle_exchange_response(self, response: httpx.Response) -> ExchangedToken:
+        """Parse a token-exchange response into an :class:`ExchangedToken`.
+
+        §15.3: a non-2xx body is mapped through the same
+        ``OAuth2ErrorResponse`` path as every other ``/oauth2/*`` call, so the
+        six §15.3 codes reach the caller verbatim in ``error``.
+        """
+        if response.status_code != httpx.codes.OK:
+            raise error_from_oauth2_response(
+                response.status_code, response, "token exchange request failed"
+            )
+        wire = response.json()
+        return ExchangedToken(
+            access_token=SecretStr(wire["access_token"]),
+            issued_token_type=wire["issued_token_type"],
+            token_type=wire["token_type"],
+            expires_in=wire["expires_in"],
+            scope=wire.get("scope"),
+        )
+
+    # ------------------------------------------------------------------
+    # §12.7 logout helpers
+    # ------------------------------------------------------------------
+
+    def _logout_url_impl(
+        self,
+        configuration: OidcConfiguration,
+        *,
+        id_token: SecretStr | str,
+        post_logout_redirect_uri: str | None,
+        state: str | None,
+    ) -> str:
+        """Build the RP-initiated logout URL (§12.7.2).
+
+        ``end_session_endpoint`` is read from discovery and never synthesised
+        from the issuer (rule 1). ``post_logout_redirect_uri`` is passed
+        through **unvalidated against any local list** (rule 3): the
+        allow-list lives in the client's server-side registration, and a
+        client-side copy would drift and reject a URI an operator had just
+        registered.
+        """
+        endpoint = configuration.end_session_endpoint
+        if not endpoint:
+            raise AuthError(
+                "the authorization server's discovery document advertises no "
+                "end_session_endpoint: this server does not support RP-initiated logout "
+                "(CONTRACT.md §12.7.2 rule 1)."
+            )
+        params = {"id_token_hint": _expose_secret(id_token)}
+        if post_logout_redirect_uri is not None:
+            params["post_logout_redirect_uri"] = post_logout_redirect_uri
+        if state is not None:
+            params["state"] = state
+        return str(httpx.URL(endpoint).copy_merge_params(params))
+
+    def _verify_logout_token_impl(
+        self, token: str, configuration: OidcConfiguration
+    ) -> VerifiedLogoutToken:
+        """Verify a back-channel logout token (§12.7.3).
+
+        Every check exists because skipping it has a name — see the public
+        ``verify_logout_token`` docstring on the client classes.
+        """
+        verifier = self._verifier_for(configuration.jwks_uri)
+        try:
+            claims = verifier.verify_logout_token_signature(token)
+        except AuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalized to the §2 taxonomy
+            # The message never embeds the token: an unverifiable logout token
+            # is exactly the case a naive implementation logs verbatim.
+            raise AuthError(f"logout token signature verification failed: {exc}") from None
+
+        if claims.get("iss") != configuration.issuer:
+            raise AuthError("logout token issuer does not match the discovery document")
+        if claims.get("aud") != self._require_oidc_client_id():
+            raise AuthError("logout token audience does not match this client_id")
+
+        # Without this check the whole method is an elaborate way to accept an
+        # ID token.
+        events = claims.get("events")
+        if not isinstance(events, dict) or not isinstance(
+            events.get(BACKCHANNEL_LOGOUT_EVENT), dict
+        ):
+            raise AuthError(
+                "not a logout token: the events claim does not carry "
+                "http://schemas.openid.net/event/backchannel-logout"
+            )
+
+        if "nonce" in claims:
+            raise AuthError(
+                "logout token carries a nonce, which Back-Channel Logout 1.0 §2.4 forbids: "
+                "this is an ID token being replayed as a logout token"
+            )
+
+        sid = claims.get("sid")
+        sub = claims.get("sub")
+        if sid is None and sub is None:
+            raise AuthError("logout token names neither sid nor sub, so it identifies no session")
+
+        now = int(time.time())
+        skew = int(self._oidc_clock_skew_sec or 0)
+        exp = claims.get("exp")
+        iat = claims.get("iat")
+        if not isinstance(exp, int) or exp + skew < now:
+            raise AuthError("logout token has expired")
+        if not isinstance(iat, int) or iat - skew > now:
+            raise AuthError("logout token was issued in the future")
+        if now - iat > MAX_LOGOUT_TOKEN_AGE_SECONDS + skew:
+            raise AuthError("logout token is too old to be a live delivery")
+
+        jti = claims.get("jti")
+        if not isinstance(jti, str) or not jti:
+            raise AuthError("logout token carries no jti, so the RP cannot dedup redeliveries")
+
+        return VerifiedLogoutToken(sid=sid, sub=sub, jti=jti)

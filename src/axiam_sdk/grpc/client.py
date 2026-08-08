@@ -154,7 +154,15 @@ class AuthzGrpcClient:
             response = self._stub.CheckAccess(wire)
         except grpc.RpcError as exc:
             response = self._retry_after_refresh(exc, lambda: self._stub.CheckAccess(wire))
-        return AccessResult(allowed=response.allowed, reason=response.deny_reason or None)
+        return AccessResult(
+            allowed=response.allowed,
+            reason=response.deny_reason or None,
+            # §11 rule 9. proto3 renders an unset `string` as "", so an older
+            # server that never set field 3 is indistinguishable from one that
+            # set it empty — both mean "no reason code", and both become None
+            # rather than "" (a value callers could accidentally branch on).
+            reason_code=response.reason_code or None,
+        )
 
     def batch_check(self, checks: list[tuple[str, str, str, str | None]]) -> list[AccessResult]:
         """``BatchCheckAccess`` (CONTRACT.md §1). ``checks`` is a list of
@@ -172,7 +180,11 @@ class AuthzGrpcClient:
         except grpc.RpcError as exc:
             response = self._retry_after_refresh(exc, lambda: self._stub.BatchCheckAccess(wire))
         return [
-            AccessResult(allowed=result.allowed, reason=result.deny_reason or None)
+            AccessResult(
+                allowed=result.allowed,
+                reason=result.deny_reason or None,
+                reason_code=result.reason_code or None,
+            )
             for result in response.results
         ]
 
@@ -277,7 +289,15 @@ class AsyncAuthzGrpcClient:
             response = await self._stub.CheckAccess(wire)
         except grpc.RpcError as exc:
             response = await self._retry_after_refresh(exc, lambda: self._stub.CheckAccess(wire))
-        return AccessResult(allowed=response.allowed, reason=response.deny_reason or None)
+        return AccessResult(
+            allowed=response.allowed,
+            reason=response.deny_reason or None,
+            # §11 rule 9. proto3 renders an unset `string` as "", so an older
+            # server that never set field 3 is indistinguishable from one that
+            # set it empty — both mean "no reason code", and both become None
+            # rather than "" (a value callers could accidentally branch on).
+            reason_code=response.reason_code or None,
+        )
 
     async def batch_check(
         self, checks: list[tuple[str, str, str, str | None]]
@@ -296,7 +316,11 @@ class AsyncAuthzGrpcClient:
                 exc, lambda: self._stub.BatchCheckAccess(wire)
             )
         return [
-            AccessResult(allowed=result.allowed, reason=result.deny_reason or None)
+            AccessResult(
+                allowed=result.allowed,
+                reason=result.deny_reason or None,
+                reason_code=result.reason_code or None,
+            )
             for result in response.results
         ]
 

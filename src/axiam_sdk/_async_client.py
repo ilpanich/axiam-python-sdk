@@ -14,6 +14,8 @@ call path are specific to this class. Mirrors ``the Go SDK's client.go`` +
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import httpx
@@ -28,20 +30,28 @@ from axiam_sdk._client import (
     MFA_VERIFY_PATH,
     _AxiamClientBase,
 )
-from axiam_sdk._errors import AuthError, error_from_http_status
+from axiam_sdk._errors import AuthError, error_from_http_status, error_from_oauth2_response
 from axiam_sdk._models import (
     AccessCheck,
     AccessResult,
     AuthorizationRequest,
     BatchCheckResult,
+    DeviceAuthorization,
+    ExchangedToken,
     IntrospectionResult,
     LoginResult,
     OidcConfiguration,
     OidcTokenSet,
     SsoCompleteResult,
     SsoStartResult,
+    VerifiedLogoutToken,
 )
-from axiam_sdk._oidc import DISCOVERY_PATH, SSO_CALLBACK_PATH, SSO_START_PATH
+from axiam_sdk._oidc import (
+    DISCOVERY_PATH,
+    SSO_CALLBACK_PATH,
+    SSO_START_PATH,
+    PollSchedule,
+)
 
 
 class AsyncAxiamClient(_AxiamClientBase):
@@ -363,6 +373,172 @@ class AsyncAxiamClient(_AxiamClientBase):
         response = await self._session._send_async(request)
         # No nonce: rule 6 does not apply to this grant.
         return self._handle_token_response(response, config, None)
+
+    async def device_authorize(
+        self,
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> DeviceAuthorization:
+        """``POST /oauth2/device_authorization`` (CONTRACT.md §14.1) — start
+        the device grant and obtain the code pair.
+
+        **Unauthenticated by design**: a device that cannot show a browser also
+        cannot hold a client secret, so this never sends ``client_secret`` and
+        never refuses a client built without one.
+
+        Async twin of :meth:`axiam_sdk.AxiamClient.device_authorize`; §14.4
+        requires the same three names on both clients.
+        """
+        config = configuration or await self.oidc_discover()
+        form = self._device_authorize_form(scope=scope)
+        url = self._device_authorization_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        if response.status_code != httpx.codes.OK:
+            raise error_from_oauth2_response(
+                response.status_code, response, "device authorization request failed"
+            )
+        return self._build_device_authorization(response.json())
+
+    async def device_poll(
+        self,
+        *,
+        device_code: SecretStr | str,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with the device-code grant (§14.1) — **one**
+        poll attempt.
+
+        The five RFC 8628 §3.5 answers surface as ``OAuthProtocolError``,
+        ``authorization_pending`` and ``slow_down`` included, so a hand-rolled
+        loop sees exactly what :meth:`device_login` sees.
+        """
+        config = configuration or await self.oidc_discover()
+        form = self._device_poll_form(device_code=device_code)
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        return self._handle_token_response(response, config, None)
+
+    async def device_login(
+        self,
+        on_user_code: Callable[[DeviceAuthorization], None | Awaitable[None]],
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """The composed §14.3 helper: start the grant, hand the caller the
+        user code, poll to completion.
+
+        ``on_user_code`` is invoked — and **awaited when it returns an
+        awaitable** — before the first poll (§14.3 rule 2). A device rendering
+        a QR code may need to await a paint, and polling before that resolves
+        would defeat the rule as surely as not calling back at all.
+
+        Per §14.3 rule 4 (contract 1.7 errata) this SDK **returns** the token
+        set rather than adopting it. Polling follows §14.2 — see the sync
+        twin's docstring for the full rule set.
+        """
+        config = configuration or await self.oidc_discover()
+        authorization = await self.device_authorize(
+            scope=scope, tenant_id=tenant_id, configuration=config
+        )
+
+        # §14.3 rule 2 — before any polling.
+        result = on_user_code(authorization)
+        if isinstance(result, Awaitable):
+            await result
+
+        schedule = PollSchedule(authorization.interval, authorization.expires_in)
+        while True:
+            if not schedule.tick():
+                raise self._device_expired_error()
+            await asyncio.sleep(schedule.interval_seconds)
+            try:
+                return await self.device_poll(
+                    device_code=authorization.device_code,
+                    tenant_id=tenant_id,
+                    configuration=config,
+                )
+            except Exception as exc:  # noqa: BLE001 - classified by §14.2
+                outcome = self._device_poll_outcome(exc)
+                if outcome in ("pending", "retry"):
+                    continue
+                if outcome == "slow_down":
+                    schedule.slow_down()
+                    continue
+                raise
+
+    async def token_exchange(
+        self,
+        *,
+        subject_token: SecretStr | str,
+        actor_token: SecretStr | str | None = None,
+        scopes: Sequence[str] | None = None,
+        audience: str | None = None,
+        resource: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> ExchangedToken:
+        """``POST /oauth2/token`` with the RFC 8693 grant (§15.1) — exchange a
+        token for a **narrower** one.
+
+        Async twin of :meth:`axiam_sdk.AxiamClient.token_exchange`; see that
+        docstring for what this method deliberately refuses to do (no
+        defaulted ``actor_token``, no auto-narrowing, no adoption).
+        """
+        config = configuration or await self.oidc_discover()
+        form = self._token_exchange_form(
+            subject_token=subject_token,
+            actor_token=actor_token,
+            scopes=scopes,
+            audience=audience,
+            resource=resource,
+        )
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        return self._handle_exchange_response(response)
+
+    async def logout_url(
+        self,
+        *,
+        id_token: SecretStr | str,
+        post_logout_redirect_uri: str | None = None,
+        state: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> str:
+        """Build the RP-initiated logout URL (§12.7.2).
+
+        Async only because discovery may need fetching; the URL construction
+        itself performs no I/O, and this does **not** clear the client's own
+        session.
+        """
+        config = configuration or await self.oidc_discover()
+        return self._logout_url_impl(
+            config,
+            id_token=id_token,
+            post_logout_redirect_uri=post_logout_redirect_uri,
+            state=state,
+        )
+
+    async def verify_logout_token(
+        self,
+        token: str,
+        *,
+        configuration: OidcConfiguration | None = None,
+    ) -> VerifiedLogoutToken:
+        """Verify a back-channel logout token (§12.7.3).
+
+        Async twin of :meth:`axiam_sdk.AxiamClient.verify_logout_token`; see
+        that docstring for the six checks and why each exists.
+        """
+        config = configuration or await self.oidc_discover()
+        return self._verify_logout_token_impl(token, config)
 
     async def introspect(
         self,

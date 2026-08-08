@@ -208,6 +208,54 @@ class JwksVerifier:
             options={"require": ["sub"]},
         )
 
+    def verify_logout_token_signature(self, token: str) -> dict[str, Any]:
+        """Verify a back-channel logout token's signature (CONTRACT.md
+        §12.7.3 check 1) and return its claims.
+
+        Distinct from :meth:`verify_signature_only_unchecked` for one reason:
+        that method requires a ``sub`` claim, and a logout token legitimately
+        carries only ``sid``. Everything else is shared — the same
+        ``_get_signing_key`` path, so there is no second key-fetching route,
+        which is what §12.7.3 requires.
+
+        Applies the same ``alg``/``kid`` discipline as the §12.4 ID-token
+        path: EdDSA is pinned before any keyset lookup, and a token with no
+        ``kid`` is rejected outright rather than falling back to "the only
+        published key" — that fallback would defeat key rotation.
+
+        Claim checks (``iss``/``aud``/``events``/``nonce``/``sid``/``sub``/
+        freshness) are the caller's, in ``_oidc.py``, so each failure gets its
+        own message.
+
+        Args:
+            token: The compact-serialized logout token.
+
+        Returns:
+            The decoded claims dict, once the signature has verified.
+
+        Raises:
+            ValueError: if ``alg`` is not EdDSA or the header carries no ``kid``.
+            jwt.exceptions.PyJWTError: on any signature/key-resolution failure.
+        """
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") != "EdDSA":
+            raise ValueError(f"unexpected alg {header.get('alg')!r}: only EdDSA is accepted")
+        if not header.get("kid"):
+            raise ValueError("logout token carries no kid header")
+
+        signing_key = self._get_signing_key(token)
+
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["EdDSA"],
+            # No `require`: a logout token names `sid` OR `sub`, and which one
+            # is present is checked by the caller with its own message.
+            # `aud` is checked there too, so PyJWT's own audience check is off
+            # rather than duplicated under a less specific error.
+            options={"verify_aud": False},
+        )
+
     def verify_access_token(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
         """Apply the **complete** CONTRACT.md §10.1 minimum local-verification
         set to ``token`` and return its claims. This is the documented guard

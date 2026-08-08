@@ -23,6 +23,13 @@ BASE_URL = "https://axiam.example.test"
 CLIENT_ID = "rp-client-1"
 CLIENT_SECRET = "rp-client-secret-1"
 JWKS_URI = f"{BASE_URL}/oauth2/jwks"
+DEVICE_AUTHORIZATION_ENDPOINT = f"{BASE_URL}/oauth2/device_authorization"
+END_SESSION_ENDPOINT = f"{BASE_URL}/oauth2/end_session"
+DEVICE_CODE = "device-code-value"
+USER_CODE = "WDJB-MJHT"
+LOGOUT_SID = "session-abc"
+LOGOUT_JTI = "logout-token-jti-1"
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
 
 
 def discovery_document(**overrides: Any) -> dict[str, Any]:
@@ -43,10 +50,68 @@ def discovery_document(**overrides: Any) -> dict[str, Any]:
         "scopes_supported": ["openid", "profile", "email"],
         "token_endpoint_auth_methods_supported": ["client_secret_post"],
         "claims_supported": ["sub", "iss", "aud", "exp", "iat"],
-        "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
+        "grant_types_supported": [
+            "authorization_code",
+            "refresh_token",
+            "client_credentials",
+            "urn:ietf:params:oauth:grant-type:device_code",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ],
+        "device_authorization_endpoint": DEVICE_AUTHORIZATION_ENDPOINT,
+        "end_session_endpoint": END_SESSION_ENDPOINT,
+        "backchannel_logout_supported": True,
+        "backchannel_logout_session_supported": True,
     }
     doc.update(overrides)
     return doc
+
+
+def discovery_document_without_optional_endpoints(**overrides: Any) -> dict[str, Any]:
+    """A discovery document with the §14/§12.7 endpoints deliberately absent —
+    the shape an older AXIAM, or a third-party OP without those features,
+    publishes. Used to assert the SDK errors rather than concatenating a URL
+    onto the issuer (§12.7.2 rule 1)."""
+    doc = discovery_document(**overrides)
+    doc.pop("device_authorization_endpoint", None)
+    doc.pop("end_session_endpoint", None)
+    return doc
+
+
+def device_authorization_response(**overrides: Any) -> dict[str, Any]:
+    """A wire-shaped ``DeviceAuthorizationResponse`` body."""
+    body: dict[str, Any] = {
+        "device_code": DEVICE_CODE,
+        "user_code": USER_CODE,
+        "verification_uri": f"{BASE_URL}/device",
+        "verification_uri_complete": f"{BASE_URL}/device?user_code={USER_CODE}",
+        "expires_in": 30,
+        "interval": 1,
+    }
+    body.update(overrides)
+    return body
+
+
+def make_logout_token_claims(**overrides: Any) -> dict[str, Any]:
+    """Build a VALID back-channel logout claim set; ``overrides`` break
+    exactly one §12.7.3 rule per negative test.
+
+    Pass ``sid=None``/``sub=None`` to omit a claim entirely.
+    """
+    import time
+
+    now = int(time.time())
+    claims: dict[str, Any] = {
+        "iss": BASE_URL,
+        "aud": CLIENT_ID,
+        "iat": now,
+        "exp": now + 120,
+        "jti": LOGOUT_JTI,
+        "sid": LOGOUT_SID,
+        "sub": "user-1",
+        "events": {BACKCHANNEL_LOGOUT_EVENT: {}},
+    }
+    claims.update(overrides)
+    return {k: v for k, v in claims.items() if v is not None}
 
 
 def _b64url(data: bytes) -> str:
