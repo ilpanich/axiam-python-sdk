@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`[speed]` extra (uvloop) and `PERFORMANCE.md` (D1/J5).** Benchmark run 5
+  put this SDK's `check_access` at p50 40.2 ms / 311 rps against Go, Java and
+  Rust's ~10 ms / ~850 rps, and the open question was what in `axiam_sdk` was
+  slow. Measured against an out-of-process stub server doing no work at all,
+  the answer is: nothing. `AsyncAxiamClient.check_access` costs ~50 µs/call
+  more than raw `httpx` with the same cookie jar (~2% of client CPU), and every
+  top cost centre in a `cProfile` of the hot path lives in `httpcore`/`anyio`.
+  The ~310 rps is a per-process CPython ceiling — three client processes
+  against the same zero-work stub reached 929 rps aggregate, each capped at
+  ~310. `pip install "axiam-sdk[speed]"` installs uvloop, measured at −20%
+  client CPU and p95 68 → 55 ms; the SDK still never installs a loop policy
+  itself. `PERFORMANCE.md` carries the numbers, the method, and the guidance
+  (scale with processes, not with in-flight calls per process).
+
 ## [1.0.0-alpha24] - 2026-08-04
 
 ### Added

@@ -54,6 +54,16 @@ pip install "axiam-sdk[fastapi]"
 pip install "axiam-sdk[django]"
 ```
 
+`[speed]` adds `uvloop` for async workloads — measured at −20% client CPU and
+a materially tighter p95 on the `check_access` path. The SDK never installs a
+loop policy for you; see [PERFORMANCE.md](PERFORMANCE.md), which also explains
+why a single CPython process tops out around 310 checks/s and what to do about
+it:
+
+```bash
+pip install "axiam-sdk[speed]"
+```
+
 ```python
 from axiam_sdk import AxiamClient
 ```
