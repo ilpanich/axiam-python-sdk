@@ -66,11 +66,13 @@ happens to import:
 import uvloop
 from axiam_sdk import AsyncAxiamClient
 
+
 async def main() -> None:
     async with AsyncAxiamClient(base_url=..., tenant_slug=..., org_slug=...) as client:
         ...
 
-uvloop.run(main())          # Python 3.11+
+
+uvloop.run(main())  # Python 3.11+
 ```
 
 ### Scale with processes, not with in-flight calls
