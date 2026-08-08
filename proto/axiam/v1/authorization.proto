@@ -9,7 +9,7 @@ option php_metadata_namespace = "Axiam\\Sdk\\Grpc\\Gen\\Metadata";
 // derives the namespace from the proto package ("axiam.v1" -> "Axiam\V1"),
 // which does not match this SDK's PSR-4 root (Axiam\Sdk\ -> src/). Setting
 // them explicitly lands the generated classes' `namespace` declarations at
-// Axiam\Sdk\Grpc\Gen (sdks/php/src/Grpc/Gen/, D-03) while leaving every
+// Axiam\Sdk\Grpc\Gen (src/Grpc/Gen/ in the PHP SDK repo, D-03) while leaving every
 // other language's codegen (Rust/Go/Python/TypeScript) byte-for-byte
 // unaffected (22-05-PLAN.md Task 1).
 option php_namespace = "Axiam\\Sdk\\Grpc\\Gen";
@@ -41,6 +41,17 @@ message CheckAccessResponse {
   bool allowed = 1;
   // Reason for denial (empty when allowed).
   string deny_reason = 2;
+  // B1 (deny-override): machine-readable decision reason. One of:
+  //   "allowed"        — an allow grant matched and no deny did
+  //   "no_grant"       — nothing matched; default deny
+  //   "denied_by_rule" — an explicit deny rule matched and overrode any allow
+  //
+  // Both refusals still set allowed=false, so a client reading only `allowed`
+  // is unaffected. The distinction matters to the person on the other end:
+  // "no_grant" means ask an admin for access, "denied_by_rule" means an admin
+  // has already decided. Field 3 is additive — proto3 clients built against
+  // the previous schema ignore it.
+  string reason_code = 3;
 }
 
 message BatchCheckAccessRequest {

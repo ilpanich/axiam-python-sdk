@@ -21,8 +21,13 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 (including §6.1 mTLS and the §10.1
-minimum local-verification set).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15 (including §6.1
+mTLS and the §10.1 minimum local-verification set).
+
+§12.7, §14 and §15 are named rather than folded into the range because they
+landed after this SDK already claimed §1–§13: widening the range silently would
+turn a statement that was true when written into a different claim without
+anyone editing it.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -442,6 +447,104 @@ builds a two-route `APIRouter` (login redirect + callback); `axiam_sdk.django.oi
 builds a `(login_view, callback_view)` pair sharing one state store. Both
 delegate entirely to the operations above and to the existing session/cookie
 machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
+
+## Device authorization grant (§14)
+
+RFC 8628 — signing in a device that cannot show a browser: a TV, a CLI, a
+headless commissioning tool. `device_authorize`, `device_poll` and the composed
+`device_login`, on both `AxiamClient` and `AsyncAxiamClient`.
+
+```python
+def show(auth: DeviceAuthorization) -> None:
+    # Called BEFORE the first poll. Display it however the device can —
+    # screen, QR code, e-ink panel. The SDK never prints it for you.
+    print(f"visit {auth.verification_uri} and enter {auth.user_code}")
+
+
+tokens = client.device_login(show, scope="openid profile")
+```
+
+The polling rules are where implementations go wrong, so they are worth
+stating:
+
+- **`slow_down` raises the interval permanently.** An SDK that backs off for
+  one round and returns to the original interval will be told to slow down
+  again, forever.
+- **`access_denied` and `expired_token` stay distinct.** A human said no,
+  versus nobody answered — the only information the device can act on.
+- **Polling stops at `expires_in`**, even if the server has not yet said
+  `expired_token`.
+- **A `5xx` mid-poll is not terminal.** A server restart must not lose a grant
+  the user has already approved.
+
+`device_code` is a `SecretStr`; `user_code` deliberately is not — it exists to
+be read aloud, and wrapping it would defeat the one thing it is for.
+
+`device_authorize` sends no `client_secret` and does not refuse a client built
+without one: a device that cannot show a browser cannot keep a secret either.
+The async `device_login` **awaits** an async callback before polling, so a
+device that needs to await a paint still satisfies §14.3 rule 2.
+
+Per §14.3 rule 4, `device_login` **returns** the token set rather than adopting
+it, matching this SDK's `login_client_credentials` posture. See
+[`examples/device_login.py`](./examples/device_login.py).
+
+## Token exchange (§15)
+
+RFC 8693 — a service holding a user's token exchanging it for a *narrower* one
+before calling the next service.
+
+```python
+exchanged = client.token_exchange(
+    subject_token=user_token,
+    scopes=["orders:read"],
+    audience="orders-service",
+)
+```
+
+Most of what this method does is refuse to be helpful, and each refusal is
+deliberate:
+
+- **No default `actor_token`.** Omitting it asks for *impersonation*; the SDK
+  will not quietly substitute the client's own session token and turn that into
+  a delegation.
+- **No auto-narrowing after `invalid_scope`.** The server refuses rather than
+  silently narrowing precisely so the caller finds out here.
+- **No refresh token, ever** — `ExchangedToken` has no such field, so there is
+  nothing to synthesise. Re-run the exchange.
+- **No adoption.** The issued token is handed onward in one call; adopting it
+  would silently re-privilege every later call this client makes. A MUST NOT,
+  where `login_client_credentials` adoption is a MAY.
+
+See [`examples/token_exchange.py`](./examples/token_exchange.py).
+
+## Logout — RP-initiated and back-channel (§12.7)
+
+`logout_url` builds the redirect; `verify_logout_token` validates a token the
+OP **pushed** to your back-channel endpoint.
+
+```python
+url = client.logout_url(id_token=stored_id_token)
+
+# …and at your registered backchannel_logout_uri:
+verified = client.verify_logout_token(logout_token)
+if verified.sid is not None:
+    end_session(verified.sid)  # that session ONLY
+```
+
+The verifier is where the security weight sits — the input arrives unsolicited
+and instructs you to terminate a session. It checks the signature (same JWKS
+path, same `kid`-required discipline as §12.4), `iss`, `aud`, that `events`
+carries the back-channel-logout key (**the only thing separating a logout token
+from an ID token**), that `nonce` is *absent* (its presence is how an ID token
+gets replayed as one), that something is named, and freshness.
+
+It returns `sid`/`sub`/`jti` rather than a bare `bool`: you have to know
+*which* session to end. **Dedup on `jti` yourself** — delivery is at-least-once,
+so a valid token legitimately arrives twice; the SDK has no durable store and
+an in-memory guard would silently drop a real second logout after a restart.
+
+See [`examples/logout.py`](./examples/logout.py).
 
 ## Webhook signature verification (§13)
 
