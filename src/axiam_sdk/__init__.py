@@ -41,7 +41,25 @@ from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStat
 
 __version__ = "1.0.0a24"
 
+from axiam_sdk._decision_memo import DecisionMemo
+from axiam_sdk._telemetry import (
+    Refresh,
+    RequestEnd,
+    RequestStart,
+    Retry,
+    TelemetryEvent,
+    TelemetryHook,
+)
+
 __all__ = [
+    # §17 decision memo, §19 telemetry hooks (D5).
+    "DecisionMemo",
+    "TelemetryEvent",
+    "TelemetryHook",
+    "RequestStart",
+    "RequestEnd",
+    "Retry",
+    "Refresh",
     "__version__",
     "AxiamClient",
     "AsyncAxiamClient",

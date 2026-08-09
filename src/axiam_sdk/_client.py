@@ -23,7 +23,13 @@ from typing import Any
 import httpx
 from pydantic import SecretStr
 
-from axiam_sdk._errors import AuthError, error_from_http_status, error_from_oauth2_response
+from axiam_sdk._decision_memo import DecisionMemo, memo_key
+from axiam_sdk._errors import (
+    AuthError,
+    NetworkError,
+    error_from_http_status,
+    error_from_oauth2_response,
+)
 from axiam_sdk._models import (
     AccessCheck,
     AccessResult,
@@ -46,7 +52,9 @@ from axiam_sdk._oidc import (
     PollSchedule,
     _OidcMixin,
 )
+from axiam_sdk._retry import retry_sync
 from axiam_sdk._session import _Session
+from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
 
 LOGIN_PATH = "/api/v1/auth/login"
 MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify"
@@ -121,6 +129,9 @@ class _AxiamClientBase(_OidcMixin):
         client_secret: str | SecretStr | None = None,
         oidc_discovery_ttl_seconds: float | None = None,
         oidc_clock_skew_sec: float | None = None,
+        retry_enabled: bool = True,
+        decision_memo_ttl_ms: float = 0.0,
+        telemetry_hook: TelemetryHook | None = None,
     ) -> None:
         """Construct the shared client state (CONTRACT.md §5/§6/§6.1/§7/§12).
 
@@ -177,6 +188,15 @@ class _AxiamClientBase(_OidcMixin):
         self._resolved_org_id: str | None = org_id
 
         self._logger = logger or _null_logger()
+        # §16.1 disable switch. There is deliberately no knob for the attempt
+        # cap, base delay or delay cap: §16.1 forbids raising them, and eleven
+        # SDKs agreeing on one table is the point.
+        self._retry_enabled = retry_enabled
+        # §17.1 rule 1 — off unless the caller asked for it.
+        self._decision_memo = DecisionMemo(decision_memo_ttl_ms)
+        self._telemetry = TelemetryDispatcher(telemetry_hook)
+        # §18 shutdown flag, read on every operation.
+        self._closed = False
 
         self._session = _Session(
             base_url=base_url,
@@ -423,6 +443,25 @@ class _AxiamClientBase(_OidcMixin):
             body["subject_id"] = subject_id
         return body
 
+    def _ensure_open(self) -> None:
+        """Raise if :meth:`close` has been called (§18.1 rule 4).
+
+        Use-after-close is an error, not a silent reconnect: a client that
+        quietly rebuilt its transport would make ``close()`` meaningless and
+        hide the lifecycle bug that caused the call.
+        """
+        if self._closed:
+            raise NetworkError("client is closed: this client was shut down with close()")
+
+    def _on_credential_change(self) -> None:
+        """Drop memoized decisions (§17.1 rule 9).
+
+        Entries are keyed by subject rather than session, so a re-authentication
+        as a *different* principal would otherwise inherit the previous one's
+        decisions.
+        """
+        self._decision_memo.clear()
+
 
 class AxiamClient(_AxiamClientBase):
     """The AXIAM SDK's sync REST entry point (CONTRACT.md §1-§10).
@@ -448,7 +487,23 @@ class AxiamClient(_AxiamClientBase):
         self.close()
 
     def close(self) -> None:
-        """Close the sync httpx client, if constructed (D-19)."""
+        """Release this client's local resources (D-19, CONTRACT.md §18).
+
+        Idempotent — calling it twice is not an error. Cleanup runs from error
+        paths, and an error path that itself raises hides the original failure.
+
+        **This does not log out.** §18.1 rule 5: shutting down a client releases
+        *local* resources and never reaches the network. The server-side session
+        deliberately outlives the client object, which is what lets a process
+        restart and resume; a ``close()`` that logged out would silently end
+        every user's session on each deploy. Call :meth:`logout` first if
+        ending the session is what you want.
+
+        After this returns, any operation on the client raises ``NetworkError``
+        rather than silently reconnecting.
+        """
+        self._closed = True
+        self._decision_memo.clear()
         self._session.close()
 
     # ------------------------------------------------------------------
@@ -459,6 +514,8 @@ class AxiamClient(_AxiamClientBase):
         """``POST /api/v1/auth/login`` (CONTRACT.md §1). Returns a typed
         :class:`LoginResult`; check ``mfa_required`` before assuming the
         session is established (SC#1)."""
+        self._ensure_open()
+        self._on_credential_change()
         request = self._session.sync_client.build_request(
             "POST", LOGIN_PATH, json=self._login_body(email, password)
         )
@@ -469,6 +526,8 @@ class AxiamClient(_AxiamClientBase):
         """``POST /api/v1/auth/mfa/verify`` (CONTRACT.md §1) — completes the
         two-phase flow started by :meth:`login` when ``mfa_required`` was
         true."""
+        self._ensure_open()
+        self._on_credential_change()
         request = self._session.sync_client.build_request(
             "POST", MFA_VERIFY_PATH, json=self._mfa_verify_body(mfa_token, code)
         )
@@ -484,6 +543,8 @@ class AxiamClient(_AxiamClientBase):
         the shared single-flight guard (§9) so concurrent 401s collapse
         into exactly one in-flight refresh call. A 401 on the refresh call
         itself is ``AuthError`` with no retry (§9.3, Pitfall 4)."""
+        self._ensure_open()
+        self._on_credential_change()
         observed_access = self._session.cookie_value(ACCESS_COOKIE)
         if not observed_access:
             raise AuthError("no access token to refresh — call login() first")
@@ -517,6 +578,8 @@ class AxiamClient(_AxiamClientBase):
 
     def logout(self) -> None:
         """``POST /api/v1/auth/logout`` (CONTRACT.md §1)."""
+        self._ensure_open()
+        self._on_credential_change()
         session_id = self._session_id_for_logout()
         request = self._session.sync_client.build_request(
             "POST", LOGOUT_PATH, json={"session_id": session_id}
@@ -546,9 +609,24 @@ class AxiamClient(_AxiamClientBase):
         declarative ``require_access`` helpers (§11) pass to check the
         *request's* authenticated user.
         """
+        self._ensure_open()
+        # §17: consult the memo first. Disabled by default, in which case this
+        # is one dict lookup that always misses.
+        key = memo_key(action, resource_id, scope, subject_id)
+        memoized = self._decision_memo.get(key)
+        if memoized is not None:
+            assert isinstance(memoized, AccessResult)
+            return memoized
+
         body = self._access_check_body(action, resource_id, scope, subject_id)
-        wire = self._authz_post_sync(CHECK_PATH, body)
-        return AccessResult(**wire)
+        wire = self._authz_post_sync(CHECK_PATH, body, operation="check_access")
+        result = AccessResult(**wire)
+
+        # Only a decision the server actually returned is memoized: reaching
+        # here means success, so §17.1 rule 7's ban on caching a failure is
+        # structural rather than a check that could be forgotten.
+        self._decision_memo.set(key, result)
+        return result
 
     def can(self, action: str, resource_id: str, scope: str | None = None) -> bool:
         """Alias for ``check_access`` returning only the allowed boolean
@@ -558,27 +636,52 @@ class AxiamClient(_AxiamClientBase):
     def batch_check(self, checks: list[AccessCheck]) -> list[AccessResult]:
         """``POST /api/v1/authz/check/batch`` (CONTRACT.md §1) — results
         returned in the same order as ``checks``."""
+        self._ensure_open()
         body = {"checks": [c.model_dump(exclude_none=True) for c in checks]}
-        wire = self._authz_post_sync(BATCH_CHECK_PATH, body)
+        wire = self._authz_post_sync(BATCH_CHECK_PATH, body, operation="batch_check")
         return BatchCheckResult(**wire).results
 
-    def _authz_post_sync(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        """POST an authz request body to *path*, transparently retrying once
-        via :meth:`_retry_after_refresh_sync` on a 401 (§9.3), and returning
-        the parsed JSON response body. Raises the mapped ``AxiamError``
-        family exception (CONTRACT.md §2) for any other non-2xx status."""
+    def _authz_post_sync(
+        self, path: str, body: dict[str, Any], *, operation: str
+    ) -> dict[str, Any]:
+        """POST an authz request body to *path* under the §16 retry policy.
+
+        The call is a ``POST`` but changes no server state, so it is
+        retry-eligible: §16.2's test is "changes no server state", NOT "is a
+        GET". Gating on the verb would exclude the single most important
+        operation this policy covers.
+
+        The §9.3 refresh-then-retry-once on a 401 is a *different* mechanism and
+        stays inside one §16 attempt: a 401 means the token expired, which
+        refreshing fixes, and neither backing off nor counting it against the
+        transport-failure budget would make sense.
+        """
+        return retry_sync(
+            lambda attempt: self._authz_post_sync_once(path, body, operation, attempt),
+            operation=operation,
+            enabled=self._retry_enabled,
+            telemetry=self._telemetry,
+        )
+
+    def _authz_post_sync_once(
+        self, path: str, body: dict[str, Any], operation: str, attempt: int
+    ) -> dict[str, Any]:
+        """One §16 attempt, with its §19 request pair."""
         request = self._session.sync_client.build_request("POST", path, json=body)
-        response = self._session._send_sync(request)
+        with self._telemetry.request(operation, "POST", path, attempt) as span:
+            response = self._session._send_sync(request)
 
-        if response.status_code == httpx.codes.UNAUTHORIZED:
-            response = self._retry_after_refresh_sync(request)
+            if response.status_code == httpx.codes.UNAUTHORIZED:
+                response = self._retry_after_refresh_sync(request)
 
-        if response.status_code < 200 or response.status_code >= 300:
-            raise error_from_http_status(
-                response.status_code, "authz check failed", response=response
-            )
-        result: dict[str, Any] = response.json()
-        return result
+            span.status = response.status_code
+            if response.status_code < 200 or response.status_code >= 300:
+                raise error_from_http_status(
+                    response.status_code, "authz check failed", response=response
+                )
+            span.outcome = "success"
+            result: dict[str, Any] = response.json()
+            return result
 
     def _retry_after_refresh_sync(self, original_request: httpx.Request) -> httpx.Response:
         """On a 401, refresh exactly once (via the shared single-flight

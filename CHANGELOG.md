@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§16 bounded read-only retry policy** (`_retry.py`), wired into `check_access`/`can`/
+  `batch_check` on **both** the sync and async clients: 3 attempts, 200 ms base, 5 s cap,
+  **full jitter** over `[0, backoff]`, `Retry-After` honored as a floor. This SDK had no §16
+  policy before — only §9.3's refresh-then-retry-once, which is a different mechanism — so
+  §11.2 rule 5's requirement had gone unmet since it was written. Sync and async share the
+  backoff arithmetic so the two cannot drift.
+- **§18 shutdown semantics** on `close()`/`aclose()`: idempotent, memo cleared, and
+  use-after-close raises `NetworkError` rather than silently reconnecting. Neither logs out
+  nor reaches the network — the server-side session outlives the client object, and a
+  `close()` that logged out would end every user's session on each deploy.
+- **§19 telemetry hooks** (`_telemetry.py`) — `telemetry_hook=`, plus the frozen
+  `RequestStart`/`RequestEnd`/`Retry`/`Refresh` events and `examples/telemetry_hook.py` with
+  the OpenTelemetry mapping. A hook that raises cannot fail the operation that fired it, and
+  no event payload can carry a token. One request pair per *attempt*, not per logical call,
+  so callers can count real wire calls.
+- **§17 decision memo — opt-in, off by default** (`_decision_memo.py`):
+  `decision_memo_ttl_ms=`, clamped to 5000 ms, thread-safe. Allows and denies memoized
+  identically, failures never memoized, cleared on any credential change.
+  **Reads-your-own-writes is not guaranteed.**
+- `retry_enabled=` (§16.6), default on. No knob for the attempt cap, base or delay cap:
+  §16.1 forbids raising them.
+- Public exports: `DecisionMemo`, `TelemetryEvent`, `TelemetryHook`, `RequestStart`,
+  `RequestEnd`, `Retry`, `Refresh`.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` at **1.8.1**. `openapi.json` unchanged — docs-only contract revs.
+- `login`, `verify_mfa`, `refresh` and `logout` now clear the decision memo (§17.1 rule 9)
+  and reject after close (§18.1 rule 4), on both clients.
+
 - **`[speed]` extra (uvloop) and `PERFORMANCE.md` (D1/J5).** Benchmark run 5
   put this SDK's `check_access` at p50 40.2 ms / 311 rps against Go, Java and
   Rust's ~10 ms / ~850 rps, and the open question was what in `axiam_sdk` was

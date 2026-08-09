@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15 (including §6.1
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19 (including §6.1
 mTLS and the §10.1 minimum local-verification set).
 
 §12.7, §14 and §15 are named rather than folded into the range because they
@@ -659,3 +659,87 @@ Coverage (as CI runs it, reported to Coveralls):
 ```bash
 pytest --cov=axiam_sdk --cov-report=lcov
 ```
+
+## Client quality-of-life (CONTRACT.md §16–§19)
+
+### Retry policy (§16)
+
+Read-only authorization checks — `check_access`, `can`, `batch_check`, on both the sync and
+async clients — retry transient failures under the contract's normative table: **3 attempts**
+(1 initial + 2 retries), 200 ms base, 5 s cap, **full jitter** (uniform over `[0, backoff]`),
+and `Retry-After` honored as a **floor**.
+
+This SDK had no §16 policy before — only §9.3's refresh-then-retry-once, which is a different
+mechanism. §11.2 rule 5 had been requiring one since it was written.
+
+Only failures that could plausibly succeed on a second attempt are retried: transport errors,
+`408`, `429`, `5xx`. A `401` or `403` is an answer, not a transport failure, and surfaces after
+exactly one attempt. Nothing that changes server state is ever retried.
+
+```python
+# Turn it off if you own your own retry layer — you know your deadline, this SDK doesn't.
+client = AxiamClient(base_url=..., tenant_slug="acme", retry_enabled=False)
+```
+
+There is deliberately no knob for the attempt cap, base delay or delay cap: §16.1 forbids
+raising them, and eleven SDKs agreeing on one table is the point.
+
+### Deterministic shutdown (§18)
+
+`client.close()` (sync) and `await client.aclose()` (async) release local resources. Both are
+idempotent, and any call afterwards raises `NetworkError` naming the cause rather than silently
+reconnecting.
+
+**Neither logs out.** They never reach the network. The server-side session deliberately
+outlives the client object — that is what lets a process restart and resume — so a `close()`
+that logged out would silently end every user's session on each deploy. Call `logout()` first
+if ending the session is what you want.
+
+### Telemetry hooks (§19)
+
+Wire metrics without this package depending on any metrics library:
+
+```python
+from axiam_sdk import AxiamClient, RequestEnd, Retry, TelemetryEvent
+
+def sink(event: TelemetryEvent) -> None:
+    if isinstance(event, RequestEnd):
+        histogram.record(event.duration_ms, {"op": event.operation, "outcome": event.outcome})
+    elif isinstance(event, Retry):
+        counter.add(1, {"op": event.operation, "attempt": event.attempt})
+
+client = AxiamClient(base_url=..., tenant_slug="acme", telemetry_hook=sink)
+```
+
+- **A hook that raises cannot fail the operation that fired it.** Telemetry is not permitted to
+  fail an authorization check.
+- **No event payload can carry a token.** The event dataclasses are frozen with a fixed field
+  set — this surface exists to be shipped to a metrics backend.
+- **Path templates, not URLs**, so a metric label cannot become a cardinality bomb.
+
+One `RequestStart`/`RequestEnd` pair is emitted **per attempt**, so you can count real wire
+calls. See [`examples/telemetry_hook.py`](examples/telemetry_hook.py) for the OpenTelemetry
+mapping.
+
+### Decision memo (§17) — opt-in, off by default
+
+An optional TTL-bounded cache for `check_access` results. **Disabled by default**, because
+§11.2 rule 6's ban on caching authorization decisions is still the default behaviour.
+
+```python
+client = AxiamClient(base_url=..., tenant_slug="acme", decision_memo_ttl_ms=5000)  # 0 = off
+```
+
+**What you are accepting.** The staleness bound is the TTL, in *both* directions: a grant
+revoked on the server can still read as allowed for up to the TTL, and a grant just added can
+still read as denied for up to the TTL.
+
+> **Reads-your-own-writes is not guaranteed.** An admin UI that grants a role and immediately
+> re-checks is the case that breaks, and it breaks silently. If that is your workload, leave
+> this off.
+
+The TTL is clamped to 5000 ms rather than rejected. Allows and denies are memoized identically
+— asymmetric caching would leak which outcome occurred through latency. Failures are never
+memoized: caching a transport error as a deny would turn a blip into a TTL-long outage. The
+memo is cleared on `login`, `verify_mfa`, `refresh` and `logout`, since entries are keyed by
+subject rather than by session. It is thread-safe.
