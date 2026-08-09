@@ -113,6 +113,7 @@ class TelemetryDispatcher:
     __slots__ = ("_hook",)
 
     def __init__(self, hook: TelemetryHook | None = None) -> None:
+        """Wrap *hook*, or nothing at all when it is ``None`` (the default)."""
         self._hook = hook
 
     @property
@@ -159,6 +160,7 @@ class _RequestSpan:
         path_template: str,
         attempt: int,
     ) -> None:
+        """Capture the labels this span's two events will carry."""
         self._d = dispatcher
         self._op = operation
         self._method = method
@@ -169,6 +171,7 @@ class _RequestSpan:
         self.outcome: Outcome = "failure"
 
     def __enter__(self) -> _RequestSpan:
+        """Emit ``RequestStart`` and start the clock."""
         if self._d.installed:
             self._d.emit(
                 RequestStart(
@@ -182,6 +185,7 @@ class _RequestSpan:
         return self
 
     def __exit__(self, exc_type: object, *_: object) -> Literal[False]:
+        """Emit ``RequestEnd``, never suppressing the in-flight exception."""
         if self._d.installed:
             # An exception leaving the block is a failure even if the caller
             # never set `outcome` — the common path for a transport error.

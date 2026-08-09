@@ -140,6 +140,7 @@ async def retry_async(
     """Async twin of :func:`retry_sync`, sharing its arithmetic exactly."""
 
     async def _default_sleep(ms: float) -> None:
+        """Await *ms* milliseconds, the default when no sleep is injected."""
         await asyncio.sleep(ms / 1000.0)
 
     _sleep = sleep if sleep is not None else _default_sleep

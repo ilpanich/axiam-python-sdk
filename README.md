@@ -702,11 +702,13 @@ Wire metrics without this package depending on any metrics library:
 ```python
 from axiam_sdk import AxiamClient, RequestEnd, Retry, TelemetryEvent
 
+
 def sink(event: TelemetryEvent) -> None:
     if isinstance(event, RequestEnd):
         histogram.record(event.duration_ms, {"op": event.operation, "outcome": event.outcome})
     elif isinstance(event, Retry):
         counter.add(1, {"op": event.operation, "attempt": event.attempt})
+
 
 client = AxiamClient(base_url=..., tenant_slug="acme", telemetry_hook=sink)
 ```

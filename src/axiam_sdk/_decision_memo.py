@@ -147,5 +147,6 @@ class DecisionMemo:
             self._entries.clear()
 
     def __len__(self) -> int:
+        """Number of live entries, for tests."""
         with self._lock:
             return len(self._entries)
