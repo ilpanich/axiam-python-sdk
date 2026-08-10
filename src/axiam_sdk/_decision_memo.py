@@ -28,6 +28,12 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from ._telemetry import ConfigClamped
+
+if TYPE_CHECKING:
+    from ._telemetry import TelemetryDispatcher
 
 __all__ = ["MAX_TTL_MS", "memo_key", "DecisionMemo"]
 
@@ -145,6 +151,28 @@ class DecisionMemo:
         """
         with self._lock:
             self._entries.clear()
+
+    def report_clamp(self, requested_ms: float, telemetry: TelemetryDispatcher) -> None:
+        """Emit a :class:`ConfigClamped` if the requested TTL was clamped (§19.2 rule 6).
+
+        This is the clamp that matters most to get right: an operator who set a
+        60-second TTL believes their staleness bound is 60 seconds. It is five,
+        and without this event nothing anywhere says so.
+
+        Nothing is emitted when the requested value was already inside the
+        limit, or when the memo is disabled — an event that fires when nothing
+        happened trains its reader to ignore it.
+        """
+        if not telemetry.installed or requested_ms <= 0.0 or requested_ms == self._ttl_ms:
+            return
+        telemetry.emit(
+            ConfigClamped(
+                setting="decision_memo_ttl_ms",
+                requested=str(requested_ms),
+                effective=str(self._ttl_ms),
+                contract_reference="§17.1 rule 2",
+            )
+        )
 
     def __len__(self) -> int:
         """Number of live entries, for tests."""
