@@ -195,6 +195,10 @@ class _AxiamClientBase(_OidcMixin):
         # §17.1 rule 1 — off unless the caller asked for it.
         self._decision_memo = DecisionMemo(decision_memo_ttl_ms)
         self._telemetry = TelemetryDispatcher(telemetry_hook)
+        # §19.2 rule 6: a clamped setting is reported, not swallowed. Emitted
+        # once, here, because construction is the only moment an operator can
+        # act on it.
+        self._decision_memo.report_clamp(decision_memo_ttl_ms, self._telemetry)
         # §18 shutdown flag, read on every operation.
         self._closed = False
 
