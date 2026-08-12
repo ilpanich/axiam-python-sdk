@@ -52,6 +52,8 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
+from axiam_sdk._models import RequestedPermission
+from axiam_sdk._oidc import UmaChallenger, uma_challenge_header
 from axiam_sdk.django.middleware import AxiamUser
 
 #: Standardized 401 JSON error body shape (CONTRACT.md §10/§11) — mirrors
@@ -148,12 +150,51 @@ def require_auth(view: _View) -> _View:
     return _wrap(view, _guard)
 
 
+def _denied(action: str, resource_id: str, challenger: UmaChallenger | None) -> JsonResponse:
+    """Build the 403, minting a §20.3 challenge when one was configured.
+
+    Only ever reached on a path that has already decided to refuse, so minting
+    cannot change the outcome — at worst it fails and the caller gets the plain
+    403 they would have got anyway.
+    """
+    response = JsonResponse(
+        {
+            "error": "authorization_denied",
+            "message": f"caller lacks permission for action {action!r}",
+        },
+        status=_AUTHZ_DENIED_STATUS,
+    )
+    if challenger is None:
+        return response
+
+    try:
+        # §20.2: the UMA scope is the AXIAM *action*, which is what makes the
+        # ticket ask for exactly the authority this check just refused — and
+        # what keeps a deny rule vetoing the resulting RPT the same way it
+        # vetoed the check.
+        ticket = challenger.client.uma_request_ticket(
+            challenger.pat,
+            [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
+        )
+    except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
+        # Deliberately broad and deliberately silent: any failure to mint leaves
+        # the denial exactly as it was. Not logged either, because a Protection
+        # API failure message can echo a credential and §11.2.8 keeps those out
+        # of this path.
+        return response
+
+    # Additive: the body above is the unchanged §11.2.5 shape.
+    response["WWW-Authenticate"] = uma_challenge_header(challenger.realm, challenger.as_uri, ticket)
+    return response
+
+
 def require_access(
     client: AxiamClient,
     action: str,
     *,
     resource_param: str = "pk",
     scope: str | None = None,
+    uma_challenge: UmaChallenger | None = None,
 ) -> Callable[[_View], _View]:
     """View decorator factory requiring an AXIAM authorization check for
     ``action`` on a resource resolved from the view's keyword arguments
@@ -182,6 +223,14 @@ def require_access(
     (CONTRACT.md §11.2.5) — never allow, never retry beyond the client's own
     bounded refresh. No decision caching (§11.2.6): every request performs a
     fresh ``check_access`` call.
+
+    Pass ``uma_challenge`` (a :class:`~axiam_sdk.UmaChallenger` holding the
+    **sync** client) and a denial also carries ``WWW-Authenticate: UMA`` with a
+    freshly minted ticket for the action just refused (§20.3) — so a UMA-aware
+    client learns where to obtain authority instead of only being told no. The
+    403 body is unchanged, so a client that does not speak UMA sees exactly what
+    it saw before. It is opt-in, and minting failures do not escalate the
+    denial; see :class:`~axiam_sdk.UmaChallenger` for why both matter.
     """
 
     def decorator(view: _View) -> _View:
@@ -214,13 +263,7 @@ def require_access(
                     action, resource_id, scope=scope, subject_id=user.user_id
                 )
             except AuthzError:
-                return JsonResponse(
-                    {
-                        "error": "authorization_denied",
-                        "message": f"caller lacks permission for action {action!r}",
-                    },
-                    status=_AUTHZ_DENIED_STATUS,
-                )
+                return _denied(action, resource_id, uma_challenge)
             except (AuthError, NetworkError):
                 # §11.2.5: fail closed — a transport failure while calling
                 # the authz endpoint is "couldn't decide", never a silent
@@ -234,13 +277,7 @@ def require_access(
                 )
 
             if not result.allowed:
-                return JsonResponse(
-                    {
-                        "error": "authorization_denied",
-                        "message": f"caller lacks permission for action {action!r}",
-                    },
-                    status=_AUTHZ_DENIED_STATUS,
-                )
+                return _denied(action, resource_id, uma_challenge)
             return None
 
         return _wrap(view, _guard)

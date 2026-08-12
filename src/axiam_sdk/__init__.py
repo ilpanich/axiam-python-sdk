@@ -46,6 +46,7 @@ from axiam_sdk._oidc import (
     UMA_CLAIM_TOKEN_FORMAT,
     UMA_PROTECTION_SCOPE,
     UMA_TICKET_GRANT_TYPE,
+    UmaChallenger,
     uma_challenge_header,
     uma_parse_challenge,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "ResourceSet",
     "RptPermission",
     "UmaChallenge",
+    "UmaChallenger",
     "uma_parse_challenge",
     "uma_challenge_header",
     "UMA_TICKET_GRANT_TYPE",
