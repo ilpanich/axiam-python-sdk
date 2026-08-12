@@ -415,3 +415,111 @@ class VerifiedLogoutToken(BaseModel):
     """
 
     model_config = {"frozen": True}
+
+
+# ---------------------------------------------------------------------------
+# §20 UMA 2.0 — Protection API and ticket grant
+# ---------------------------------------------------------------------------
+
+
+class ResourceSet(BaseModel):
+    """A UMA resource set — an AXIAM resource seen through the Protection API
+    (CONTRACT.md §20.1).
+
+    ``id`` is **the AXIAM resource id**, not a parallel identifier: the same
+    UUID is directly usable as the ``resource_id`` of a later
+    :class:`RequestedPermission`, and as the resource id anywhere else in this
+    SDK.
+    """
+
+    id: str | None = None
+    """Assigned by the server on registration; absent on the way in."""
+
+    name: str
+    """Human-readable name, shown in the admin UI."""
+
+    type: str | None = None
+    """Free-form resource type. Defaults server-side to ``uma_resource`` when
+    omitted, so a resource server that leaves it out does not produce a row
+    that sorts oddly next to hand-made ones."""
+
+    resource_scopes: list[str] = []
+    """The scope names a resource server may ask for on this resource.
+
+    **Replaced wholesale by an update, never merged** (§20.2 rule 8). This SDK
+    does not read the current scopes and fold them into an update payload as a
+    convenience — doing so would make removing a scope impossible through it.
+    """
+
+    model_config = {"frozen": True}
+
+
+class RequestedPermission(BaseModel):
+    """One ``(resource, scopes)`` pair a resource server requires (§20.1)."""
+
+    resource_id: str
+    """The AXIAM resource id — the same UUID the Protection API returned as
+    ``_id``."""
+
+    resource_scopes: list[str]
+    """Scope names, each of which the resource must already declare. Matched
+    exactly: no prefix or wildcard semantics in either direction."""
+
+    model_config = {"frozen": True}
+
+
+class RptPermission(BaseModel):
+    """One entry of an RPT's ``permissions`` claim.
+
+    **A record of a decision already made, not a live authorization answer**
+    (§20.2 rule 7). These are the pairs the engine allowed when the RPT was
+    minted; a grant revoked afterwards does not empty a live RPT. Do not cache
+    them beyond the token's own expiry — which is why that expiry is short.
+    """
+
+    resource_id: str
+    resource_scopes: list[str]
+    exp: int
+    """Absolute expiry, seconds since the epoch."""
+
+    model_config = {"frozen": True}
+
+
+class RequestingPartyToken(BaseModel):
+    """The result of the uma-ticket grant (§20.1).
+
+    **There is no ``refresh_token`` field, and that is deliberate** (§20.2
+    rule 5). The grant issues none, so an RPT cannot outlive the ticket that
+    authorised it; an application that wants a fresh one re-runs the grant.
+    This result never enters the §9 single-flight refresh guard — there is
+    nothing to refresh.
+    """
+
+    access_token: SecretStr
+    """The RPT itself (§20.6 secret)."""
+
+    token_type: str
+    """Always ``Bearer``."""
+
+    expires_in: int
+    """``min(claim_token remaining, server ceiling, 300 s)``."""
+
+    model_config = {"frozen": True}
+
+
+class UmaChallenge(BaseModel):
+    """A parsed ``WWW-Authenticate: UMA`` challenge (§20.3)."""
+
+    realm: str | None = None
+    """The protection realm the resource server named."""
+
+    as_uri: str | None = None
+    """The authorization server the resource server nominates.
+
+    **Not automatically trusted.** See
+    :func:`axiam_sdk.uma_parse_challenge`."""
+
+    ticket: SecretStr | None = None
+    """The ticket to exchange — a bearer credential for its 60-second life."""
+
+    model_config = {"frozen": True}
