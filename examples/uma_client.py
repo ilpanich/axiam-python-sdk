@@ -69,13 +69,20 @@ async def main() -> None:
             # retrying the same request would be pointless.
             print("no WWW-Authenticate header: this refusal is not actionable.")
             return
-        print(f"challenge: {header}")
 
         # ---- 2. Parse, and only parse ----
         challenge = uma_parse_challenge(header)
         if challenge is None or challenge.ticket is None:
             print("the challenge names no ticket; nothing to redeem.")
             return
+
+        # Print the *parsed* fields, never the raw header. The header contains
+        # `ticket="..."`, and §20.6 is explicit that the ticket's 60-second life
+        # does not make it harmless: for those 60 seconds it is the credential
+        # that converts into an RPT, so a header in a log line is a live
+        # credential in a log line. `realm` and `as_uri` are not secrets and are
+        # the two fields you actually need to look at.
+        print(f"challenge: realm={challenge.realm!r} as_uri={challenge.as_uri!r} ticket=[REDACTED]")
 
         # ---- 3. The trust decision ----
         #
