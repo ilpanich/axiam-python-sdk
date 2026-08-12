@@ -102,10 +102,15 @@ async def main() -> None:
         trusted = (await client.oidc_discover()).issuer
         nominated = challenge.as_uri
         if nominated is not None and nominated.rstrip("/") != trusted.rstrip("/"):
-            # The nominated value is deliberately not echoed — see above. Our own
-            # issuer is ours to print, and it is the half a reader needs in order
-            # to debug the mismatch.
-            print(f"refusing to redeem: the challenge nominates a server that is not {trusted}.")
+            # Neither side of the comparison is echoed. The nominated value for
+            # the reasons above; our own issuer because it is reached through a
+            # client constructed with a client secret, and an example that prints
+            # values derived from that object is teaching a habit that is fine
+            # here and wrong three refactors later. The decision and its outcome
+            # are what a reader needs; the values are two lines away in a
+            # debugger.
+            print("refusing to redeem: the challenge nominates an authorization server")
+            print("that is not the issuer this client already trusts.")
             print("this is the auto-exchange §20.3 forbids, and why it forbids it.")
             return
         print("as_uri matches the issuer we already trust; redeeming.")
