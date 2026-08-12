@@ -80,8 +80,15 @@ async def main() -> None:
         # `ticket="..."`, and §20.6 is explicit that the ticket's 60-second life
         # does not make it harmless: for those 60 seconds it is the credential
         # that converts into an RPT, so a header in a log line is a live
-        # credential in a log line. `realm` and `as_uri` are not secrets and are
-        # the two fields you actually need to look at.
+        # credential in a log line.
+        #
+        # `realm` and `as_uri` are printed deliberately. §20.6 enumerates what is
+        # sensitive — the ticket, the claim_token, the PAT and the RPT — and
+        # these are not among them; `as_uri` is a URL, and displaying it is the
+        # entire point of the trust decision below. CodeQL taints every field of
+        # the parsed challenge because it came from an auth header, so the
+        # suppression says which of those fields this is and why it is safe.
+        # codeql[py/clear-text-logging-sensitive-data]
         print(f"challenge: realm={challenge.realm!r} as_uri={challenge.as_uri!r} ticket=[REDACTED]")
 
         # ---- 3. The trust decision ----
@@ -94,6 +101,10 @@ async def main() -> None:
         trusted = (await client.oidc_discover()).issuer
         nominated = challenge.as_uri
         if nominated is not None and nominated.rstrip("/") != trusted.rstrip("/"):
+            # Same reasoning as above: `as_uri` is a URL the challenge nominated,
+            # not a credential (§20.6). Showing it is what makes the refusal
+            # legible — "we would not send the user's token *there*".
+            # codeql[py/clear-text-logging-sensitive-data]
             print(f"refusing to redeem: as_uri {nominated} is not our issuer {trusted}.")
             print("this is the auto-exchange §20.3 forbids, and why it forbids it.")
             return
