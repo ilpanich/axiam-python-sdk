@@ -31,7 +31,7 @@ import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -52,8 +52,11 @@ from axiam_sdk._models import (
     IntrospectionResult,
     OidcConfiguration,
     OidcTokenSet,
+    RequestingPartyToken,
+    ResourceSet,
     SsoCompleteResult,
     SsoStartResult,
+    UmaChallenge,
     VerifiedLogoutToken,
 )
 from axiam_sdk._oidc_idtoken import validate_id_token
@@ -98,6 +101,60 @@ TOKEN_EXCHANGE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange"
 
 ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 """The only ``subject_token_type``/``actor_token_type`` AXIAM accepts."""
+
+UMA_TICKET_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:uma-ticket"
+"""``grant_type`` of the UMA ticket grant (UMA 2.0 §3.3.1, CONTRACT.md §20.1)."""
+
+UMA_PROTECTION_SCOPE = "uma_protection"
+"""The scope that makes an access token a Protection API Token (§20.2 rule 1)."""
+
+UMA_CLAIM_TOKEN_FORMAT = "urn:ietf:params:oauth:token-type:access_token"
+"""The only ``claim_token_format`` AXIAM v1 accepts (§20.2 rule 2)."""
+
+
+def uma_parse_challenge(header: str) -> UmaChallenge | None:
+    """Parse a ``WWW-Authenticate: UMA …`` header value (CONTRACT.md §20.3).
+
+    **This deliberately does not exchange the ticket.** Parsing a challenge and
+    acting on it are separate decisions: the ``as_uri`` names an authorization
+    server the caller has not necessarily chosen to trust, and auto-exchanging
+    would send the requesting party's ``claim_token`` to whatever host answered
+    the 403. The caller decides.
+
+    Returns ``None`` when the header is not a UMA challenge.
+    """
+    trimmed = header.strip()
+    if not trimmed.startswith("UMA"):
+        return None
+    rest = trimmed[3:]
+    # "UMA" alone is a valid, if useless, challenge; anything else must be
+    # separated by whitespace so `UMAX realm="…"` is not read as UMA.
+    if rest and not rest[0].isspace():
+        return None
+
+    fields: dict[str, str] = {}
+    for part in rest.split(","):
+        key, sep, value = part.partition("=")
+        if not sep:
+            continue
+        fields[key.strip()] = value.strip().strip('"')
+
+    ticket = fields.get("ticket")
+    return UmaChallenge(
+        realm=fields.get("realm"),
+        as_uri=fields.get("as_uri"),
+        ticket=SecretStr(ticket) if ticket is not None else None,
+    )
+
+
+def uma_challenge_header(realm: str, as_uri: str, ticket: SecretStr | str) -> str:
+    """Format a ``WWW-Authenticate: UMA`` header value (§20.3, emit half).
+
+    The resource-server side: having obtained a ticket from
+    ``uma_request_ticket``, tell the caller where to redeem it.
+    """
+    return f'UMA realm="{realm}", as_uri="{as_uri}", ticket="{_expose_secret(ticket)}"'
+
 
 BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
 """The ``events`` member that distinguishes a logout token from an ID token
@@ -1176,6 +1233,104 @@ class _OidcMixin:
             token_type=wire["token_type"],
             expires_in=wire["expires_in"],
             scope=wire.get("scope"),
+        )
+
+    # ------------------------------------------------------------------
+    # §20 UMA 2.0 — Protection API and ticket grant
+    # ------------------------------------------------------------------
+
+    def _uma_protection_url(self, path: str) -> str:
+        """A Protection API URL. These are host-root paths fixed by UMA 2.0
+        FedAuthz §2.2, not discovery-provided endpoints."""
+        return f"{normalize_origin(self._session.base_url)}{path}"
+
+    def _uma_protection_headers(self, pat: SecretStr | str) -> dict[str, str]:
+        """The PAT goes in ``Authorization``.
+
+        It is an explicit argument on every Protection API call rather than
+        this client's own session, because a PAT must be a
+        **client-credentials** token — a ticket binds to the ``client_id`` that
+        minted it — and this client's session is usually a *user* session,
+        which names no client to bind to (§20.2 rule 1).
+        """
+        return {"Authorization": f"Bearer {_expose_secret(pat)}"}
+
+    def _uma_resource_payload(self, resource: ResourceSet) -> dict[str, object]:
+        """The wire body for a register/update.
+
+        ``resource_scopes`` is always sent, even when empty: an update
+        **replaces** the scope list, and omitting the key would leave the
+        server's copy untouched (§20.2 rule 8).
+        """
+        payload: dict[str, object] = {
+            "name": resource.name,
+            "resource_scopes": list(resource.resource_scopes),
+        }
+        if resource.type is not None:
+            payload["type"] = resource.type
+        return payload
+
+    def _handle_uma_protection_response(self, response: httpx.Response, fallback: str) -> object:
+        """Raise on a non-2xx Protection API response, else return the JSON."""
+        if response.status_code >= httpx.codes.BAD_REQUEST:
+            raise error_from_oauth2_response(response.status_code, response, fallback)
+        if response.status_code == httpx.codes.NO_CONTENT or not response.content:
+            return None
+        return response.json()
+
+    def _resource_set_from_wire(self, wire: object) -> ResourceSet:
+        """Map the snake_case wire body onto :class:`ResourceSet`.
+
+        ``_id`` becomes ``id``: it **is** the AXIAM resource id, so the value
+        is carried across unchanged rather than translated.
+        """
+        data = cast("dict[str, object]", wire)
+        return ResourceSet(
+            id=cast("str | None", data.get("_id")),
+            name=cast("str", data["name"]),
+            type=cast("str | None", data.get("type")),
+            resource_scopes=cast("list[str]", data.get("resource_scopes") or []),
+        )
+
+    def _uma_ticket_form(
+        self, *, ticket: SecretStr | str, claim_token: SecretStr | str
+    ) -> dict[str, str]:
+        """Build the uma-ticket grant form body (§20.1).
+
+        ``claim_token`` is a **required** parameter, though UMA 2.0 §3.3.1
+        marks it optional: v1 implements neither incremental authorization nor
+        claims-gathering, so it is the only channel that names a requesting
+        party. Defaulting it to the resource server's own PAT would mint an RPT
+        for the resource server instead of for the user (§20.2 rule 2).
+        """
+        return {
+            "grant_type": UMA_TICKET_GRANT_TYPE,
+            "ticket": _expose_secret(ticket),
+            "claim_token": _expose_secret(claim_token),
+            "claim_token_format": UMA_CLAIM_TOKEN_FORMAT,
+            "client_id": self._require_oidc_client_id(),
+            "client_secret": self._require_client_secret("uma_exchange_ticket"),
+        }
+
+    def _handle_rpt_response(self, response: httpx.Response) -> RequestingPartyToken:
+        """Parse a uma-ticket grant response into a
+        :class:`RequestingPartyToken`.
+
+        §20.4: the non-2xx body goes through the same ``OAuth2ErrorResponse``
+        path as every other ``/oauth2/*`` call, so ``invalid_grant`` and
+        ``access_denied`` reach the caller verbatim in ``error`` — including
+        when ``access_denied`` arrives as **403** (UMA 2.0 §3.3.6) rather than
+        the 400 every other OAuth2 error uses.
+        """
+        if response.status_code != httpx.codes.OK:
+            raise error_from_oauth2_response(
+                response.status_code, response, "uma ticket exchange request failed"
+            )
+        wire = response.json()
+        return RequestingPartyToken(
+            access_token=SecretStr(wire["access_token"]),
+            token_type=wire["token_type"],
+            expires_in=wire["expires_in"],
         )
 
     # ------------------------------------------------------------------

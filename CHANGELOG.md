@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§20 UMA 2.0 — Protection API and ticket grant (contract 1.10).** New methods on both
+  `AxiamClient` and `AsyncAxiamClient`: `uma_register_resource` / `uma_read_resource` /
+  `uma_update_resource` / `uma_delete_resource` / `uma_list_resources`, `uma_request_ticket`,
+  `uma_exchange_ticket`, plus the module-level `WWW-Authenticate: UMA` helpers
+  `uma_parse_challenge` and `uma_challenge_header`, and the `ResourceSet` /
+  `RequestedPermission` / `RptPermission` / `RequestingPartyToken` / `UmaChallenge` models.
+
+  Two behaviours are load-bearing rather than incidental, and both are asserted by counting
+  requests. **`uma_exchange_ticket` never retries** — the one documented exception to the §16
+  retry policy, because a ticket is consumed before the request is evaluated, so a retry
+  cannot succeed and under concurrency is exactly the second redemption that
+  ilpanich/axiam#302's measured residual describes. And **`uma_parse_challenge` does not
+  exchange the ticket it parsed**: the `as_uri` names an authorization server the caller has
+  not chosen to trust.
+
+  The PAT is an explicit first argument on every Protection API call rather than being taken
+  from the client's session, because that session is usually a *user* session and a ticket
+  binds to a `client_id`.
+
 - **§19 `ConfigClamped` event (contract 1.9).** A clamped setting is now reported at
   construction rather than applied silently — currently the §17.1 rule 2 memo TTL. Clamping
   is right; clamping *silently* is not: an operator who set a 60-second TTL believes their
@@ -17,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Re-vendored `CONTRACT.md` at **1.9**.
+- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` with the UMA paths.
 
 ## [Unreleased]
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from pydantic import SecretStr
@@ -43,6 +43,9 @@ from axiam_sdk._models import (
     LoginResult,
     OidcConfiguration,
     OidcTokenSet,
+    RequestedPermission,
+    RequestingPartyToken,
+    ResourceSet,
     SsoCompleteResult,
     SsoStartResult,
     VerifiedLogoutToken,
@@ -567,6 +570,158 @@ class AsyncAxiamClient(_AxiamClientBase):
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._session._send_async(request)
         return self._handle_exchange_response(response)
+
+    async def uma_register_resource(
+        self, pat: SecretStr | str, resource: ResourceSet
+    ) -> ResourceSet:
+        """``POST /uma2/rreg/resource_set`` — register a resource set
+        (CONTRACT.md §20.1).
+
+        The returned ``id`` **is** the AXIAM resource id, directly usable as
+        the ``resource_id`` of a later :meth:`uma_request_ticket`.
+        """
+        request = self._session.async_client.build_request(
+            "POST",
+            self._uma_protection_url("/uma2/rreg/resource_set"),
+            json=self._uma_resource_payload(resource),
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        wire = self._handle_uma_protection_response(response, "uma resource registration failed")
+        return self._resource_set_from_wire(wire)
+
+    async def uma_read_resource(self, pat: SecretStr | str, resource_id: str) -> ResourceSet:
+        """``GET /uma2/rreg/resource_set/{id}`` — read a resource set (§20.1)."""
+        request = self._session.async_client.build_request(
+            "GET",
+            self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        wire = self._handle_uma_protection_response(response, "uma resource read failed")
+        return self._resource_set_from_wire(wire)
+
+    async def uma_update_resource(
+        self, pat: SecretStr | str, resource_id: str, resource: ResourceSet
+    ) -> ResourceSet:
+        """``PUT /uma2/rreg/resource_set/{id}`` — replace a resource set (§20.1).
+
+        **The scope list is replaced, not merged** (§20.2 rule 8). Whatever
+        ``resource.resource_scopes`` holds becomes the complete declared set;
+        omitting a scope removes it, which is how a resource server drops an
+        authority. This method performs no read-before-write.
+        """
+        request = self._session.async_client.build_request(
+            "PUT",
+            self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
+            json=self._uma_resource_payload(resource),
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        wire = self._handle_uma_protection_response(response, "uma resource update failed")
+        return self._resource_set_from_wire(wire)
+
+    async def uma_delete_resource(self, pat: SecretStr | str, resource_id: str) -> None:
+        """``DELETE /uma2/rreg/resource_set/{id}`` — deregister (§20.1)."""
+        request = self._session.async_client.build_request(
+            "DELETE",
+            self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        self._handle_uma_protection_response(response, "uma resource delete failed")
+
+    async def uma_list_resources(self, pat: SecretStr | str) -> list[str]:
+        """``GET /uma2/rreg/resource_set`` — list the ids **this client**
+        registered (§20.1).
+
+        Not the tenant's whole resource tree: a protection scope does not
+        entitle a caller to enumerate it.
+        """
+        request = self._session.async_client.build_request(
+            "GET",
+            self._uma_protection_url("/uma2/rreg/resource_set"),
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        wire = self._handle_uma_protection_response(response, "uma resource list failed")
+        return cast("list[str]", wire or [])
+
+    async def uma_request_ticket(
+        self, pat: SecretStr | str, permissions: Sequence[RequestedPermission]
+    ) -> SecretStr:
+        """``POST /uma2/perm`` — mint a permission ticket (§20.1).
+
+        Scope names are validated **here**, against each resource's declared
+        set. Asking for an undeclared scope is a ``400``, not a denial — the
+        two are different failures, and this SDK surfaces the distinction the
+        server draws rather than flattening it.
+        """
+        body = [
+            {"resource_id": p.resource_id, "resource_scopes": list(p.resource_scopes)}
+            for p in permissions
+        ]
+        request = self._session.async_client.build_request(
+            "POST",
+            self._uma_protection_url("/uma2/perm"),
+            json=body,
+            headers=self._uma_protection_headers(pat),
+        )
+        response = await self._session._send_async(request)
+        wire = cast(
+            "dict[str, str]",
+            self._handle_uma_protection_response(response, "uma ticket request failed"),
+        )
+        return SecretStr(wire["ticket"])
+
+    async def uma_exchange_ticket(
+        self,
+        *,
+        ticket: SecretStr | str,
+        claim_token: SecretStr | str,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> RequestingPartyToken:
+        """Async twin of :meth:`axiam_sdk.AxiamClient.uma_exchange_ticket`.
+
+        ``POST /oauth2/token`` with the uma-ticket grant (§20.1) — exchange a
+        ticket for an RPT.
+
+        **This method never retries.** It issues exactly one request and is
+        outside the §16 retry policy — not on ``5xx``, not on timeout, not on
+        any transport failure (§20.2 rule 6). The ticket is consumed *before*
+        the request is evaluated, so a failed exchange has already spent it: a
+        retry cannot succeed, and under concurrency it is precisely the second
+        redemption that ilpanich/axiam#302's measured residual describes. On
+        failure, request a **new** ticket.
+
+        What this method deliberately does *not* do:
+
+        * **No default ``claim_token``** (rule 2) — it is required. Defaulting
+          it to the resource server's own PAT would mint an RPT for the
+          resource server instead of for the user.
+        * **No auto-narrowing on ``access_denied``** (rule 3). A partial grant
+          is refused whole; whether two-of-three permissions is useful is the
+          application's judgement, not this SDK's.
+        * **No adoption** (rule 4). The RPT is the *requesting party's* token.
+          Adopting it would re-privilege every later call this client makes as
+          that user.
+
+        The four ticket refusals — unknown, expired, already used, wrong client
+        — all answer ``invalid_grant`` with one message. This SDK does not try
+        to tell them apart (§20.4): the server collapses them so a caller
+        cannot probe for live ticket handles.
+
+        Raises:
+            AuthError: when no ``client_secret`` was configured — client-side,
+                with no wire call.
+        """
+        config = configuration or await self.oidc_discover()
+        form = self._uma_ticket_form(ticket=ticket, claim_token=claim_token)
+        url = self._token_endpoint_url(config, tenant_id)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        response = await self._session._send_async(request)
+        return self._handle_rpt_response(response)
 
     async def logout_url(
         self,
