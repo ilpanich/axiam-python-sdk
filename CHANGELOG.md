@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§20.3 challenge emission wired into the §11 guards.** A new `UmaChallenger` (realm,
+  `as_uri`, PAT, client) passed as `uma_challenge=` to FastAPI's `require_access` or Django's
+  `@require_access`: on denial the guard mints a permission ticket for the action just
+  refused and sets `WWW-Authenticate: UMA` alongside the 403.
+
+  **Opt-in by construction.** Emitting a challenge means minting a credential, so a guard
+  that did it by default would turn every unauthorized request into a Protection API call.
+  And **failure is not escalation**: if minting fails the denial still surfaces as a plain
+  403, because a caller who was going to be refused is refused either way and an outage must
+  not turn a deny into a 500 — still less into an allow.
+
+  The challenger carries the *client* rather than a bound method, so the async guard takes
+  the async client and the sync Django guard the sync one — neither has to bridge event loops
+  to mint a ticket.
+
+- **A runnable UMA example pair**: `examples/uma_resource_server.py` mints a PAT, registers a
+  resource and guards a route with the challenger; `examples/uma_client.py` catches the
+  refusal, parses the challenge, **makes the trust decision about `as_uri` explicitly**,
+  exchanges the ticket and retries with the RPT. The client half exists partly to show what
+  §20.3 is protecting: the `as_uri` is chosen by the server you just failed against, and the
+  example refuses to redeem against a host that is not the issuer it already trusts.
+
 - **§20 UMA 2.0 — Protection API and ticket grant (contract 1.10).** New methods on both
   `AxiamClient` and `AsyncAxiamClient`: `uma_register_resource` / `uma_read_resource` /
   `uma_update_resource` / `uma_delete_resource` / `uma_list_resources`, `uma_request_ticket`,

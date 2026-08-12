@@ -89,7 +89,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
 from axiam_sdk._jwks import JwksVerifier
-from axiam_sdk._models import OidcTokenSet
+from axiam_sdk._models import OidcTokenSet, RequestedPermission
+from axiam_sdk._oidc import UmaChallenger, uma_challenge_header
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 
 #: Standardized "missing credentials" / "invalid or expired token" / tenant
@@ -340,6 +341,7 @@ def require_access(
     resource_id: str | None = None,
     resolver: Callable[[Request], str] | None = None,
     scope: str | None = None,
+    uma_challenge: UmaChallenger | None = None,
 ) -> Callable[[Request], Awaitable[AxiamUser]]:
     """Factory returning a ``Depends(...)``-compatible async dependency that
     requires an AXIAM authorization check for ``action`` on a resource
@@ -387,6 +389,14 @@ def require_access(
     No decision caching (§11.2.6): every call performs a fresh
     ``check_access`` round-trip. Deny/error paths never log or echo the raw
     token (§11.2.8).
+
+    Pass ``uma_challenge`` (a :class:`~axiam_sdk.UmaChallenger`) and a denial
+    also carries ``WWW-Authenticate: UMA`` with a freshly minted ticket for the
+    action just refused (§20.3) — so a UMA-aware client learns where to obtain
+    authority instead of only being told no. The 403 body is unchanged, so a
+    client that does not speak UMA sees exactly what it saw before. It is
+    opt-in, and minting failures do not escalate the denial; see
+    :class:`~axiam_sdk.UmaChallenger` for why both matter.
     """
     resource_sources = [
         source for source in (resource_id, resource_param, resolver) if source is not None
@@ -413,13 +423,7 @@ def require_access(
                 action, target_resource_id, scope=scope, subject_id=user.user_id
             )
         except AuthzError as exc:
-            raise HTTPException(
-                status_code=_AUTHZ_DENIED_STATUS,
-                detail={
-                    "error": "authorization_denied",
-                    "message": f"caller lacks permission for action {action!r}",
-                },
-            ) from exc
+            raise await _denied(action, target_resource_id, uma_challenge) from exc
         except (AuthError, NetworkError) as exc:
             # §11.2.5: fail closed — a transport failure while calling the
             # authz endpoint is "couldn't decide", never a silent allow.
@@ -432,16 +436,50 @@ def require_access(
             ) from exc
 
         if not result.allowed:
-            raise HTTPException(
-                status_code=_AUTHZ_DENIED_STATUS,
-                detail={
-                    "error": "authorization_denied",
-                    "message": f"caller lacks permission for action {action!r}",
-                },
-            )
+            raise await _denied(action, target_resource_id, uma_challenge)
         return user
 
     return _dependency
+
+
+async def _denied(action: str, resource_id: str, challenger: UmaChallenger | None) -> HTTPException:
+    """Build the 403, minting a §20.3 challenge when one was configured.
+
+    Only ever reached on a path that has already decided to refuse, so minting
+    cannot change the outcome — at worst it fails and the caller gets the plain
+    403 they would have got anyway.
+    """
+    detail = {
+        "error": "authorization_denied",
+        "message": f"caller lacks permission for action {action!r}",
+    }
+    if challenger is None:
+        return HTTPException(status_code=_AUTHZ_DENIED_STATUS, detail=detail)
+
+    try:
+        # §20.2: the UMA scope is the AXIAM *action*, which is what makes the
+        # ticket ask for exactly the authority this check just refused — and
+        # what keeps a deny rule vetoing the resulting RPT the same way it
+        # vetoed the check.
+        ticket = await challenger.client.uma_request_ticket(
+            challenger.pat,
+            [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
+        )
+    except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
+        # Deliberately broad and deliberately silent: any failure to mint leaves
+        # the denial exactly as it was. Not logged either, because a Protection
+        # API failure message can echo a credential and §11.2.8 keeps those out
+        # of this path.
+        return HTTPException(status_code=_AUTHZ_DENIED_STATUS, detail=detail)
+
+    return HTTPException(
+        status_code=_AUTHZ_DENIED_STATUS,
+        detail=detail,
+        # Additive: the body above is the unchanged §11.2.5 shape.
+        headers={
+            "WWW-Authenticate": uma_challenge_header(challenger.realm, challenger.as_uri, ticket)
+        },
+    )
 
 
 def require_role(

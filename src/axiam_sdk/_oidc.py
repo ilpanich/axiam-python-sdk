@@ -31,6 +31,7 @@ import re
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -154,6 +155,47 @@ def uma_challenge_header(realm: str, as_uri: str, ticket: SecretStr | str) -> st
     ``uma_request_ticket``, tell the caller where to redeem it.
     """
     return f'UMA realm="{realm}", as_uri="{as_uri}", ticket="{_expose_secret(ticket)}"'
+
+
+@dataclass(frozen=True)
+class UmaChallenger:
+    """A configured ``WWW-Authenticate: UMA`` challenge emitter (§20.3, emit half).
+
+    Hand one to :func:`axiam_sdk.fastapi.require_access` (or Django's
+    ``@require_access``) and a denial stops being a bare 403: the guard mints a
+    fresh permission ticket for the pairs the caller lacked and returns it in
+    the header, so a UMA-aware client knows where to go for authority instead of
+    only being told "no".
+
+    **Opt-in, and deliberately so.** Emitting a challenge means minting a
+    credential — a wire call to the Protection API, and a live ticket, produced
+    on a path the caller did not explicitly request. A guard that did that on
+    every denial by default would turn each unauthorized request into a
+    Protection API call, which is a denial-of-service amplifier pointed at your
+    own authorization server.
+
+    **Failure is not escalation.** If minting fails — the PAT expired, the
+    Protection API is down, the resource declares none of the requested scopes —
+    the denial still surfaces as an ordinary 403 without a challenge. A caller
+    who was going to be refused is refused either way; letting a Protection API
+    outage turn a deny into a 500 would hand the outage a second consequence,
+    and letting it turn into an allow would be a security bug.
+
+    :param realm: The protection realm to name in the header.
+    :param as_uri: The authorization server to send the caller to — normally
+        this deployment's issuer, read from discovery rather than concatenated
+        by hand.
+    :param pat: A Protection API Token: a *client-credentials* token carrying
+        the ``uma_protection`` scope (§20.2 rule 1). A user token cannot stand
+        in — a minted ticket is bound to the ``client_id`` that minted it.
+    :param client: The client whose ``uma_request_ticket`` mints the ticket.
+        Async guards need the async client; sync guards the sync one.
+    """
+
+    realm: str
+    as_uri: str
+    pat: SecretStr | str
+    client: Any
 
 
 BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
