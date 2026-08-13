@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 
 from axiam_sdk import AxiamClient, OAuthProtocolError
+from axiam_sdk._oidc import ACCESS_TOKEN_TYPE
 
 
 def main() -> None:
@@ -44,6 +45,7 @@ def main() -> None:
         # will not pick for you (§15.2 rule 1).
         exchanged = client.token_exchange(
             subject_token=user_token,
+            subject_token_type=ACCESS_TOKEN_TYPE,
             scopes=["orders:read"],
             audience="orders-service",
             tenant_id=tenant_id,

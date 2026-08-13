@@ -495,8 +495,11 @@ RFC 8693 — a service holding a user's token exchanging it for a *narrower* one
 before calling the next service.
 
 ```python
+from axiam_sdk._oidc import ACCESS_TOKEN_TYPE
+
 exchanged = client.token_exchange(
     subject_token=user_token,
+    subject_token_type=ACCESS_TOKEN_TYPE,  # required (§15.1), no default
     scopes=["orders:read"],
     audience="orders-service",
 )
@@ -535,9 +538,10 @@ exchanged = client.token_exchange(
 )
 ```
 
-- **`subject_token_type` is yours to state.** The SDK never decodes the subject
-  token to pick it, and never overrides what you named. Omitting it still means
-  `ACCESS_TOKEN_TYPE`, the same-domain exchange above.
+- **`subject_token_type` is yours to state, and is required** (§15.1). The SDK
+  never decodes the subject token to pick it, and never overrides what you
+  named. There is no default — omitting it raises `TypeError` before any wire
+  call, because a default would be the SDK choosing for you.
 - **No actor token.** Delegation across a trust boundary is unsupported in v1;
   sending one is `invalid_request`, which the SDK will not work around by
   dropping it and re-sending.

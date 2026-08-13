@@ -14,7 +14,7 @@ import pytest
 import respx
 
 from axiam_sdk import AsyncAxiamClient, AuthError, AxiamClient, OAuthProtocolError
-from axiam_sdk._oidc import JWT_TOKEN_TYPE
+from axiam_sdk._oidc import ACCESS_TOKEN_TYPE, JWT_TOKEN_TYPE
 from tests._oidc_testkit import BASE_URL, CLIENT_ID, CLIENT_SECRET, discovery_document
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -72,6 +72,7 @@ def test_exchange_sends_the_rfc_8693_grant_and_authenticates(
 
     result = _client().token_exchange(
         subject_token=SUBJECT_TOKEN,
+        subject_token_type=ACCESS_TOKEN_TYPE,
         scopes=["orders:read", "orders:write"],
         audience="orders-service",
         tenant_id=TENANT_ID,
@@ -99,7 +100,9 @@ def test_a_public_client_fails_before_any_wire_call(respx_mock: respx.MockRouter
     # "not mocked" error rather than the AuthError we expect.
 
     with pytest.raises(AuthError, match="client_secret"):
-        _client(with_secret=False).token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+        _client(with_secret=False).token_exchange(
+            subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+        )
 
 
 # ---------------------------------------------------------------------
@@ -113,7 +116,9 @@ def test_absent_actor_token_is_sent_as_absent_never_defaulted(
     _mock_discovery(respx_mock)
     route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
 
-    _client().token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+    _client().token_exchange(
+        subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+    )
 
     form = _form_body(route.calls[0].request)
     assert "actor_token" not in form, (
@@ -129,7 +134,10 @@ def test_actor_token_and_its_type_are_sent_as_a_pair(respx_mock: respx.MockRoute
     route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
 
     _client().token_exchange(
-        subject_token=SUBJECT_TOKEN, actor_token=ACTOR_TOKEN, tenant_id=TENANT_ID
+        subject_token=SUBJECT_TOKEN,
+        actor_token=ACTOR_TOKEN,
+        tenant_id=TENANT_ID,
+        subject_token_type=ACCESS_TOKEN_TYPE,
     )
 
     form = _form_body(route.calls[0].request)
@@ -153,6 +161,7 @@ def test_invalid_scope_is_not_retried_with_fewer_scopes(respx_mock: respx.MockRo
     with pytest.raises(OAuthProtocolError) as excinfo:
         _client().token_exchange(
             subject_token=SUBJECT_TOKEN,
+            subject_token_type=ACCESS_TOKEN_TYPE,
             scopes=["orders:read", "orders:admin"],
             tenant_id=TENANT_ID,
         )
@@ -173,7 +182,9 @@ def test_unauthorized_client_is_surfaced_verbatim_and_not_downgraded(
     )
 
     with pytest.raises(OAuthProtocolError) as excinfo:
-        _client().token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+        _client().token_exchange(
+            subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+        )
 
     assert excinfo.value.error == "unauthorized_client"
     assert route.call_count == 1, "no retry"
@@ -204,7 +215,9 @@ def test_the_six_error_codes_reach_the_caller_unchanged(
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_oauth_error(code))
 
     with pytest.raises(OAuthProtocolError) as excinfo:
-        _client().token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+        _client().token_exchange(
+            subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+        )
 
     assert excinfo.value.error == code
     assert isinstance(excinfo.value, AuthError), (
@@ -225,7 +238,9 @@ def test_a_server_sent_refresh_token_is_not_surfaced(respx_mock: respx.MockRoute
         return_value=_exchange_response(refresh_token="should-not-exist")
     )
 
-    result = _client().token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+    result = _client().token_exchange(
+        subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+    )
 
     assert not hasattr(result, "refresh_token")
     assert "should-not-exist" not in repr(result)
@@ -241,6 +256,7 @@ def test_the_granted_scope_is_readable_when_narrower_than_requested(
 
     result = _client().token_exchange(
         subject_token=SUBJECT_TOKEN,
+        subject_token_type=ACCESS_TOKEN_TYPE,
         scopes=["orders:read", "orders:write"],
         tenant_id=TENANT_ID,
     )
@@ -256,7 +272,9 @@ def test_tokens_are_redacted(respx_mock: respx.MockRouter) -> None:
     _mock_discovery(respx_mock)
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
 
-    result = _client().token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+    result = _client().token_exchange(
+        subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+    )
 
     assert ISSUED_TOKEN not in repr(result), "§15.5: the issued token is a bearer credential"
     assert ISSUED_TOKEN not in str(result)
@@ -273,7 +291,10 @@ def test_a_failed_exchange_never_echoes_the_subject_token(
 
     with pytest.raises(OAuthProtocolError) as excinfo:
         _client().token_exchange(
-            subject_token=SUBJECT_TOKEN, actor_token=ACTOR_TOKEN, tenant_id=TENANT_ID
+            subject_token=SUBJECT_TOKEN,
+            actor_token=ACTOR_TOKEN,
+            tenant_id=TENANT_ID,
+            subject_token_type=ACCESS_TOKEN_TYPE,
         )
 
     rendered = f"{excinfo.value}{excinfo.value!r}"
@@ -296,7 +317,9 @@ async def test_async_token_exchange_matches_the_sync_wire_shape(
     client = AsyncAxiamClient(
         base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
     )
-    result = await client.token_exchange(subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID)
+    result = await client.token_exchange(
+        subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+    )
 
     form = _form_body(route.calls[0].request)
     assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
@@ -360,16 +383,41 @@ def test_subject_token_type_is_never_inferred_from_the_token(
     _mock_discovery(respx_mock)
     route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
 
-    # A subject token that *looks* exactly like a JWT. An SDK that sniffed the
-    # token would send …:jwt here; §15.7 says it must not look, so the caller's
-    # silence still means the §15.1 same-domain default.
+    # A subject token that *looks* exactly like a JWT, presented as an access
+    # token. An SDK that sniffed the token would "correct" this to …:jwt; §15.7
+    # says it must not look, so what the caller named is what goes out. Being
+    # able to hold this wrong is the point: only the caller knows.
     jwt_shaped = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL3BhcnRuZXIuZXhhbXBsZS8ifQ.sig"
-    _client().token_exchange(subject_token=jwt_shaped, tenant_id=TENANT_ID)
+    _client().token_exchange(
+        subject_token=jwt_shaped, tenant_id=TENANT_ID, subject_token_type=ACCESS_TOKEN_TYPE
+    )
 
     form = _form_body(route.calls[0].request)
     assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:access_token", (
         "§15.7: the token's shape must not pick the type"
     )
+
+
+def test_an_omitted_subject_token_type_never_reaches_the_wire(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """§15.1: the type is required and has no default.
+
+    Python refuses the call before any of the SDK's own code runs — which is the
+    enforcement §15.7 asks for, so it gets an assertion. Silently sending
+    ``…:access_token`` would be the SDK choosing on the caller's behalf; and for
+    a caller who actually held a refresh token it would trade the
+    ``invalid_request`` that *names* the type for a generic ``invalid_grant``.
+    """
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
+
+    with pytest.raises(TypeError, match="subject_token_type"):
+        _client().token_exchange(  # type: ignore[call-arg]
+            subject_token=SUBJECT_TOKEN, tenant_id=TENANT_ID
+        )
+
+    assert route.call_count == 0, "no request may be sent for a call that never had a type"
 
 
 def test_actor_token_with_an_external_subject_token_is_refused_without_retry(
