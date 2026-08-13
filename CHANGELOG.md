@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (contract 1.13): `token_exchange`'s `subject_token_type` is now required.** It
+  shipped optional, defaulting to `…:access_token` when `None` — which satisfied §15.7's "never
+  inspect the subject token" while leaving the rule it serves unenforced: an optional argument
+  with a default *is* a default the SDK applies whenever the caller says nothing. §15.1 now
+  makes it required, on both `AxiamClient` and `AsyncAxiamClient`.
+
+  Python refuses the call before any SDK code runs — a `TypeError`, with no wire call. A test
+  asserts that, including zero requests.
+
+  **`ACCESS_TOKEN_TYPE` and `JWT_TOKEN_TYPE` are now exported from `axiam_sdk`**, not just from
+  the private `axiam_sdk._oidc`. They were reachable only through a private module — survivable
+  while the type was optional and defaulted, and not once naming it is mandatory: every caller
+  would have had to import a private module (or retype the URN) to make a call that now requires
+  one.
+
+  **Migration** — one line, naming what you were previously getting by silence:
+
+  ```python
+  exchanged = client.token_exchange(
+      subject_token=user_token,
+      subject_token_type=ACCESS_TOKEN_TYPE,  # <- add this
+      scopes=["orders:read"],
+  )
+  ```
+
+  This closes a gap rather than opening one: `subject_token_type` has always been required *on
+  the wire*, and the SDK was covering for that with a constant which stopped being the only
+  legal value when X4 landed. For a caller who actually held a refresh token, the old default
+  traded the `invalid_request` that names the type for a generic `invalid_grant`.
+
 ### Added
 
 - **§15.7 external-IdP subject tokens (X4).** `token_exchange` (and its async twin) can now
@@ -18,9 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The type is the caller's to name, never the SDK's to guess.** §15.7 forbids inspecting the
   subject token to pick it, because which kind of token you hold is something only you know and
   a wrong guess is the difference between a request that is refused and one that is silently
-  reinterpreted. Omitting `subject_token_type` still sends `…:access_token`, so every existing
-  caller is unaffected; a JWT-shaped subject token does **not** change what is sent, which is
-  asserted by a test.
+  reinterpreted. A JWT-shaped subject token does **not** change what is sent, which is asserted
+  by a test. (This shipped with an `…:access_token` default; contract 1.13 removed it — see
+  *Changed* above.)
 
   Also asserted: an `actor_token` alongside an external subject token surfaces `invalid_request`
   with no retry and no request rewriting; a refused refresh or ID token type is never retried as

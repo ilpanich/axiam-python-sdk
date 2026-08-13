@@ -956,7 +956,7 @@ class AxiamClient(_AxiamClientBase):
         self,
         *,
         subject_token: SecretStr | str,
-        subject_token_type: str | None = None,
+        subject_token_type: str,
         actor_token: SecretStr | str | None = None,
         scopes: Sequence[str] | None = None,
         audience: str | None = None,

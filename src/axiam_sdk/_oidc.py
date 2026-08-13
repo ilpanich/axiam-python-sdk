@@ -101,8 +101,11 @@ TOKEN_EXCHANGE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange"
 """``grant_type`` of an RFC 8693 exchange."""
 
 ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
-"""The ``actor_token_type`` this SDK sends, and the ``subject_token_type`` it
-sends when the caller names none — an AXIAM-issued access token (§15.1)."""
+"""The ``actor_token_type`` this SDK sends, and the ``subject_token_type`` a
+caller names for the same-domain exchange of §15.1.
+
+There is no default: the type is a **required** argument of ``token_exchange``.
+"""
 
 JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
 """A JWT from a trusted external issuer — the cross-domain exchange of §15.7.
@@ -1235,7 +1238,7 @@ class _OidcMixin:
         self,
         *,
         subject_token: SecretStr | str,
-        subject_token_type: str | None,
+        subject_token_type: str,
         actor_token: SecretStr | str | None,
         scopes: Sequence[str] | None,
         audience: str | None,
@@ -1255,7 +1258,7 @@ class _OidcMixin:
             # holds is the caller's to know, and a guess here is the
             # difference between a request that is refused and one that is
             # silently reinterpreted.
-            "subject_token_type": subject_token_type or ACCESS_TOKEN_TYPE,
+            "subject_token_type": subject_token_type,
             "client_id": self._require_oidc_client_id(),
             "client_secret": self._require_client_secret("token_exchange"),
         }
