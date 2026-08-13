@@ -544,6 +544,7 @@ class AsyncAxiamClient(_AxiamClientBase):
         self,
         *,
         subject_token: SecretStr | str,
+        subject_token_type: str | None = None,
         actor_token: SecretStr | str | None = None,
         scopes: Sequence[str] | None = None,
         audience: str | None = None,
@@ -556,11 +557,14 @@ class AsyncAxiamClient(_AxiamClientBase):
 
         Async twin of :meth:`axiam_sdk.AxiamClient.token_exchange`; see that
         docstring for what this method deliberately refuses to do (no
-        defaulted ``actor_token``, no auto-narrowing, no adoption).
+        defaulted ``actor_token``, no auto-narrowing, no adoption) and for
+        ``subject_token_type``, which reaches the external exchange of §15.7
+        and is never inferred from the token.
         """
         config = configuration or await self.oidc_discover()
         form = self._token_exchange_form(
             subject_token=subject_token,
+            subject_token_type=subject_token_type,
             actor_token=actor_token,
             scopes=scopes,
             audience=audience,
