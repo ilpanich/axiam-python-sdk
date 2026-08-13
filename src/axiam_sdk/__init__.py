@@ -43,6 +43,8 @@ from axiam_sdk._models import (
     VerifiedLogoutToken,
 )
 from axiam_sdk._oidc import (
+    ACCESS_TOKEN_TYPE,
+    JWT_TOKEN_TYPE,
     UMA_CLAIM_TOKEN_FORMAT,
     UMA_PROTECTION_SCOPE,
     UMA_TICKET_GRANT_TYPE,
@@ -65,6 +67,8 @@ from axiam_sdk._telemetry import (
 )
 
 __all__ = [
+    "ACCESS_TOKEN_TYPE",
+    "JWT_TOKEN_TYPE",
     # §17 decision memo, §19 telemetry hooks (D5).
     "DecisionMemo",
     "TelemetryEvent",

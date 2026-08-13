@@ -13,8 +13,14 @@ import httpx
 import pytest
 import respx
 
-from axiam_sdk import AsyncAxiamClient, AuthError, AxiamClient, OAuthProtocolError
-from axiam_sdk._oidc import ACCESS_TOKEN_TYPE, JWT_TOKEN_TYPE
+from axiam_sdk import (
+    ACCESS_TOKEN_TYPE,
+    JWT_TOKEN_TYPE,
+    AsyncAxiamClient,
+    AuthError,
+    AxiamClient,
+    OAuthProtocolError,
+)
 from tests._oidc_testkit import BASE_URL, CLIENT_ID, CLIENT_SECRET, discovery_document
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"

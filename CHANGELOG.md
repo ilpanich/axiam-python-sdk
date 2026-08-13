@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python refuses the call before any SDK code runs — a `TypeError`, with no wire call. A test
   asserts that, including zero requests.
 
+  **`ACCESS_TOKEN_TYPE` and `JWT_TOKEN_TYPE` are now exported from `axiam_sdk`**, not just from
+  the private `axiam_sdk._oidc`. They were reachable only through a private module — survivable
+  while the type was optional and defaulted, and not once naming it is mandatory: every caller
+  would have had to import a private module (or retype the URN) to make a call that now requires
+  one.
+
   **Migration** — one line, naming what you were previously getting by silence:
 
   ```python

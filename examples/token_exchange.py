@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import os
 
-from axiam_sdk import AxiamClient, OAuthProtocolError
-from axiam_sdk._oidc import ACCESS_TOKEN_TYPE
+from axiam_sdk import ACCESS_TOKEN_TYPE, AxiamClient, OAuthProtocolError
 
 
 def main() -> None:

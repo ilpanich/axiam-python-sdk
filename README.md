@@ -495,7 +495,7 @@ RFC 8693 — a service holding a user's token exchanging it for a *narrower* one
 before calling the next service.
 
 ```python
-from axiam_sdk._oidc import ACCESS_TOKEN_TYPE
+from axiam_sdk import ACCESS_TOKEN_TYPE
 
 exchanged = client.token_exchange(
     subject_token=user_token,
