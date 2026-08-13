@@ -956,6 +956,7 @@ class AxiamClient(_AxiamClientBase):
         self,
         *,
         subject_token: SecretStr | str,
+        subject_token_type: str | None = None,
         actor_token: SecretStr | str | None = None,
         scopes: Sequence[str] | None = None,
         audience: str | None = None,
@@ -985,6 +986,17 @@ class AxiamClient(_AxiamClientBase):
         server collapses them because distinguishing them is a
         tenant-enumeration signal.
 
+        Args:
+            subject_token_type: What kind of token ``subject_token`` is.
+                ``None`` sends :data:`~axiam_sdk._oidc.ACCESS_TOKEN_TYPE`, the
+                same-domain exchange of §15.1. To exchange a token from a
+                **trusted external issuer** (§15.7), set this explicitly —
+                normally to :data:`~axiam_sdk._oidc.JWT_TOKEN_TYPE`. The SDK
+                never reads ``subject_token`` to decide the value: which kind
+                of token you hold is something only you know, AXIAM refuses
+                refresh and ID token types by name, and the SDK will not retry
+                a refusal as a different type.
+
         Raises:
             AuthError: when no ``client_secret`` was configured — client-side,
                 with no wire call.
@@ -992,6 +1004,7 @@ class AxiamClient(_AxiamClientBase):
         config = configuration or self.oidc_discover()
         form = self._token_exchange_form(
             subject_token=subject_token,
+            subject_token_type=subject_token_type,
             actor_token=actor_token,
             scopes=scopes,
             audience=audience,

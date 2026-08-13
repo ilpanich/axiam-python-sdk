@@ -14,6 +14,7 @@ import pytest
 import respx
 
 from axiam_sdk import AsyncAxiamClient, AuthError, AxiamClient, OAuthProtocolError
+from axiam_sdk._oidc import JWT_TOKEN_TYPE
 from tests._oidc_testkit import BASE_URL, CLIENT_ID, CLIENT_SECRET, discovery_document
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -301,3 +302,182 @@ async def test_async_token_exchange_matches_the_sync_wire_shape(
     assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
     assert "actor_token" not in form
     assert result.access_token.get_secret_value() == ISSUED_TOKEN
+
+
+# ---------------------------------------------------------------------
+# §15.7 — external-IdP subject tokens (X4)
+#
+# No new operation: the same ``token_exchange`` carries a partner IdP's token.
+# What changes is which subject tokens the server accepts and what its refusals
+# mean, so these tests are about not getting in the way of either.
+# ---------------------------------------------------------------------
+
+#: A token minted by a partner's IdP. Opaque to the SDK — deliberately not a
+#: well-formed JWT, because nothing here may decode it.
+EXTERNAL_SUBJECT_TOKEN = "partner-idp-subject-token"
+
+#: The one normative ``error_description`` (§15.7). It means "fix the AXIAM
+#: trust configuration", not "fix your token".
+ISSUER_NOT_CONFIGURED = "the subject token's issuer is not configured for token exchange"
+
+
+def _oauth_error_with_description(code: str, description: str) -> httpx.Response:
+    return httpx.Response(400, json={"error": code, "error_description": description})
+
+
+def test_external_subject_token_type_is_sent_verbatim(respx_mock: respx.MockRouter) -> None:
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_exchange_response(scope="read:orders")
+    )
+
+    result = _client().token_exchange(
+        subject_token=EXTERNAL_SUBJECT_TOKEN,
+        subject_token_type=JWT_TOKEN_TYPE,
+        scopes=["read:orders"],
+        audience="https://orders.internal",
+        tenant_id=TENANT_ID,
+    )
+
+    form = _form_body(route.calls[0].request)
+    # The caller named …:jwt, so …:jwt goes on the wire. §15.7: the SDK must
+    # not inspect the subject token to pick this, and must not override it.
+    assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:jwt"
+    assert form["subject_token"] == EXTERNAL_SUBJECT_TOKEN
+    # Delegation across a trust boundary is unsupported; nothing may add one.
+    assert "actor_token" not in form
+
+    # The cross-domain path is not a different result shape, and §15.2
+    # rules 6-7 still hold.
+    assert result.access_token.get_secret_value() == ISSUED_TOKEN
+    assert result.issued_token_type == "urn:ietf:params:oauth:token-type:access_token"
+    assert result.scope == "read:orders"
+
+
+def test_subject_token_type_is_never_inferred_from_the_token(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
+
+    # A subject token that *looks* exactly like a JWT. An SDK that sniffed the
+    # token would send …:jwt here; §15.7 says it must not look, so the caller's
+    # silence still means the §15.1 same-domain default.
+    jwt_shaped = "eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL3BhcnRuZXIuZXhhbXBsZS8ifQ.sig"
+    _client().token_exchange(subject_token=jwt_shaped, tenant_id=TENANT_ID)
+
+    form = _form_body(route.calls[0].request)
+    assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:access_token", (
+        "§15.7: the token's shape must not pick the type"
+    )
+
+
+def test_actor_token_with_an_external_subject_token_is_refused_without_retry(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error_with_description(
+            "invalid_request", "actor_token is not supported for an external subject token"
+        )
+    )
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().token_exchange(
+            subject_token=EXTERNAL_SUBJECT_TOKEN,
+            subject_token_type=JWT_TOKEN_TYPE,
+            actor_token=ACTOR_TOKEN,
+            tenant_id=TENANT_ID,
+        )
+
+    assert excinfo.value.error == "invalid_request"
+    # §15.7: no retry, and no rewriting. Dropping the actor token and
+    # re-sending would turn a delegation the caller asked for into an
+    # impersonation they did not.
+    assert route.call_count == 1
+    form = _form_body(route.calls[0].request)
+    assert form["actor_token"] == ACTOR_TOKEN, "the request must be sent as written"
+    assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:jwt"
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        "urn:ietf:params:oauth:token-type:refresh_token",
+        "urn:ietf:params:oauth:token-type:id_token",
+    ],
+)
+def test_a_refused_subject_token_type_is_never_retried_as_another(
+    respx_mock: respx.MockRouter, refused: str
+) -> None:
+    # A refresh token is a re-authentication credential and an ID token is an
+    # assertion to a client about a login; neither is a bearer credential for
+    # an API, so both are refused BY NAME. Retrying as …:jwt would present one
+    # as if it were.
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error_with_description(
+            "invalid_request", f"unsupported subject_token_type {refused}"
+        )
+    )
+
+    with pytest.raises(OAuthProtocolError):
+        _client().token_exchange(
+            subject_token=EXTERNAL_SUBJECT_TOKEN,
+            subject_token_type=refused,
+            tenant_id=TENANT_ID,
+        )
+
+    assert route.call_count == 1
+    assert _form_body(route.calls[0].request)["subject_token_type"] == refused
+
+
+def test_issuer_not_configured_description_reaches_the_caller_intact(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error_with_description("invalid_grant", ISSUER_NOT_CONFIGURED)
+    )
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().token_exchange(
+            subject_token=EXTERNAL_SUBJECT_TOKEN,
+            subject_token_type=JWT_TOKEN_TYPE,
+            tenant_id=TENANT_ID,
+        )
+
+    assert excinfo.value.error == "invalid_grant"
+    # This is the ONLY distinguishable external failure, and the whole point of
+    # it is that an integrator can tell "fix the AXIAM trust config" from "fix
+    # your token". Truncating or rewording it destroys that.
+    assert excinfo.value.error_description == ISSUER_NOT_CONFIGURED
+
+
+def test_no_helper_re_exchanges_an_externally_exchanged_token(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # Tokens minted from an external subject token carry ``ext_exchange``, and
+    # BOTH exchange paths refuse a subject token bearing it: exchanges do not
+    # compose. The SDK's part is to never feed a result back in by itself.
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_exchange_response())
+
+    client = _client()
+    result = client.token_exchange(
+        subject_token=EXTERNAL_SUBJECT_TOKEN,
+        subject_token_type=JWT_TOKEN_TYPE,
+        tenant_id=TENANT_ID,
+    )
+
+    # Exactly one exchange happened: nothing looped the result back in.
+    assert route.call_count == 1
+    assert result.access_token.get_secret_value() == ISSUED_TOKEN
+    # §15.2 rule 5 restated for the cross-domain path: had the result been
+    # adopted into the §4 cookie jar, every later call would carry it — and the
+    # next exchange would carry it as a *subject* token, which is exactly the
+    # re-exchange §15.7 forbids, arrived at by accident rather than by
+    # decision.
+    assert not any(
+        ISSUED_TOKEN in (cookie or "") for cookie in client._session.sync_client.cookies.values()
+    )

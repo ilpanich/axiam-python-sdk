@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **§15.7 external-IdP subject tokens (X4).** `token_exchange` (and its async twin) can now
+  exchange a token minted by a trusted external IdP — a partner's Entra, Okta or Keycloak — for
+  an AXIAM token scoped to what the resolved AXIAM user may actually do. No new operation: the
+  same method, plus a `subject_token_type` keyword and the new `JWT_TOKEN_TYPE` constant
+  alongside the existing `ACCESS_TOKEN_TYPE`.
+
+  **The type is the caller's to name, never the SDK's to guess.** §15.7 forbids inspecting the
+  subject token to pick it, because which kind of token you hold is something only you know and
+  a wrong guess is the difference between a request that is refused and one that is silently
+  reinterpreted. Omitting `subject_token_type` still sends `…:access_token`, so every existing
+  caller is unaffected; a JWT-shaped subject token does **not** change what is sent, which is
+  asserted by a test.
+
+  Also asserted: an `actor_token` alongside an external subject token surfaces `invalid_request`
+  with no retry and no request rewriting; a refused refresh or ID token type is never retried as
+  a different type; the one normative description — `the subject token's issuer is not
+  configured for token exchange`, meaning *fix the AXIAM trust config* rather than *fix your
+  token* — reaches the caller intact; and nothing re-exchanges an exchanged token, which both
+  server paths refuse because exchanges do not compose.
+
+  `CONTRACT.md` and `openapi.json` re-synced from `ilpanich/axiam@main` (contract 1.10 → 1.12
+  plus §15.7), which also brings contract 1.11's lifted §12.6 deferral, contract 1.12's
+  `/oauth2/*` error rows dispatching on the `error` field at any status, and the
+  `TokenExchangeTrust` schemas behind the X4 provider configuration.
+
 - **§20.3 challenge emission wired into the §11 guards.** A new `UmaChallenger` (realm,
   `as_uri`, PAT, client) passed as `uma_challenge=` to FastAPI's `require_access` or Django's
   `@require_access`: on denial the guard mints a permission ticket for the action just

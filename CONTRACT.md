@@ -155,9 +155,8 @@ Sub-types added by later sections of this contract:
 | HTTP Status | Error Type    | Notes                                         |
 |-------------|---------------|-----------------------------------------------|
 | 400         | `NetworkError`| Malformed request (SDK programming error)     |
-| 400 from `/oauth2/*` with an `OAuth2ErrorResponse` body | `OAuthProtocolError` | RFC 6749 protocol error (e.g. `invalid_grant` from `POST /oauth2/token`). MUST NOT collapse into the generic `400` → `NetworkError` row above ([§12.3](#§123-cross-cutting-rules-normative-identical-in-all-sdks) rule 3) |
+| **Any status** from `/oauth2/*` with an `OAuth2ErrorResponse` body | `OAuthProtocolError` | RFC 6749 protocol error. Dispatch on the `error` field, NOT on the status ([§12.3](#§123-cross-cutting-rules-normative-identical-in-all-sdks) rule 3). Rewritten in contract 1.12 — see the note below |
 | 401         | `AuthError`   | Unauthenticated; triggers refresh if tokens present |
-| 401 from `/oauth2/*` with an `OAuth2ErrorResponse` body | `OAuthProtocolError` | Client authentication failed at `POST /oauth2/introspect` / `POST /oauth2/revoke`. MUST NOT trigger the §9 single-flight refresh guard |
 | 403         | `AuthzError`  | Authenticated but not authorized              |
 | 408, 429    | `NetworkError`| Timeout / rate-limited                        |
 | 409         | `AuthzError`  | Conflict (resource-level access denied)       |
@@ -166,6 +165,32 @@ Sub-types added by later sections of this contract:
 
 Where two rows match the same response, the more specific (endpoint- and body-qualified) row
 wins.
+
+**The `/oauth2/*` row was two rows until contract 1.12, gated to `400` and `401`.** That
+enumeration was a description of which statuses the endpoints happened to use, written before
+[§20](#§20-uma-20--protection-api-and-ticket-grant-x2) existed. §20.4's `access_denied` answers
+`403`, so a status-gated mapper dropped it through to the `AuthzError` row and lost the one
+field a caller can act on — and **nine of the eleven SDKs grew a near-identical private mapper
+for that single grant** rather than widen a shared one that other endpoints depend on. (PHP
+needed none: its mapper already dispatched on the `error` field, which is what §20.4 asks for in
+the abstract and what this row now says outright.)
+
+Three things this rewrite does **not** do, each load-bearing:
+
+1. **It is scoped to `/oauth2/*` paths only.** An ordinary REST `403` — including from
+   `/api/v1/authz/check` and from the §20 Protection API at `/uma2/perm` and `/uma2/rreg/*`,
+   whose refusals §20.4 maps by status precisely because they are not OAuth2 protocol errors —
+   still maps to `AuthzError`. An SDK MUST keep a test for that; the assertion to make is that
+   an ordinary REST `403` maps to `AuthzError`, not the older and now-false "the OAuth2 rows
+   apply to no status but 400 and 401".
+2. **It requires a well-formed body.** A `403` from `/oauth2/*` whose body is not an
+   `OAuth2ErrorResponse` — a proxy's HTML error page, an empty body — falls back to the status
+   mapping. "Has an `error` member that is a non-empty string" is the test; a body that merely
+   parses as JSON is not enough.
+3. **It does not change what happens next.** A `401` carrying an `OAuth2ErrorResponse` still
+   MUST NOT enter the §9 single-flight refresh guard ([§12.3](#§123-cross-cutting-rules-normative-identical-in-all-sdks)
+   rule 3): client-authentication failure is not a session expiry, and retrying cannot fix a
+   wrong client secret.
 
 ### gRPC Status → Error Type Mapping
 
@@ -475,13 +500,18 @@ Per-language implementation guidance:
 | Go         | String type with `String()` method returning `"[SENSITIVE]"`     |
 | Kotlin     | `value class Sensitive<T>` (or final class); `toString()` returns `"[SENSITIVE]"`, no `data class` auto-`toString` leak |
 | Swift      | `struct Sensitive<T>: CustomStringConvertible` whose `description` returns `"[SENSITIVE]"`; not `Encodable` in a way that emits the value |
-| C          | Opaque `axiam_sensitive_t` handle; there is no public accessor returning the raw string, and it is never written to logs/`printf` output |
-| C++        | `class Sensitive<T>` with `operator<<`/`to_string` returning `"[SENSITIVE]"`; raw value only via a private/friend accessor |
+| C          | Opaque `axiam_sensitive_t` handle; `axiam_sensitive_reveal()` is the single explicit accessor (rule 3), and the value is never written to logs/`printf` output |
+| C++        | `class Sensitive<T>` with `operator<<`/`to_string` returning `"[SENSITIVE]"`; `expose()` is the single explicit accessor (rule 3) |
 
-The **C** and **C++** rows keep their "no public accessor" wording deliberately: both SDKs defer
-§12 in its entirety ([§12.6](#§126-deferred-sdks-swift-c-c)), so no token material is ever handed
-to their callers outside the §4 cookie jar and rule 3 above has nothing to enable there. Should a
-later §12 port land in either, rule 3 applies to it unchanged.
+**The C and C++ rows changed in contract 1.11.** Through 1.10 both read "no public accessor",
+and that wording was correct for as long as it was true that no token material ever reached
+their callers: both SDKs deferred §12 in its entirety, so everything they held lived in the §4
+cookie jar and rule 3 had nothing to enable. §12.6's 1.11 port removes that premise — §12 hands
+the caller an `OidcTokenSet`, and a token no caller can read cannot be persisted, forwarded or
+revoked. This is the same collision contract 1.5 resolved for the other eight SDKs, resolved the
+same way: **one** explicit accessor, documented as the single one, never reached from a
+log/trace/serialization sink. Swift already exposed `expose()` for the §20 requesting-party
+token and is unchanged here.
 
 **Why §7 reads this way (contract 1.5, non-breaking clarification).** Contract 1.4's §7 said
 flatly that "the raw token string MUST NOT be exposed via any public getter API". That was written
@@ -1004,8 +1034,9 @@ as a service account (`client_credentials`), to introspect/revoke tokens, and to
 server's upstream-IdP federation endpoints. It is **additive to §1**: the nine operations
 below are part of the same locked method vocabulary and are subject to the same
 "no diverging names" rule. An SDK that ships §1–§11 without these helpers remains conformant;
-an SDK that ships them states conformance to §1–§12. Three SDKs defer the whole section —
-see [§12.6](#§126-deferred-sdks-swift-c-c).
+an SDK that ships them states conformance to §1–§12. All eleven SDKs implement the section as of
+contract 1.11 — Swift, C and C++ deferred it through contract 1.10 and were ported in 1.11; see
+[§12.6](#§126-swift-c-and-c-ported--contract-111).
 
 These helpers MUST be built on the SDK's existing machinery — the §4 cookie jar, the §6/§6.1
 TLS configuration, the §7 `Sensitive<T>` wrapper, the §9 single-flight refresh guard, and the
@@ -1272,10 +1303,11 @@ prohibited (SDK-Q08).
 **Additional languages (Kotlin, Swift, C, C++).** **Kotlin** implements §12 and uses camelCase
 `suspend` functions identical to the TypeScript column (`oidcDiscover`, `oidcBegin`,
 `oidcExchange`, `oidcRefresh`, `loginClientCredentials`, `introspect`, `revoke`, `ssoStart`,
-`ssoComplete`); no `*Async` twins. **Swift**, **C**, and **C++** defer the whole section
-([§12.6](#§126-deferred-sdks-swift-c-c)), but the names are reserved now so a later port cannot
-diverge: **Swift** camelCase and **C++** snake_case exactly as the TypeScript and Rust columns
-above; **C** snake_case with the mandatory `axiam_` prefix — `axiam_oidc_discover`,
+`ssoComplete`); no `*Async` twins. **Swift**, **C**, and **C++** implement the section as of contract
+1.11 ([§12.6](#§126-swift-c-and-c-ported--contract-111)), using the names reserved for them here
+while it was deferred — a port that diverged from them was never an option: **Swift** camelCase
+and **C++** snake_case exactly as the TypeScript and Rust columns above; **C** snake_case with
+the mandatory `axiam_` prefix — `axiam_oidc_discover`,
 `axiam_oidc_begin`, `axiam_oidc_exchange`, `axiam_oidc_refresh`,
 `axiam_login_client_credentials`, `axiam_introspect`, `axiam_revoke`, `axiam_sso_start`,
 `axiam_sso_complete`. No login/auth/authz method names beyond this map and the §1 map are
@@ -1317,11 +1349,25 @@ NOT split the nine across two hosts.
    as plain strings. See [§12.5](#§125-sensitivet-applicability) for the per-language wrapper.
 3. **Error taxonomy (§2).** An `OAuth2ErrorResponse` body MUST surface as `OAuthProtocolError`
    — a language-idiomatic sub-type of `AuthError` — carrying `error` and `error_description` as
-   publicly accessible fields, with `message` set to `"<error>: <error_description>"`. A `400`
-   from `POST /oauth2/token` MUST NOT surface as the generic `NetworkError` the §2 `400` row
-   otherwise prescribes, and a `401` from `POST /oauth2/introspect` or `POST /oauth2/revoke`
-   MUST NOT enter the §9 single-flight refresh guard (client-credential failure is not a
-   session expiry, and retrying cannot help). ID-token validation failures MUST raise
+   publicly accessible fields, with `message` set to `"<error>: <error_description>"`.
+
+   **Dispatch on the `error` field, at any status** (rewritten in contract 1.12; it enumerated
+   `400` and `401` before). An SDK's `/oauth2/*` mapper MUST check for a well-formed
+   `OAuth2ErrorResponse` body **first**, and fall back to the §2 status mapping only when there
+   is none. Concretely: a `400` from `POST /oauth2/token` MUST NOT surface as the generic
+   `NetworkError` the §2 `400` row otherwise prescribes; a `403` from the §20 ticket grant MUST
+   NOT surface as `AuthzError` and lose its `access_denied` code; and a `401` from
+   `POST /oauth2/introspect` or `POST /oauth2/revoke` MUST NOT enter the §9 single-flight
+   refresh guard (client-credential failure is not a session expiry, and retrying cannot help).
+
+   **One mapper, not one per grant.** The status enumeration this replaces forced nine of the
+   eleven SDKs to grow a private mapper for the §20 ticket grant alone, because widening the
+   shared one would have changed every other endpoint's behaviour. Dispatching on the field
+   removes that: the shared mapper is correct for every `/oauth2/*` grant, present and future,
+   and a section that introduces a new status needs no SDK change at all. The scoping that makes
+   this safe is in the §2 note — `/oauth2/*` only, well-formed body only, §9 behaviour unchanged.
+
+   ID-token validation failures MUST raise
    `AuthError` (or an `AuthError` sub-type) carrying a stable machine-readable reason code —
    `invalid_alg`, `unknown_kid`, `invalid_signature`, `invalid_issuer`, `invalid_audience`,
    `token_expired`, or `nonce_mismatch` — matching the [§12.4](#§124-id-token-validation-checklist-normative-for-oidc_exchange)
@@ -1469,24 +1515,50 @@ the §7 table for the authoritative per-language row. Two additions specific to 
 other structured serialization of `OidcTokenSet`, `AuthorizationRequest`, or an
 `OidcStateStore` entry MUST NOT emit the wrapped values.
 
-### §12.6 Deferred SDKs (Swift, C, C++)
+### §12.6 Swift, C and C++ (ported — contract 1.11)
 
-`axiam-swift-sdk`, `axiam-c-sdk`, and `axiam-cplusplus-sdk` **defer §12 in its entirety**, with
-the same carve-out discipline §1/§1.1 already applies to their `get_user_info`/gRPC deferral.
-These are device- and IoT-oriented SDKs: the Swift SDK ships NIOSSL specifically for client-cert
-mTLS, and the C/C++ SDKs target embedded consumers. The browser-redirect relying-party flow has
+**This section previously deferred §12 in these three SDKs. Contract 1.11 reverses that.**
+`axiam-swift-sdk`, `axiam-c-sdk`, and `axiam-cplusplus-sdk` implement §12 in full, using the
+names already reserved for them in [§12.2](#§122-per-language-naming-map), and satisfy
+§12.1–§12.5 unchanged. Their conformance statements say §1–§12 alongside whatever else they
+ship.
+
+**Why the deferral was written, and why it no longer holds.** The original text reasoned from
+persona: these are device- and IoT-oriented SDKs, the browser-redirect relying-party flow has
 no natural home in any of them, and their authentication story — §6.1 mTLS, password login,
-service credentials — is already complete without it.
+service credentials — was already complete without it. That reasoning covered `oidc_begin` and
+`oidc_exchange`, the two operations that genuinely assume a browser. It never covered the other
+seven. `login_client_credentials` is exactly the machine-to-machine login an embedded consumer
+wants; `introspect` and `revoke` are ordinary token-endpoint calls a device makes about its own
+credentials; `oidc_refresh` is the grant the §9 single-flight guard was built for. §12.6 itself
+recorded "adding `login_client_credentials` alone to C/C++" as an open follow-up — an admission
+that the all-or-nothing deferral was cutting across the wrong seam.
 
-Accordingly, each of these three SDKs MUST document §12 as a deferred follow-up in its scope
-section (same wording pattern as its existing "gRPC transport deferred" carve-out), MUST NOT
-partially implement the vocabulary, and MUST NOT substitute a hand-rolled OAuth2 flow for it.
-Their conformance statement stays at "§1–§10" (or "§1–§11" where the §11 helpers ship) and MUST
-NOT claim §12. If a later port lands, it MUST use the reserved names already fixed in
-[§12.2](#§122-per-language-naming-map) and MUST satisfy §12.1–§12.5 unchanged. Two follow-up
-decisions are recorded as open rather than resolved here: a server-side-Swift (Vapor) port
-cloned from the Kotlin shape, and adding `login_client_credentials` alone to C/C++ for
-machine-to-machine use.
+Two later sections settled it from the other direction. §14 (device authorization grant) exists
+precisely *because* a device cannot show a browser, and its naming map lists all three; §20 gave
+all three a token-endpoint call (`uma_exchange_ticket`) and its own discovery document. By
+contract 1.10 these SDKs were already speaking OAuth2 at `/oauth2/token` — the "second, parallel
+OIDC stack" the deferral warned about had arrived anyway, in pieces, without the shared discovery
+cache and ID-token validation §12 specifies. Porting §12 removes a divergence rather than adding
+one.
+
+**What the port must satisfy.** §12.1's endpoint map, §12.3's cross-cutting rules (statelessness
+above all — the caller owns `state`/`nonce`/`code_verifier`), §12.4's ID-token validation
+checklist, and §12.5's `Sensitive<T>` applicability, all unchanged and all as binding here as in
+the eight SDKs that shipped them first. Two consequences follow that these three did not
+previously have to face:
+
+1. **§7 rule 3 now applies to C and C++.** §12 returns tokens *to* the caller, so each of the
+   three needs the single explicit accessor rule 3 permits — see the §7 table, whose C and C++
+   rows change with this revision. A `Sensitive<T>` a §12 caller can never read makes §12
+   unusable, which is the same reasoning contract 1.5 recorded when it restructured §7.
+2. **`oidc_begin` stays synchronous and network-free** in all three, exactly as §12.1 requires.
+   In C that means it allocates a URL string and a `code_verifier` the caller frees; it does not
+   acquire the client's transport.
+
+The remaining open follow-up from the original text — a server-side-Swift (Vapor) integration
+cloned from the Kotlin shape — is unaffected: it concerns a framework binding, not the §12
+vocabulary, and stays open.
 
 ### §12.7 Logout helpers (B5)
 
@@ -1581,7 +1653,9 @@ server refuses to make, and SDK documentation MUST say so.
 
 Both are synchronous where the language has the distinction (as `oidc_begin`
 is): neither performs network I/O of its own, so C# takes no `Async` suffix
-here. The three §12.6 deferrals (Swift, C, C++) defer §12.7 with it.
+here. Swift, C and C++ deferred §12.7 with §12 through contract 1.10; since
+their 1.11 port ([§12.6](#§126-swift-c-and-c-ported--contract-111)) the same
+SHOULD applies to them as to everyone else.
 
 #### §12.7.5 `Sensitive<T>` applicability
 
@@ -1923,6 +1997,77 @@ unchanged (assert no retry and no request rewriting); `invalid_scope` is not aut
 the response carries no refresh token and the client's own session is unchanged after the
 call; `issued_token_type` is surfaced; a cross-tenant subject token surfaces `invalid_grant`
 with no attempt to refine it.
+
+### §15.7 External-IdP subject tokens (X4)
+
+**No new per-language surface.** `token_exchange`'s existing parameters already carry
+everything an external exchange needs; what changes is *which* subject tokens the server
+will accept and *what the refusals mean*. Server documentation:
+[`docs/api/federated-token-exchange.md`](../docs/api/federated-token-exchange.md).
+
+**The use case:** a partner runs their own IdP (Entra, Okta, Keycloak). Their service calls
+yours carrying *their* token. You present it here and get back an AXIAM token scoped to what
+the resolved AXIAM user may actually do.
+
+#### What to pass
+
+| Parameter | External exchange |
+|---|---|
+| `subject_token` | the **partner's** access token (a JWT) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt` — or `…:access_token`; both are accepted for an external issuer |
+| `actor_token` | **MUST be omitted.** Delegation across a trust boundary is not supported in v1 and is refused with `invalid_request` |
+| `scope` | as always: omit to get everything the trust configuration and the user's permissions allow, or name scopes to be told about any you cannot have |
+
+An SDK MUST NOT inspect the subject token to decide which `subject_token_type` to send, and
+MUST NOT default `subject_token_type` on the caller's behalf. Which kind of token the caller
+holds is something only the caller knows, and a wrong guess here is the difference between a
+request that is refused and one that is silently reinterpreted.
+
+#### Which errors mean what
+
+`error` codes are unchanged (§15.3). One `error_description` is normative and an SDK MAY
+match on it:
+
+> `the subject token's issuer is not configured for token exchange`
+
+carried on `invalid_grant`. It is the **only** external failure that is distinguishable, and
+it means *fix the AXIAM trust configuration* (an operator must enable token exchange for
+that federation provider and list your audience) rather than *fix your token*. Every other
+external failure — bad signature, expired, too old, audience not accepted, wrong token kind,
+subject not linked — answers `invalid_grant` with a generic description, deliberately:
+which of a dozen checks refused a token is a map of the server's validation order, drawn one
+request at a time.
+
+Two refusals worth surfacing with their own guidance:
+
+- `invalid_request` naming a **refresh or ID token type**. A refresh token is a
+  re-authentication credential and an ID token is an assertion to a client about a login;
+  neither is a bearer credential for an API. An SDK MUST NOT retry as a different type.
+- `invalid_request` saying the subject token is **already the product of an exchange**.
+  Exchanges do not compose. An SDK MUST NOT attempt to re-exchange a token it obtained from
+  a previous `token_exchange` call, in either direction.
+
+#### The issued token
+
+Identical in shape to a same-domain exchange, with one additional claim:
+
+```json
+{ "ext_exchange": { "iss": "https://partner.example/" } }
+```
+
+A resource server MAY read it to tell a cross-domain token from a locally-issued one. An SDK
+MUST NOT treat its presence or absence as an authorization input — the `scope` claim and the
+server's own checks remain the authority — and MUST NOT strip it when forwarding.
+
+`§15.2` rules 4–7 apply verbatim: no refresh token, never adopted as the client's session,
+`issued_token_type` surfaced, and `scope` read as the granted set.
+
+#### Required tests (extends §15.6)
+
+An exchange with an external subject token and `subject_token_type=…:jwt` surfaces the
+result unchanged; passing an `actor_token` alongside an external subject token surfaces
+`invalid_request` with no retry and no rewriting; the `issuer is not configured` description
+reaches the caller intact; a token carrying `ext_exchange` is not re-exchanged by any helper.
 
 ---
 
@@ -2428,6 +2573,21 @@ conforming resource server tells "you may not have this" from "your request was 
 An SDK MUST map on the `error` field rather than the status, so this stays correct if either
 moves.
 
+**No grant-local mapper is needed for this, as of contract 1.12.** The shared `/oauth2/*`
+mapper §2 and [§12.3](#§123-cross-cutting-rules-normative-identical-in-all-sdks) rule 3 now
+describe already dispatches on the `error` field at any status, which is exactly what the
+paragraph above asks for — so the ticket grant uses the same mapper as every other
+token-endpoint grant. It did not, between contracts 1.10 and 1.11: §12.3 rule 3 enumerated
+`400` and `401`, and nine of the eleven SDKs answered by writing a private mapper for this one
+grant rather than widening a shared one every other endpoint depended on. Those private mappers
+are now removable, and an SDK that still carries one is carrying dead weight rather than a
+divergence.
+
+Note the boundary this does not cross. The `/uma2/perm` and `/uma2/rreg/*` rows above are mapped
+**by status**, and stay that way: those are Protection API refusals rather than OAuth2 protocol
+errors, they carry no `OAuth2ErrorResponse` body, and a `403` there means "this token is not a
+PAT" — an authorization failure, which is what `AuthzError` is for.
+
 **The four ticket refusals are one error, deliberately.** Unknown, expired, consumed and
 wrong-client all answer `invalid_grant` with one message. An SDK MUST NOT attempt to
 re-derive which one occurred or report a guess: the server collapses them because telling
@@ -2523,8 +2683,10 @@ ships both writes:
 and one that ships only the device grant names only §14. Writing "§1–§15" would claim the
 other section by implication, which is the failure mode a range invites.
 
-The three SDKs that defer §12 ([§12.6](#§126-deferred-sdks-swift-c-c)) keep their existing
-statement and MUST NOT claim §12.
+Swift, C and C++ claimed no §12 through contract 1.10. Since their 1.11 port
+([§12.6](#§126-swift-c-and-c-ported--contract-111)) they state it like everyone else — but only
+once the port has actually landed in that repository: the statement follows the code, never the
+contract's expectation of it.
 
 §16 (retry policy) and §18 (deterministic shutdown) are **MUST**-level and land with contract
 1.8, so unlike §14/§15 they are not optional and are not named in the statement — an SDK is
@@ -2558,9 +2720,12 @@ three defer it and are unchanged:
 | C# | §1–§12 | `*Async` throughout except the deliberate synchronous `OidcBegin` |
 | PHP | §1–§12 | — |
 | Go | §1–§12 | — |
-| Swift | unchanged (no §12) | [§12.6](#§126-deferred-sdks-swift-c-c) deferral |
-| C | unchanged (no §12) | [§12.6](#§126-deferred-sdks-swift-c-c) deferral |
-| C++ | unchanged (no §12) | [§12.6](#§126-deferred-sdks-swift-c-c) deferral |
+| Swift | unchanged (no §12) | [§12.6](#§126-swift-c-and-c-ported--contract-111) deferral — **lifted in contract 1.11** |
+| C | unchanged (no §12) | [§12.6](#§126-swift-c-and-c-ported--contract-111) deferral — **lifted in contract 1.11** |
+| C++ | unchanged (no §12) | [§12.6](#§126-swift-c-and-c-ported--contract-111) deferral — **lifted in contract 1.11** |
+
+The table above is a snapshot of contract 1.5 and is kept as written; the three deferrals in it
+were lifted by contract 1.11, and each of those SDKs states §1–§12 once its port lands.
 
 `login_client_credentials` credential adoption is a §12.1 **MAY**: TypeScript, PHP, and Go
 implement it as an opt-in flag; Rust, Python, Java, and Kotlin skip it; C# exposes the flag and
@@ -2721,8 +2886,8 @@ recorded here until one exists.
   `error_description`), plus two endpoint-qualified rows in the HTTP-status mapping; the three
   existing top-level error types are unchanged. No existing signature changes. The eight
   backend-capable SDKs (Rust, TypeScript, Python, Java, Kotlin, C#, PHP, Go) add the operations
-  and state "§1–§12"; the device-oriented SDKs (Swift, C, C++) document §12 as a deferred
-  follow-up and keep their existing statement (§12.6).
+  and state "§1–§12"; the device-oriented SDKs (Swift, C, C++) documented §12 as a deferred
+  follow-up and kept their existing statement (§12.6 — deferral lifted in contract 1.11).
 
 - **2026-07 (§1.1 gRPC userinfo, contract 1.3)** — **non-breaking / additive.** Added a new
   canonical operation `get_user_info` (§1 naming map + §1.1 normative semantics), served only
@@ -2774,12 +2939,39 @@ recorded here until one exists.
   residual describes), and **§20.3 forbids the challenge-parsing helper from auto-exchanging**
   the ticket it parsed, since the `as_uri` names a host the client has not chosen to trust.
 
+- **2026-08 (§12.6 deferral lifted for Swift, C and C++)** — **non-breaking / additive**, with
+  one narrow widening. §12.6 previously required `axiam-swift-sdk`, `axiam-c-sdk` and
+  `axiam-cplusplus-sdk` to defer §12 in its entirety, forbade partial implementation, and
+  forbade their conformance statements from claiming it. Contract 1.11 reverses that: all three
+  implement §12 — and, with it, §12.7 — using the names §12.2 had already reserved for them,
+  satisfying §12.1–§12.5 unchanged.
+
+  The deferral reasoned from persona (device- and IoT-oriented SDKs have no browser to redirect),
+  which is true of `oidc_begin`/`oidc_exchange` and of nothing else in the section:
+  `login_client_credentials` is the machine-to-machine login an embedded consumer actually wants,
+  `introspect`/`revoke` are ordinary token-endpoint calls about a device's own credentials, and
+  §12.6 itself recorded "adding `login_client_credentials` alone to C/C++" as an open follow-up.
+  §14 and §20 then settled it from the other side: §14 exists because a device cannot show a
+  browser and lists all three, and §20 gave all three a `/oauth2/token` call and a discovery
+  document of their own. By 1.10 the "second, parallel OIDC stack" the deferral warned about had
+  arrived anyway, in pieces. Porting §12 removes a divergence rather than adding one.
+
+  **The one widening:** §7's C and C++ rows no longer read "no public accessor". That wording was
+  load-bearing only while those SDKs handed their callers no token material; §12 returns tokens
+  *to* the caller, so rule 3's **single** explicit accessor now applies to them — `expose()` in
+  C++, `axiam_sensitive_reveal()` in C — exactly as contract 1.5 resolved the same collision for
+  the other eight. Every redaction surface (`operator<<`/`to_string`, log output) is unchanged.
+
+  No existing signature changes anywhere, and no SDK that already shipped §12 is affected. A
+  conformance statement still follows the code: each of the three claims §1–§12 only once its own
+  port has landed.
+
 ### OpenAPI Export Feature Flag
 
 `openapi.json` (kept in this directory, and mirrored into every SDK repo) is generated with `--no-default-features` (SAML endpoints excluded). Both the committed spec and the CI drift gate use identical flags. SDK consumers requiring SAML endpoint documentation should build AXIAM with the `saml` feature enabled and export locally.
 
 ---
 
-*Contract version: 1.10 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07; §8b AMQP transport, §10.2 gRPC revocation modes, §12.7 logout helpers, §14 device authorization grant and §15 token exchange added 2026-08; §14.3 rule 4 / §14.6 credential-adoption errata 2026-08 (contract 1.7); §16 retry policy, §17 decision memo, §18 deterministic shutdown and §19 telemetry hooks added 2026-08, with §11.2 rules 5–6 and §14.2 rule 6 amended to point at them (contract 1.8); §16 preamble errata + §19 `config_clamped` event 2026-08 (contract 1.9) — the divergence table rewritten from wire-counting conformance tests rather than greps, and a clamped setting must now be reported through §19 rather than applied silently; §20 UMA 2.0 Protection API and ticket grant added 2026-08 (contract 1.10), carrying the one documented exception to §16 retry policy*
+*Contract version: 1.12 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07; §8b AMQP transport, §10.2 gRPC revocation modes, §12.7 logout helpers, §14 device authorization grant and §15 token exchange added 2026-08; §14.3 rule 4 / §14.6 credential-adoption errata 2026-08 (contract 1.7); §16 retry policy, §17 decision memo, §18 deterministic shutdown and §19 telemetry hooks added 2026-08, with §11.2 rules 5–6 and §14.2 rule 6 amended to point at them (contract 1.8); §16 preamble errata + §19 `config_clamped` event 2026-08 (contract 1.9) — the divergence table rewritten from wire-counting conformance tests rather than greps, and a clamped setting must now be reported through §19 rather than applied silently; §20 UMA 2.0 Protection API and ticket grant added 2026-08 (contract 1.10), carrying the one documented exception to §16 retry policy; §12.6's Swift/C/C++ deferral lifted 2026-08 (contract 1.11), porting §12 and §12.7 to those three SDKs and widening §7's C/C++ rows to rule 3's single explicit accessor; §2's `/oauth2/*` error rows and §12.3 rule 3 rewritten to dispatch on the `error` field at any status rather than enumerating 400/401 2026-08 (contract 1.12), so §20.4's 403 `access_denied` reaches the shared mapper and the nine grant-local mappers it forced become removable*
 *Binding since: 2026-06-30*
 *Reference: D-09, D-10 in `.planning/phases/15-sdk-foundation/15-CONTEXT.md`*
