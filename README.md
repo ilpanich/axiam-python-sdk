@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19 (including §6.1
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21 (including §6.1
 mTLS and the §10.1 minimum local-verification set).
 
 §12.7, §14 and §15 are named rather than folded into the range because they

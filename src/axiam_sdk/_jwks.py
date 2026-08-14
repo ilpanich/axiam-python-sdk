@@ -38,10 +38,14 @@ explicit ``require`` list plus a post-decode JSON-type assertion.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import re
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import jwt
@@ -371,6 +375,49 @@ class JwksVerifier:
 
         return claims
 
+    def verify_sender_constrained(
+        self,
+        token: str,
+        *,
+        expected_tenant_id: str | None,
+        presented_thumbprint: str | None,
+    ) -> dict[str, Any]:
+        """:meth:`verify_access_token` plus CONTRACT.md §10.1 **rule 9** — the
+        sender constraint (RFC 8705 §3, contract 1.15).
+
+        This is the guard entry point for a resource server that accepts
+        **certificate-bound** access tokens. Pass the ``x5t#S256`` thumbprint of
+        the client certificate on the current connection, or ``None`` if there
+        is none; :func:`certificate_thumbprint_s256` computes it from DER bytes.
+
+        A separate method rather than a parameter on
+        :meth:`verify_access_token` because the two have different *inputs*:
+        most integrations have no transport-level certificate to offer, and
+        folding the thumbprint in would force every caller to thread a ``None``
+        they do not have — which reads as "no certificate" and rejects every
+        bound token.
+
+        **An unbound token is still accepted** here, with or without a
+        certificate. Rule 9 constrains tokens that claim a constraint; it does
+        not make certificates mandatory.
+
+        Args:
+            token: The compact-serialized access token presented by the caller.
+            expected_tenant_id: As :meth:`verify_access_token`.
+            presented_thumbprint: The RFC 8705 §3.1 ``x5t#S256`` of the peer
+                certificate on this connection, or ``None``.
+
+        Returns:
+            The decoded claims dict.
+
+        Raises:
+            AuthError: everything :meth:`verify_access_token` raises, plus the
+                three rejecting rows of :func:`verify_certificate_binding`.
+        """
+        claims = self.verify_access_token(token, expected_tenant_id=expected_tenant_id)
+        verify_certificate_binding(claims, presented_thumbprint)
+        return claims
+
     def _warn_once_if_comparand_looks_like_a_slug(self, claimed: object, expected: str) -> None:
         """Name the slug-vs-UUID misconfiguration explicitly (§13.4 observation 6).
 
@@ -483,3 +530,92 @@ class JwksVerifier:
             self._client.jwk_set_cache = None
             self._last_forced_refetch = now
             return self._client.get_signing_key_from_jwt(token)
+
+
+def verify_certificate_binding(
+    claims: Mapping[str, Any],
+    presented_thumbprint: str | None,
+) -> None:
+    """CONTRACT.md §10.1 **rule 9** — enforce a token's sender constraint
+    against the certificate the caller presented on **this** connection
+    (RFC 8705 §3 / RFC 7800, contract 1.15).
+
+    A token carrying ``cnf`` is **not** a bearer token. Accepting one without
+    proving the caller holds the named key converts it straight back into one,
+    discarding the whole protection the operator turned on — which is why this
+    is a rule and not a recommendation.
+
+    ``presented_thumbprint`` is the RFC 8705 §3.1 ``x5t#S256`` of the peer
+    certificate: base64url, **unpadded**, SHA-256 over the **DER** encoding.
+    :func:`certificate_thumbprint_s256` computes it from DER bytes.
+
+    The four cases:
+
+    ===========================  ==========================  ==========
+    token's ``cnf``              ``presented_thumbprint``    result
+    ===========================  ==========================  ==========
+    absent                       anything                    returns
+    ``x5t#S256``                 equal                       returns
+    ``x5t#S256``                 different, or ``None``      raises
+    present, no ``x5t#S256``     anything                    raises
+    ===========================  ==========================  ==========
+
+    The first row is why adopting this rule breaks nothing: an unbound token is
+    still accepted whether or not a certificate is present. The last row is the
+    one that is easy to get wrong — a ``cnf`` naming a method this SDK cannot
+    check is an *unverifiable constraint*, never *no constraint*. Read the
+    other way, a sender-constrained token silently degrades to a bearer token
+    the day a newer AXIAM issues a confirmation this SDK predates.
+
+    .. warning::
+       **The thumbprint must come from the transport.** Take it from the TLS
+       peer certificate, or from a value a *trusted* terminating proxy
+       forwarded over a channel your application controls. Never from a
+       caller-settable request header: a forgeable input makes the whole
+       mechanism decorative.
+
+    Args:
+        claims: The verified claims dict.
+        presented_thumbprint: The peer certificate's ``x5t#S256``, or ``None``.
+
+    Raises:
+        AuthError: on any of the three rejecting rows.
+    """
+    cnf = claims.get("cnf")
+    if cnf is None:
+        return
+    if not isinstance(cnf, Mapping):
+        raise AuthError("token cnf claim is malformed")
+
+    expected = cnf.get("x5t#S256")
+    if not isinstance(expected, str) or not expected:
+        raise AuthError(
+            "token carries a cnf confirmation naming a method this SDK cannot verify "
+            "(CONTRACT.md §10.1 rule 9 — an unverifiable constraint is not an absent one)"
+        )
+    if presented_thumbprint is None:
+        raise AuthError("token is certificate-bound but no client certificate was presented")
+    # Constant-time. The thumbprint is usually public — it derives from a
+    # certificate sent in the clear during the handshake — so this is defence
+    # in depth. It matters most for a self-signed client, where the registered
+    # thumbprint is the whole credential.
+    if not hmac.compare_digest(expected, presented_thumbprint):
+        raise AuthError("token is bound to a different client certificate than the one presented")
+
+
+def certificate_thumbprint_s256(der: bytes) -> str:
+    """Compute the RFC 8705 §3.1 ``x5t#S256`` thumbprint of a DER client
+    certificate: base64url-encoded SHA-256, **without** padding.
+
+    Unpadded is not a style choice — RFC 7515 §2 defines base64url in JOSE as
+    omitting ``=``, and a padded value will not compare equal to what AXIAM put
+    in the token.
+
+    Args:
+        der: The DER encoding of the peer's leaf certificate. Under the stdlib
+            ``ssl`` module this is ``sock.getpeercert(binary_form=True)``.
+
+    Returns:
+        The 43-character base64url thumbprint.
+    """
+    return base64.urlsafe_b64encode(hashlib.sha256(der).digest()).rstrip(b"=").decode("ascii")
