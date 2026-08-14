@@ -7,9 +7,9 @@ permission ticket must never be retried.
 That rule is the one §16 exception in the contract, and the only way to assert
 it is to count requests. A ticket is consumed *before* the request is
 evaluated, so a failed exchange has already spent it — and under concurrency a
-retry is precisely the second redemption that ilpanich/axiam#302's measured
-residual describes. "Exactly one request" is a security assertion here, not a
-performance one.
+retry is precisely the concurrent redemption a server whose storage engine this
+SDK cannot attest may admit twice (ilpanich/axiam#302). "Exactly one request" is
+a security assertion here, not a performance one.
 
 Every test is named after the thing it stops.
 """
@@ -85,6 +85,34 @@ def test_a_5xx_on_the_ticket_grant_is_not_retried(respx_mock: respx.MockRouter) 
     assert route.call_count == 1, (
         "the ticket grant must issue exactly one request — retrying a spent "
         "ticket is the concurrent redemption ilpanich/axiam#302 describes"
+    )
+
+
+def test_a_timeout_on_the_ticket_grant_is_not_retried(respx_mock: respx.MockRouter) -> None:
+    """A timeout must not be retried either.
+
+    §20.7 names it alongside ``5xx`` and ``invalid_grant``, and it is the case
+    most tempting to treat as "the request never happened" — a §16 retry runner
+    normally re-sends a request that produced no response at all.
+
+    That instinct is wrong here. A timeout says nothing about whether the
+    server saw the exchange; it may well have arrived and spent the ticket, and
+    silence is not evidence that it did not. Re-sending is then the second
+    redemption.
+    """
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=httpx.ReadTimeout("the exchange never answered")
+    )
+
+    with pytest.raises(httpx.TimeoutException):
+        _client().uma_exchange_ticket(ticket=TICKET, claim_token=CLAIM_TOKEN, tenant_id=TENANT_ID)
+
+    assert route.call_count == 1, (
+        "the ticket grant must issue exactly one request even when it times out "
+        "— a timed-out exchange may already have spent the ticket, so a retry is "
+        "the concurrent redemption a server whose storage engine this SDK cannot "
+        "attest may admit twice"
     )
 
 

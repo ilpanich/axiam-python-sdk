@@ -696,7 +696,8 @@ class AsyncAxiamClient(_AxiamClientBase):
         any transport failure (§20.2 rule 6). The ticket is consumed *before*
         the request is evaluated, so a failed exchange has already spent it: a
         retry cannot succeed, and under concurrency it is precisely the second
-        redemption that ilpanich/axiam#302's measured residual describes. On
+        concurrent redemption a server whose storage engine this SDK cannot
+        attest may admit twice (ilpanich/axiam#302). On
         failure, request a **new** ticket.
 
         What this method deliberately does *not* do:
