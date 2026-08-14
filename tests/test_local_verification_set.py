@@ -808,9 +808,7 @@ _THUMBPRINT = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 _OTHER_THUMBPRINT = "bWluZS1ub3QteW91cnMtdGhpcy1pcy00My1jaGFyc18"
 
 
-def test_an_unbound_token_is_accepted_with_or_without_a_certificate(
-    keypair, valid_claims
-) -> None:
+def test_an_unbound_token_is_accepted_with_or_without_a_certificate(keypair, valid_claims) -> None:
     """The regression test that keeps rule 9 from becoming a certificate mandate."""
     private_key, jwk_dict = keypair
     verifier, _endpoint = _verifier(jwk_dict)
