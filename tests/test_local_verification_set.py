@@ -54,6 +54,8 @@ from axiam_sdk._jwks import (  # noqa: E402
     MAX_CLOCK_SKEW_SECONDS,
     RECOMMENDED_RESOURCE_SERVER_AUDIENCE,
     JwksVerifier,
+    certificate_thumbprint_s256,
+    verify_certificate_binding,
 )
 from axiam_sdk.django.middleware import AxiamAuthMiddleware  # noqa: E402
 from axiam_sdk.fastapi import AxiamUser, require_authenticated_user  # noqa: E402
@@ -791,3 +793,106 @@ def test_the_guard_signature_exposes_no_second_credential() -> None:
         "the guard must take only the request, a verifier and the configured "
         f"tenant; a client/session parameter would make rule 8 violable: {params}"
     )
+
+
+# --- Rule 9: sender-constrained (certificate-bound) access tokens ----------
+#
+# CONTRACT.md §10.1 rule 9 (contract 1.15, RFC 8705 §3 / RFC 7800). A token
+# carrying ``cnf`` is not a bearer token and must not be accepted as one.
+#
+# Three negatives and one positive, and the POSITIVE is the one that matters
+# most: rule 9 must not become "every caller must present a certificate",
+# which would break every deployment that does not use mTLS at all.
+
+_THUMBPRINT = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+_OTHER_THUMBPRINT = "bWluZS1ub3QteW91cnMtdGhpcy1pcy00My1jaGFyc18"
+
+
+def test_an_unbound_token_is_accepted_with_or_without_a_certificate(
+    keypair, valid_claims
+) -> None:
+    """The regression test that keeps rule 9 from becoming a certificate mandate."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, valid_claims)
+
+    for presented in (None, _THUMBPRINT):
+        claims = verifier.verify_sender_constrained(
+            token, expected_tenant_id=_TENANT, presented_thumbprint=presented
+        )
+        assert claims["sub"] == "user-1"
+
+
+def test_a_bound_token_is_accepted_with_its_own_certificate(keypair, valid_claims) -> None:
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
+
+    claims = verifier.verify_sender_constrained(
+        token, expected_tenant_id=_TENANT, presented_thumbprint=_THUMBPRINT
+    )
+    assert claims["cnf"]["x5t#S256"] == _THUMBPRINT
+
+
+def test_a_bound_token_is_rejected_with_no_certificate(keypair, valid_claims) -> None:
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
+
+    with pytest.raises(AuthError, match="no client certificate was presented"):
+        verifier.verify_sender_constrained(
+            token, expected_tenant_id=_TENANT, presented_thumbprint=None
+        )
+
+
+def test_a_bound_token_is_rejected_with_a_different_certificate(keypair, valid_claims) -> None:
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
+
+    with pytest.raises(AuthError, match="different client certificate"):
+        verifier.verify_sender_constrained(
+            token, expected_tenant_id=_TENANT, presented_thumbprint=_OTHER_THUMBPRINT
+        )
+
+
+def test_a_cnf_naming_an_unimplemented_method_is_rejected_not_ignored() -> None:
+    """The subtle one.
+
+    A ``cnf`` naming a confirmation method this SDK cannot check — a DPoP
+    ``jkt``, say — is an *unverifiable constraint*, never *no constraint*. Read
+    the other way, a sender-constrained token silently degrades to a bearer
+    token the day a newer AXIAM issues a confirmation this SDK predates.
+    """
+    dpopish = {"cnf": {"jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"}}
+    for presented in (None, _THUMBPRINT):
+        with pytest.raises(AuthError, match="cannot verify"):
+            verify_certificate_binding(dpopish, presented)
+
+
+def test_verify_access_token_does_not_apply_rule_9(keypair, valid_claims) -> None:
+    """``verify_access_token`` deliberately does not enforce rule 9 — it has no
+    transport to ask for a peer certificate. Asserted so the split cannot be
+    collapsed by accident: a resource server accepting bound tokens must call
+    ``verify_sender_constrained``."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
+
+    claims = verifier.verify_access_token(token, expected_tenant_id=_TENANT)
+    # ...but the claim is there for a caller applying rule 9 itself.
+    verify_certificate_binding(claims, _THUMBPRINT)
+    with pytest.raises(AuthError):
+        verify_certificate_binding(claims, None)
+
+
+def test_thumbprint_helper_produces_unpadded_base64url() -> None:
+    """RFC 7515 §2 base64url: unpadded, ``-``/``_`` rather than ``+``/``/``.
+    A padded or standard-base64 value will not compare equal to what AXIAM put
+    in the token."""
+    der = b"\x42" * 512
+    tp = certificate_thumbprint_s256(der)
+    assert len(tp) == 43
+    assert "=" not in tp
+    assert "+" not in tp and "/" not in tp
+    assert certificate_thumbprint_s256(der) == tp
