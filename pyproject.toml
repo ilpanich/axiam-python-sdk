@@ -71,10 +71,28 @@ testpaths = ["tests"]
 omit = ["*/grpc/gen/*"]
 
 [tool.coverage.report]
-# Regression gate: fail if coverage drops below the floor. Set below the
-# current level (~98% with generated stubs excluded) so it never false-fails;
-# ratchet upward as coverage rises.
+# Regression gate: fail if coverage drops below the floor. `precision` is not
+# cosmetic here — coverage.py's actual pass/fail decision
+# (coverage.results.should_fail_under, which pytest-cov calls from
+# pytest_runtestloop to set session.testsfailed) compares round(total,
+# precision) against fail_under, while the human-readable banner pytest-cov
+# prints in pytest_terminal_summary compares the raw, unrounded total. Leaving
+# precision at its default of 0 makes those two comparisons disagree: any
+# total in [fail_under - 0.5, fail_under) rounds UP to fail_under and clears
+# the gate silently, even though the printed message still says "FAIL ...
+# not reached". This repo's own history hit exactly that: commit 34bcea3
+# measured 96.93% against fail_under=97, the "Run tests with coverage" CI
+# step printed "FAIL Required test coverage of 97.0% not reached. Total
+# coverage: 96.93%", and the step (and the whole "Coverage" workflow run)
+# still reported success, because round(96.93, 0) == 97.0 and 97.0 < 97 is
+# False. precision = 2 makes the printed message and the real gate decision
+# agree, so "FAIL" in the log always means a failing exit code.
+#
+# Floor set below the current measured level (97.33% on main as of
+# 2026-08-15, generated stubs excluded per [tool.coverage.run] above) so it
+# never false-fails; ratchet upward as coverage rises.
 fail_under = 97
+precision = 2
 
 [tool.mypy]
 strict = true
