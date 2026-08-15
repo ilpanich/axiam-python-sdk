@@ -312,14 +312,36 @@ class _Session:
 
     def _send_sync(self, request: httpx.Request) -> httpx.Response:
         """Single choke point for every sync REST call (mirrors Go's
-        ``doRequest``): decorate -> send -> capture CSRF."""
+        ``doRequest``): decorate -> send -> capture CSRF.
+
+        Structural invariant (cross-SDK conformance review F-14, CONTRACT.md
+        §12.3 rule 3): this choke point contains **no 401-to-refresh
+        interceptor**. A 401 is returned to the caller exactly as received.
+        401-triggers-refresh is opt-in and lives one layer *above* this
+        method, at individual call sites such as
+        ``AxiamClient._authz_post_sync_once`` /
+        ``_retry_after_refresh_sync``. Every ``§12`` OIDC/SSO operation
+        (``oidc_exchange``/``oidc_refresh``/``introspect``/``revoke``/...)
+        calls :meth:`_send_sync` directly and is never wrapped in that
+        retry-on-401 helper, so a 401 from ``/oauth2/*`` structurally cannot
+        reach the §9 single-flight refresh guard — there is nothing here to
+        route it there. This is intentionally fragile to a *future* generic
+        interceptor added at this choke point rather than at a call site: if
+        one is ever added here, it must exclude ``/oauth2/*`` explicitly, or
+        this invariant (and the regression tests in
+        ``tests/test_oidc_introspect_revoke.py``) will silently break.
+        """
         self._prepare_request(request)
         response = self.sync_client.send(request)
         self._capture_csrf(response)
         return response
 
     async def _send_async(self, request: httpx.Request) -> httpx.Response:
-        """Async twin of :meth:`_send_sync`."""
+        """Async twin of :meth:`_send_sync` — same structural invariant
+        (F-14): no 401-to-refresh interceptor lives at this choke point, so
+        every §12 OIDC/SSO operation's 401 from ``/oauth2/*`` structurally
+        cannot reach the §9 single-flight refresh guard. See
+        :meth:`_send_sync` for the full explanation."""
         self._prepare_request(request)
         response = await self.async_client.send(request)
         self._capture_csrf(response)
