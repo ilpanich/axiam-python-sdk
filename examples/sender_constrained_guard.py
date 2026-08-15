@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 
+from axiam_sdk._dpop import InMemoryJtiStore, verify_dpop_proof
 from axiam_sdk._errors import AuthError
 from axiam_sdk._jwks import (
     JwksVerifier,
@@ -34,17 +35,10 @@ from axiam_sdk._jwks import (
     verify_token_binding,
 )
 
-
-def verified_dpop_thumbprint(request: object) -> str | None:
-    """The ``jkt`` of a DPoP proof you have **already verified** against this
-    request's method, URI, ``iat`` and ``jti``.
-
-    Returning a thumbprint here asserts the proof checked out. Lifting it off
-    an unverified proof would let a proof captured from any other endpoint
-    authorize this one — which is why this is a separate, deliberate step
-    rather than something the SDK reads out of a header for you.
-    """
-    return None
+# One store per process. InMemoryJtiStore is per-worker, so a deployment
+# running more than one process needs a shared implementation (Redis, a
+# database table) or each worker gets its own replay window.
+JTI_STORE = InMemoryJtiStore()
 
 
 def guard(request: object, token: str) -> str:
@@ -61,12 +55,27 @@ def guard(request: object, token: str) -> str:
     peer_der = getattr(request, "peer_certificate_der", None)
     certificate_thumbprint = certificate_thumbprint_s256(peer_der) if peer_der is not None else None
 
+    # All ten §21.7.2 checks. Returns the proof key's thumbprint, so the value
+    # handed to rule 9 below can only have come from a proof that verified —
+    # a thumbprint lifted off an *unverified* proof would let a proof captured
+    # from any other endpoint authorize this one.
+    dpop_thumbprint = None
+    proof = getattr(request, "dpop_header", None)
+    if proof:
+        dpop_thumbprint = verify_dpop_proof(
+            proof,
+            http_method=getattr(request, "method", "GET"),
+            http_uri=getattr(request, "url", ""),
+            access_token=token,
+            jti_store=JTI_STORE,
+        )
+
     # Rule 9. Returns immediately for an unbound token, so adopting this does
     # not break existing deployments.
     verify_token_binding(
         claims,
         certificate_thumbprint=certificate_thumbprint,
-        dpop_thumbprint=verified_dpop_thumbprint(request),
+        dpop_thumbprint=dpop_thumbprint,
     )
 
     return str(claims["sub"])
