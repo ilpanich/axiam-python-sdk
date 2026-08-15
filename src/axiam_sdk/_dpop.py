@@ -93,6 +93,7 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def _b64url_encode(raw: bytes) -> str:
+    """Encode bytes as unpadded base64url (RFC 7515 §2)."""
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
@@ -124,10 +125,16 @@ class InMemoryJtiStore:
     """
 
     def __init__(self) -> None:
+        """Create an empty store."""
         self._seen: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def claim(self, jti: str, expires_at: float) -> bool:
+        """Record ``jti`` as used until ``expires_at``.
+
+        Returns ``True`` if this is the first sighting, ``False`` if it is a
+        replay.
+        """
         now = time.time()
         with self._lock:
             # Prune under the same lock as the insert. Entries are only ever
