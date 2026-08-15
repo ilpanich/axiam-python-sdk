@@ -549,7 +549,12 @@ def verify_certificate_binding(
     certificate: base64url, **unpadded**, SHA-256 over the **DER** encoding.
     :func:`certificate_thumbprint_s256` computes it from DER bytes.
 
-    The four cases:
+    This is the **narrow** entry point, kept for transports that can only ever
+    produce a certificate thumbprint. It refuses a DPoP-bound token outright
+    rather than ignoring the ``jkt`` it cannot check — see
+    :func:`verify_token_binding` for the full rule.
+
+    The five cases:
 
     ===========================  ==========================  ==========
     token's ``cnf``              ``presented_thumbprint``    result
@@ -557,7 +562,8 @@ def verify_certificate_binding(
     absent                       anything                    returns
     ``x5t#S256``                 equal                       returns
     ``x5t#S256``                 different, or ``None``      raises
-    present, no ``x5t#S256``     anything                    raises
+    names ``jkt`` (1.16)         anything                    raises
+    present, names neither       anything                    raises
     ===========================  ==========================  ==========
 
     The first row is why adopting this rule breaks nothing: an unbound token is
@@ -589,9 +595,21 @@ def verify_certificate_binding(
 
     expected = cnf.get("x5t#S256")
     if not isinstance(expected, str) or not expected:
+        # Includes the DPoP case: this entry point has no proof to check, so a
+        # ``jkt``-bound token is refused rather than silently downgraded.
         raise AuthError(
-            "token carries a cnf confirmation naming a method this SDK cannot verify "
-            "(CONTRACT.md §10.1 rule 9 — an unverifiable constraint is not an absent one)"
+            "token carries a cnf confirmation naming a method this entry point cannot verify "
+            "(CONTRACT.md §10.1 rule 9 — an unverifiable constraint is not an absent one; "
+            "use verify_token_binding for DPoP)"
+        )
+    # A token naming BOTH methods is a conjunction (contract 1.16): this
+    # function can establish one half and must not answer for the whole.
+    # Refusing here is what stops "check whichever we can".
+    jkt = cnf.get("jkt")
+    if isinstance(jkt, str) and jkt:
+        raise AuthError(
+            "token names both a certificate and a DPoP key; both must hold "
+            "(CONTRACT.md §10.1 rule 9) — use verify_token_binding"
         )
     if presented_thumbprint is None:
         raise AuthError("token is certificate-bound but no client certificate was presented")
@@ -601,6 +619,101 @@ def verify_certificate_binding(
     # thumbprint is the whole credential.
     if not hmac.compare_digest(expected, presented_thumbprint):
         raise AuthError("token is bound to a different client certificate than the one presented")
+
+
+def verify_token_binding(
+    claims: Mapping[str, Any],
+    *,
+    certificate_thumbprint: str | None = None,
+    dpop_thumbprint: str | None = None,
+) -> None:
+    """CONTRACT.md §10.1 **rule 9** — enforce a token's sender constraint
+    against **every** proof the caller presented (contract 1.16).
+
+    This is the full rule, and the one to use unless your transport genuinely
+    cannot produce a DPoP thumbprint.
+
+    Keyword-only on purpose: two same-typed optional thumbprints are exactly
+    the pair a positional call transposes silently, and transposing them would
+    check each proof against the wrong confirmation.
+
+    The ten cases:
+
+    =========================  ==============  ==========  ==========
+    token's ``cnf``            certificate     DPoP        result
+    =========================  ==============  ==========  ==========
+    absent                     anything        anything    returns
+    ``x5t#S256``               equal           ignored     returns
+    ``x5t#S256``               different       ignored     raises
+    ``x5t#S256``               ``None``        ignored     raises
+    ``jkt``                    ignored         equal       returns
+    ``jkt``                    ignored         different   raises
+    ``jkt``                    ignored         ``None``    raises
+    both                       equal           equal       returns
+    both                       wrong/missing   —           raises
+    present, names neither     anything        anything    raises
+    =========================  ==============  ==========  ==========
+
+    Two rows carry the weight. **Both named is a conjunction**: an operator who
+    turned on two constraints asked for two, and satisfying the more convenient
+    one is not compliance. **Names neither is a refusal**: a confirmation this
+    SDK cannot interpret is an unverifiable constraint, and reading it as
+    "unconstrained" is the exact downgrade rule 9 exists to prevent. That
+    includes an *empty* ``cnf`` — also how proto3 delivers an empty
+    ``CnfClaim`` over gRPC (§10.3 rule 3).
+
+    .. warning::
+       This function compares thumbprints; it does **not** verify proofs.
+       Supply ``dpop_thumbprint`` only after checking the proof's signature,
+       ``htm``, ``htu``, ``iat`` and ``jti`` for *this* request. A thumbprint
+       lifted off an unverified proof would let a proof captured from any
+       other endpoint authorize this one.
+
+    Args:
+        claims: The verified claims dict.
+        certificate_thumbprint: The peer certificate's ``x5t#S256``, or ``None``.
+        dpop_thumbprint: The ``jkt`` of an **already verified** DPoP proof, or
+            ``None``.
+
+    Raises:
+        AuthError: on any rejecting row.
+    """
+    cnf = claims.get("cnf")
+    # The fast path, and the common one. First on purpose: an unbound token is
+    # accepted with no proofs at all, which is what keeps existing deployments
+    # working when a guard adopts this rule.
+    if cnf is None:
+        return
+    if not isinstance(cnf, Mapping):
+        raise AuthError("token cnf claim is malformed")
+
+    expected_cert = cnf.get("x5t#S256")
+    expected_cert = expected_cert if isinstance(expected_cert, str) and expected_cert else None
+    expected_jkt = cnf.get("jkt")
+    expected_jkt = expected_jkt if isinstance(expected_jkt, str) and expected_jkt else None
+
+    if expected_cert is None and expected_jkt is None:
+        raise AuthError(
+            "token carries a cnf confirmation naming no method this SDK can verify "
+            "(CONTRACT.md §10.1 rule 9 — an unverifiable constraint is not an absent one)"
+        )
+
+    # Each arm that applies must pass. Two independent checks rather than a
+    # branch on the pair, precisely so "both named" needs no case of its own —
+    # it is simply where both run.
+    if expected_cert is not None:
+        if certificate_thumbprint is None:
+            raise AuthError("token is certificate-bound but no client certificate was presented")
+        if not hmac.compare_digest(expected_cert, certificate_thumbprint):
+            raise AuthError(
+                "token is bound to a different client certificate than the one presented"
+            )
+
+    if expected_jkt is not None:
+        if dpop_thumbprint is None:
+            raise AuthError("token is DPoP-bound but no verified DPoP proof was presented")
+        if not hmac.compare_digest(expected_jkt, dpop_thumbprint):
+            raise AuthError("token is bound to a different DPoP key than the one presented")
 
 
 def certificate_thumbprint_s256(der: bytes) -> str:
