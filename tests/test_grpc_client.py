@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from axiam_sdk._errors import AuthError, AuthzError
-from axiam_sdk.grpc.client import AsyncAuthzGrpcClient, AuthzGrpcClient
+from axiam_sdk.grpc.client import AsyncAuthzGrpcClient, AuthzGrpcClient, _to_decision
 from axiam_sdk.grpc.gen import (
     authorization_pb2,
     authorization_pb2_grpc,
@@ -579,3 +579,62 @@ class TestAsyncAuthzGrpcClient:
             assert refresh_calls == 1, "refresh_fn must be called exactly once"
         finally:
             await client.close()
+
+
+# ---------------------------------------------------------------------------
+# SDK-Q10 / CONTRACT.md §11.2 rule 9 (contract 1.19): the decision's reason is
+# read from `reason` (proto field 4), falling back to the deprecated
+# `deny_reason` (field 2) ONLY when `reason` is absent — which is exactly what
+# a pre-SDK-Q10 server sends. Unit-level, against the mapper itself: the
+# precedence has nothing to do with the transport and needs no live server.
+# ---------------------------------------------------------------------------
+
+
+def test_decision_reads_reason_field_in_preference_to_deny_reason() -> None:
+    """A current server populates both fields with the identical string;
+    `reason` is the one that is read, and the deprecated field is never
+    consulted when `reason` is present."""
+    decision = _to_decision(
+        authorization_pb2.CheckAccessResponse(
+            allowed=False,
+            deny_reason="stale duplicate",
+            reason_code="denied_by_rule",
+            reason="denied by rule",
+        )
+    )
+    assert decision.allowed is False
+    assert decision.reason == "denied by rule"
+    assert decision.reason_code == "denied_by_rule"
+
+
+def test_decision_falls_back_to_deny_reason_when_reason_is_absent() -> None:
+    """A pre-SDK-Q10 server never sets field 4. Because `reason` has explicit
+    presence, its absence is distinguishable from an empty value, so the
+    deprecated field is still read rather than the refusal losing its
+    reason."""
+    response = authorization_pb2.CheckAccessResponse(
+        allowed=False, deny_reason="caller lacks permission", reason_code="denied_by_rule"
+    )
+    assert not response.HasField("reason")
+
+    decision = _to_decision(response)
+    assert decision.allowed is False
+    assert decision.reason == "caller lacks permission"
+
+
+def test_decision_carries_no_reason_on_an_allow() -> None:
+    """REST omits `reason` on an allow and so does gRPC — there is nothing to
+    say, and neither field carries anything."""
+    decision = _to_decision(authorization_pb2.CheckAccessResponse(allowed=True))
+    assert decision.allowed is True
+    assert decision.reason is None
+    assert decision.reason_code is None
+
+
+def test_decision_does_not_surface_an_explicitly_empty_reason_as_empty_string() -> None:
+    """An explicitly-set-but-empty `reason` is not a reason. It must not reach
+    callers as ``""``, which they could accidentally branch on."""
+    response = authorization_pb2.CheckAccessResponse(allowed=True, reason="")
+    assert response.HasField("reason")
+
+    assert _to_decision(response).reason is None

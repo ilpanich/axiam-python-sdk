@@ -56,6 +56,39 @@ def _to_wire(
     return wire
 
 
+def _to_decision(
+    response: authorization_pb2.CheckAccessResponse,
+) -> AccessResult:
+    """Map a ``CheckAccessResponse`` protobuf message to an
+    :class:`~axiam_sdk._models.AccessResult`, shared by the single-check and
+    batch-check call sites of both the sync and async clients.
+
+    SDK-Q10 / CONTRACT.md §11.2 rule 9 (contract 1.19): read ``reason`` (field
+    4), and fall back to the deprecated ``deny_reason`` (field 2) **only** when
+    ``reason`` is absent. ``reason`` has explicit presence precisely so a
+    client can tell a pre-SDK-Q10 server (refuses with ``reason`` unset and
+    ``deny_reason`` populated) from an allow (nothing to say) — which is why
+    the fallback is guarded by ``HasField`` rather than by truthiness. Both
+    fields carry the identical string on a current server; ``deny_reason``
+    is removed at AXIAM 2.0 and this fallback goes with it. Callers see one
+    ``reason``, never two.
+
+    An empty value on either field becomes ``None`` rather than ``""`` — the
+    same rule ``reason_code`` follows below, and for the same reason: ``""``
+    is a value callers could accidentally branch on.
+    """
+    reason = response.reason if response.HasField("reason") else response.deny_reason
+    return AccessResult(
+        allowed=response.allowed,
+        reason=reason or None,
+        # §11 rule 9. proto3 renders an unset `string` as "", so an older
+        # server that never set field 3 is indistinguishable from one that
+        # set it empty — both mean "no reason code", and both become None
+        # rather than "" (a value callers could accidentally branch on).
+        reason_code=response.reason_code or None,
+    )
+
+
 def _to_user_info(response: userinfo_pb2.GetUserInfoResponse) -> UserInfo:
     """Map a ``GetUserInfoResponse`` protobuf message to the typed
     :class:`~axiam_sdk._models.UserInfo` record (CONTRACT.md §1.1), shared by
@@ -154,15 +187,7 @@ class AuthzGrpcClient:
             response = self._stub.CheckAccess(wire)
         except grpc.RpcError as exc:
             response = self._retry_after_refresh(exc, lambda: self._stub.CheckAccess(wire))
-        return AccessResult(
-            allowed=response.allowed,
-            reason=response.deny_reason or None,
-            # §11 rule 9. proto3 renders an unset `string` as "", so an older
-            # server that never set field 3 is indistinguishable from one that
-            # set it empty — both mean "no reason code", and both become None
-            # rather than "" (a value callers could accidentally branch on).
-            reason_code=response.reason_code or None,
-        )
+        return _to_decision(response)
 
     def batch_check(self, checks: list[tuple[str, str, str, str | None]]) -> list[AccessResult]:
         """``BatchCheckAccess`` (CONTRACT.md §1). ``checks`` is a list of
@@ -179,14 +204,7 @@ class AuthzGrpcClient:
             response = self._stub.BatchCheckAccess(wire)
         except grpc.RpcError as exc:
             response = self._retry_after_refresh(exc, lambda: self._stub.BatchCheckAccess(wire))
-        return [
-            AccessResult(
-                allowed=result.allowed,
-                reason=result.deny_reason or None,
-                reason_code=result.reason_code or None,
-            )
-            for result in response.results
-        ]
+        return [_to_decision(result) for result in response.results]
 
     def get_user_info(self) -> UserInfo:
         """``GetUserInfo`` — the gRPC-only userinfo operation (CONTRACT.md
@@ -289,15 +307,7 @@ class AsyncAuthzGrpcClient:
             response = await self._stub.CheckAccess(wire)
         except grpc.RpcError as exc:
             response = await self._retry_after_refresh(exc, lambda: self._stub.CheckAccess(wire))
-        return AccessResult(
-            allowed=response.allowed,
-            reason=response.deny_reason or None,
-            # §11 rule 9. proto3 renders an unset `string` as "", so an older
-            # server that never set field 3 is indistinguishable from one that
-            # set it empty — both mean "no reason code", and both become None
-            # rather than "" (a value callers could accidentally branch on).
-            reason_code=response.reason_code or None,
-        )
+        return _to_decision(response)
 
     async def batch_check(
         self, checks: list[tuple[str, str, str, str | None]]
@@ -315,14 +325,7 @@ class AsyncAuthzGrpcClient:
             response = await self._retry_after_refresh(
                 exc, lambda: self._stub.BatchCheckAccess(wire)
             )
-        return [
-            AccessResult(
-                allowed=result.allowed,
-                reason=result.deny_reason or None,
-                reason_code=result.reason_code or None,
-            )
-            for result in response.results
-        ]
+        return [_to_decision(result) for result in response.results]
 
     async def get_user_info(self) -> UserInfo:
         """Async twin of :meth:`AuthzGrpcClient.get_user_info` (CONTRACT.md
