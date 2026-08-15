@@ -1,8 +1,13 @@
 """Typed Pydantic v2 models (D-06/D-07/D-21).
 
 Token-bearing fields use ``SecretStr`` (D-07) — it *is* the Python §7
-``Sensitive`` type: it redacts its value in ``repr``/``str``/``model_dump``
-and only exposes the raw value via ``.get_secret_value()``.
+``Sensitive`` type: it redacts its value in ``repr``/``str``, in
+``model_dump_json()``, and in ``model_dump(mode="json")``, and only exposes
+the raw value via ``.get_secret_value()``. Plain ``model_dump()`` (python
+mode, the default) does **not** itself redact — it returns the
+``SecretStr`` object unchanged, so ``.get_secret_value()`` remains callable
+on the dumped value; only ``str()``/``repr()`` of that object (or a JSON
+dump) render the redacted form. Cross-SDK conformance review F-11.
 """
 
 from __future__ import annotations
@@ -226,9 +231,13 @@ class OidcTokenSet(BaseModel):
     ``login_client_credentials`` (CONTRACT.md §12.1).
 
     ``access_token``, ``refresh_token``, and ``id_token`` are ``SecretStr``
-    (§12.5) — the Python §7 ``Sensitive`` equivalent: ``repr``/``str``/
-    ``model_dump`` all redact them, and the raw value is reachable only
-    through ``.get_secret_value()``.
+    (§12.5) — the Python §7 ``Sensitive`` equivalent: ``repr``, ``str``,
+    ``model_dump_json()``, and ``model_dump(mode="json")`` all redact them.
+    Plain ``model_dump()`` (python mode) does **not** redact by itself — it
+    hands back the ``SecretStr`` object, off which ``.get_secret_value()``
+    still reaches the raw value; only stringifying or JSON-serializing that
+    object redacts it. The raw value is otherwise reachable only through
+    ``.get_secret_value()`` (cross-SDK conformance review F-11).
 
     ``id_claims`` is present exactly when ``id_token`` is, and holds the
     **already-validated** claim set (§12.4) — validation happens before
