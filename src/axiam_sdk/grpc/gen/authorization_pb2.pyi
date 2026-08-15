@@ -21,14 +21,16 @@ class CheckAccessRequest(_message.Message):
     def __init__(self, tenant_id: _Optional[str] = ..., subject_id: _Optional[str] = ..., action: _Optional[str] = ..., resource_id: _Optional[str] = ..., scope: _Optional[str] = ...) -> None: ...
 
 class CheckAccessResponse(_message.Message):
-    __slots__ = ("allowed", "deny_reason", "reason_code")
+    __slots__ = ("allowed", "deny_reason", "reason_code", "reason")
     ALLOWED_FIELD_NUMBER: _ClassVar[int]
     DENY_REASON_FIELD_NUMBER: _ClassVar[int]
     REASON_CODE_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
     allowed: bool
     deny_reason: str
     reason_code: str
-    def __init__(self, allowed: bool = ..., deny_reason: _Optional[str] = ..., reason_code: _Optional[str] = ...) -> None: ...
+    reason: str
+    def __init__(self, allowed: bool = ..., deny_reason: _Optional[str] = ..., reason_code: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
 
 class BatchCheckAccessRequest(_message.Message):
     __slots__ = ("requests",)

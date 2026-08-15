@@ -67,7 +67,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Re-sync vendored `CONTRACT.md` / `openapi.json` to contract 1.15.**
+- **Re-sync vendored `CONTRACT.md`, `openapi.json` and `proto/` to contract 1.19**
+  (upstream **R5.8**). The vendored copies had been pinned at the 1.15-era artifacts and
+  drifted three contract revisions behind `ilpanich/axiam@main`. All five files are now
+  byte-identical to upstream, and `proto/axiam/v1/reactor.proto` (contract 1.18 §22, the
+  AMQP reactor protocol) is vendored here for the first time.
+
+- **Regenerated the committed gRPC stubs** (`src/axiam_sdk/grpc/gen`) from the new protos
+  with the pinned `grpcio-tools==1.78.*`, per D-04. The diff is exactly the SDK-Q10 field
+  additions — no toolchain-version churn — and `bash scripts/gen_grpc.sh` is reproducible
+  against it, so CI's drift gate stays clean.
+
+- **CONTRACT.md §11.2 rule 9 — the gRPC decision reads `reason`, not `deny_reason`**
+  (**SDK-Q10**, contract 1.19). `CheckAccessResponse` gains `reason` (proto field 4,
+  explicit presence) carrying the same string the REST decision body has always called
+  `reason`; `deny_reason` (field 2) is now `[deprecated = true]` and is removed at AXIAM
+  2.0. The four duplicated decision-mapping sites (sync/async × single/batch) collapse
+  into one `_to_decision` helper that reads `reason`, falling back to `deny_reason` only
+  when `HasField("reason")` is false — that absence is precisely a pre-SDK-Q10 server, and
+  is why the guard is presence rather than truthiness. `AccessResult` still exposes one
+  `reason`, so this is not a breaking change for callers and nothing changes on the wire
+  today.
+
+  **Known residual, deliberately not taken here:** contract 1.19 also relaxes gRPC
+  `subject_id` to optional (an *empty* value meaning "the subject in the verified token").
+  `check_access`/`batch_check` still take `subject_id` as a required argument — relaxing it
+  is a signature change and belongs in its own change, not in an artifact re-sync.
 
 
 ### Changed
