@@ -21,10 +21,10 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21 (including §6.1
-mTLS and the §10.1 minimum local-verification set).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21, §22 (including
+§6.1 mTLS and the §10.1 minimum local-verification set).
 
-§12.7, §14 and §15 are named rather than folded into the range because they
+§12.7, §14, §15 and §22 are named rather than folded into the range because they
 landed after this SDK already claimed §1–§13: widening the range silently would
 turn a statement that was true when written into a different claim without
 anyone editing it.
@@ -195,6 +195,147 @@ await consume(channel, "axiam.authz.request", signing_key, handler, prefetch=10)
 Every delivery's HMAC-SHA256 signature is verified BEFORE the handler is
 ever invoked — an unverified message never reaches your code. See
 [`examples/amqp_consumer.py`](./examples/amqp_consumer.py).
+
+### Reactors — AMQP extension actors (§22)
+
+A **reactor** is an external process that subscribes to named hook events on the AMQP bus and
+answers back — allow, deny, or a field-allow-listed mutation — inside a timeout the server
+declared. It is AXIAM's answer to Zitadel Actions and Keycloak SPIs, and the difference is the
+whole design: those load third-party code *into* the authorization server, and this keeps it
+outside, reachable only through a signed reply schema the server validates before it believes
+a word of it.
+
+```python
+from axiam_sdk.amqp import (
+    LOGIN_POST_AUTH,
+    TOKEN_PRE_ISSUE,
+    ReactorConfig,
+    ReactorDecision,
+    ReactorEvent,
+    aio_pika_dialer,
+    allow,
+    deny,
+    mutate,
+    reactor_serve,
+)
+
+
+async def decide(event: ReactorEvent) -> ReactorDecision:
+    # token.pre_issue is mutable — the `ext.` namespace, and nothing else.
+    if event.event == TOKEN_PRE_ISSUE:
+        return mutate({"ext.cost_center": "42"})
+    # login.post_auth is veto-only, plus step-up.
+    if event.event == LOGIN_POST_AUTH and event.payload.get("ip", "").startswith("198.51.100."):
+        return deny("embargoed region")
+    return allow()
+
+
+await reactor_serve(
+    aio_pika_dialer("amqps://reactor:secret@broker.example.com:5671"),
+    ReactorConfig(
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        reactor_id="99999999-9999-9999-9999-999999999999",
+        signing_key=subkey,  # the tenant's HKDF-derived AMQP subkey, never the master key
+    ),
+    decide,
+)
+```
+
+See [`examples/reactor.py`](./examples/reactor.py) for a complete three-hook reactor with
+graceful shutdown and a telemetry hook.
+
+#### The five hookable events, and their allow-lists
+
+| Event | Mutable | Complete allow-list | Default failure policy |
+|---|---|---|---|
+| `token.pre_issue` | yes | the **`ext.`** namespace only | `fail_open` |
+| `login.post_auth` | no | — (veto, or `require_mfa`) | `fail_closed` |
+| `user.pre_create` | yes | `username`, `email`, `metadata.` | `fail_closed` |
+| `user.pre_update` | yes | `username`, `email`, `metadata.` | `fail_closed` |
+| `grant.pre_assign` | no | — (veto only) | `fail_closed` |
+
+An entry ending in `.` is a **namespace prefix** and needs at least one character after the
+dot: `ext.` admits `ext.department` and `ext.a.b.c`, and refuses `ext.` itself, `ext`, `extra`,
+`external_id` and `evil.ext.department`. So a reactor can never reach `sub`, `aud`, `exp`,
+`scope` or any other standard claim — a **correctly signed** reply setting `sub` is refused
+exactly as a forged one is.
+
+Registrations that name no `failure_policy` get **the strictest default among their events**,
+in either array order — `default_failure_policy_for([...])` computes it, and "take the first
+event's default" is specifically what §22.8 forbids, because it lets the order of a JSON array
+decide whether an unreachable fraud check passes.
+
+#### The authorization hot path is not hookable, and this SDK does not pretend otherwise
+
+The single check, the batch check and token introspection are absent from `EVENT_REGISTRY`,
+from `REACTOR_EVENT_NAMES` and from every example here (§22.7, a normative MUST NOT). A
+reactor round-trip is milliseconds; the check path's budget is microseconds. An application
+that needs external input on an authorization decision writes a **deny grant**, which the
+engine evaluates in the hot path at hot-path cost — and there is deliberately no client-side
+interceptor in this SDK offering itself as the reactor equivalent.
+
+#### What the runtime guarantees
+
+- **Both directions are signed.** The server signs the event with the tenant's HKDF-derived
+  AMQP subkey; the reactor signs its reply with the same key. An unsigned or stale reply is
+  not a weak reply — the server discards it as though the reactor had never answered. Every
+  event is verified (`key_version >= 2`, MAC, ±300 s freshness in both directions, nonce
+  seen-set) *before* your handler is called.
+- **Three canonicalization traps, all of them silent failures if missed.** A reactor body
+  signs `hmac_signature` as **`null`**, where §8's own two message types omit it;
+  `json.dumps` must run with `ensure_ascii=False`, because `serde_json` escapes no non-ASCII
+  and Python escapes all of it by default; and `issued_at` is `chrono`'s RFC 3339
+  (`…T12:00:00Z`, no fraction on a whole second), not `datetime.isoformat()`'s `+00:00` with
+  six digits. All three are pinned by server-generated vectors rather than by memory — see
+  [`testdata/reactor_v2_reference_vectors.json`](./testdata/reactor_v2_reference_vectors.json)
+  and [`tests/test_reactor_vectors.py`](./tests/test_reactor_vectors.py).
+- **It declares no topology.** No queue declare, no exchange declare, no bind — the server
+  owns all three, and the transport protocol this runtime is written against does not even
+  offer them. A reactor that can bind is a reactor that can bind itself to
+  `*.token.pre_issue` and read another tenant's issuance events.
+- **It fails closed on its own errors.** A handler that raises, a body that will not parse, a
+  window that has already closed: each publishes **nothing**, so the registration's
+  `failure_policy` decides. Synthesizing an `allow` would override the operator's
+  `fail_closed` setting from inside the library. `abstain()` is the explicit form of the same
+  thing.
+- **It does not filter your patch.** One forbidden key rejects the whole patch server-side;
+  pruning it here would leave you believing a field was set when it was dropped. Check
+  yourself with `patch_field_allowed(spec, field)` if you want to know before you send.
+- **It honours `timeout_ms`.** The handler runs inside the window the server declared, and a
+  reply whose window has closed is abandoned rather than published late.
+- **Shutdown drains (§18).** Cancel the `reactor_serve` task; it stops taking deliveries, lets
+  every dispatch already running finish — handler, signature, publish — and only then closes
+  the channel and connection.
+- **TLS is not optional (§8b).** `aio_pika_dialer` accepts `amqps://` only and refuses a
+  plaintext URL rather than downgrading. `ca_bundle=` takes a path or inline PEM for a
+  privately-issued broker certificate; there is no verification-skip switch under any name.
+
+#### Registering a reactor (§22.9)
+
+Registration is a REST admin call, not part of this runtime:
+
+```bash
+curl -X POST https://axiam.example.com/api/v1/reactors \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"fraud-check","events":["login.post_auth"],"mode":"intercept","timeout_ms":500}'
+```
+
+The response's `id` is what `reactor_id` takes, and the server declares the queue.
+`timeout_ms` defaults to **500** and is refused outside `1…5000`; the chain's wall-clock
+ceiling is **5000 ms** and the per-tenant in-flight cap is **64**. This SDK exposes those as
+constants (`DEFAULT_REACTOR_TIMEOUT_MS`, `MAX_REACTOR_TIMEOUT_MS`,
+`DEFAULT_REACTOR_MAX_IN_FLIGHT`) but ships **no typed client for the CRUD endpoints** — call
+them through the REST client and let the server validate; §22.9 explicitly warns against
+re-deriving `PUT` merge semantics or the `failure_policy` re-derivation client-side.
+
+#### Logging
+
+The `payload`, `patch`, `reason` and `decision` are tenant business data — readable by design,
+since a handler that cannot inspect the event cannot decide anything, but this runtime never
+logs them at info level and yours should not either (§22.12). The signing key is never logged
+at any level and never appears in an error payload; `signing_key_fingerprint()` gives eight
+hex characters for an operational log instead. `nonce`, `correlation_id` and `hmac_signature`
+are not secrets and may be logged for correlation.
 
 ### Local token verification (§10.1)
 
