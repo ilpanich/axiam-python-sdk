@@ -56,6 +56,7 @@ from axiam_sdk._jwks import (  # noqa: E402
     JwksVerifier,
     certificate_thumbprint_s256,
     verify_certificate_binding,
+    verify_token_binding,
 )
 from axiam_sdk.django.middleware import AxiamAuthMiddleware  # noqa: E402
 from axiam_sdk.fastapi import AxiamUser, require_authenticated_user  # noqa: E402
@@ -894,3 +895,74 @@ def test_thumbprint_helper_produces_unpadded_base64url() -> None:
     assert "=" not in tp
     assert "+" not in tp and "/" not in tp
     assert certificate_thumbprint_s256(der) == tp
+
+
+# ---------------------------------------------------------------------------
+# §10.1 rule 9 extended for DPoP (contract 1.16)
+# ---------------------------------------------------------------------------
+
+_JKT = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+_OTHER_JKT = "sBjflhaR2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+
+def test_an_unbound_token_is_accepted_with_no_proofs_at_all() -> None:
+    """**The positive regression test**, and the one this change is most likely
+    to break: an unbound token must still pass with no certificate and no
+    proof. The likeliest wrong implementation of rule 9 is one that starts
+    demanding evidence from every caller.
+    """
+    verify_token_binding({})
+    verify_token_binding({"cnf": None})
+    # ...and proofs it never asked for do not make it invalid.
+    verify_token_binding({}, certificate_thumbprint=_THUMBPRINT, dpop_thumbprint=_JKT)
+
+
+def test_a_dpop_bound_token_accepts_the_matching_key() -> None:
+    verify_token_binding({"cnf": {"jkt": _JKT}}, dpop_thumbprint=_JKT)
+
+
+def test_a_dpop_bound_token_is_rejected_without_a_proof_or_with_the_wrong_key() -> None:
+    with pytest.raises(AuthError, match="no verified DPoP proof"):
+        verify_token_binding({"cnf": {"jkt": _JKT}})
+    with pytest.raises(AuthError, match="different DPoP key"):
+        verify_token_binding({"cnf": {"jkt": _JKT}}, dpop_thumbprint=_OTHER_JKT)
+
+
+def test_a_cnf_naming_both_methods_requires_both() -> None:
+    """**Both named is a conjunction.** An operator who turned on two
+    constraints asked for two; satisfying the more convenient one is not
+    compliance. Each half is asserted to fail alone, because "check whichever
+    we can" is the likeliest wrong implementation.
+    """
+    both = {"cnf": {"x5t#S256": _THUMBPRINT, "jkt": _JKT}}
+
+    verify_token_binding(both, certificate_thumbprint=_THUMBPRINT, dpop_thumbprint=_JKT)
+
+    with pytest.raises(AuthError):
+        verify_token_binding(both, certificate_thumbprint=_THUMBPRINT)
+    with pytest.raises(AuthError):
+        verify_token_binding(both, dpop_thumbprint=_JKT)
+
+
+def test_an_empty_cnf_is_refused_rather_than_read_as_unbound() -> None:
+    """An empty ``cnf`` names nothing checkable and is refused, not read as
+    unbound. Over gRPC this is also how proto3 delivers an empty ``CnfClaim``
+    message, which is why §10.3 rule 3 spells it out separately.
+    """
+    with pytest.raises(AuthError, match="no method this SDK can verify"):
+        verify_token_binding({"cnf": {}})
+
+
+def test_the_certificate_only_entry_point_refuses_a_dpop_bound_token() -> None:
+    """The narrow entry point refuses a DPoP-bound token rather than ignoring
+    the ``jkt`` it cannot check. That refusal is what lets it stay in the API
+    without becoming a downgrade path.
+    """
+    for presented in (None, _THUMBPRINT):
+        with pytest.raises(AuthError, match="cannot verify"):
+            verify_certificate_binding({"cnf": {"jkt": _JKT}}, presented)
+
+
+def test_the_certificate_only_entry_point_refuses_a_both_bound_token() -> None:
+    with pytest.raises(AuthError, match="both must hold"):
+        verify_certificate_binding({"cnf": {"x5t#S256": _THUMBPRINT, "jkt": _JKT}}, _THUMBPRINT)

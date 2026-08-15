@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CONTRACT.md §21.7.2 DPoP proof verification (RFC 9449).** New `axiam_sdk._dpop`
+  implements all ten checks and returns the proof key's RFC 7638 thumbprint, so a
+  value passed on to rule 9 can only have come from a proof that verified.
+  `InMemoryJtiStore` covers check 8 for a single process; the `JtiStore` protocol
+  is a required argument, not an optional one, because there is no safe default
+  that skips replay tracking.
+
+  Two design points worth knowing: the algorithm is derived from the embedded
+  `jwk` and the header's `alg` is **never read** (the test runs the real
+  public-key-as-HMAC-secret forgery), and the `jti` is claimed **last**, after
+  every other check passes, so a stream of invalid proofs cannot burn `jti`
+  values out of the store and deny service to valid ones.
+
+- **CONTRACT.md §10.1 rule 9 extended for DPoP (contract 1.16/1.17).**
+  `CnfClaim` gains `jkt` (RFC 9449 §6.1), and a new `verify_token_binding(claims, *, certificate_thumbprint=..., dpop_thumbprint=...)` (keyword-only, because two same-typed optional thumbprints are exactly the pair a positional call transposes silently) applies the full
+  ten-row rule against a certificate thumbprint, a verified DPoP key
+  thumbprint, or **both**. A `cnf` naming both methods is a **conjunction** —
+  satisfying only the more convenient one is not compliance — and a `cnf`
+  naming nothing this SDK can check (including an *empty* one) is refused
+  rather than read as unbound.
+
+  `verify_certificate_binding` remains as the narrower entry point for transports that can only
+  produce a certificate, and now **refuses** a DPoP-bound or both-bound token
+  rather than ignoring the half it cannot check.
+
+  New example: `examples/sender_constrained_guard.py`.
+
+  Not a breaking change: an unbound token is still accepted with no certificate
+  and no proof, asserted directly by the first test in the new group.
+
 - **CONTRACT.md §10.1 rule 9 — sender-constrained (certificate-bound) access tokens**
   (contract 1.15, RFC 8705 §3 / RFC 7800). A token carrying `cnf` is **not** a bearer
   token; accepting one without proving the caller holds the named key converts it back
