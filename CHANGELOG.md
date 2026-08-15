@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CONTRACT.md §22 — Reactors (AMQP extension actors).** New `axiam_sdk.amqp`
+  reactor surface and `reactor_serve(dial, config, handler)`, the name §22.10's
+  per-language table gives this runtime in Python: it consumes the
+  server-declared per-reactor queue, verifies every event (§8 v2 —
+  `key_version`, MAC, ±300 s freshness, nonce seen-set) *before* user code sees
+  it, dispatches to a handler returning `allow()` / `deny()` / `mutate()` /
+  `require_step_up()` / `abstain()`, then signs and publishes the reply. Also
+  ships the event registry with its mutable-field allow-lists, the
+  strictest-wins `failure_policy` composition (§22.8), an `amqps://`-only
+  dialer (§8b), a §18 drain on cancellation, and `examples/reactor.py`.
+
+  **§8's HMAC now runs in both directions**, and Python has *three* ways to
+  produce a MAC that never verifies with no other symptom. The first is shared
+  with every SDK: a reactor body signs `hmac_signature` as **`null`**, where
+  `AuthzRequest` and `AuditEventMessage` omit it. The second and third are
+  ours: `json.dumps` escapes every non-ASCII character into a `\uXXXX`
+  sequence unless `ensure_ascii=False`, while `serde_json` escapes none of
+  them; and `datetime.isoformat()` renders UTC as `+00:00` with six fractional
+  digits, while the server's `chrono` emits `…T12:00:00Z` with no fraction at
+  all on a whole second. `to_chrono_rfc3339()` is the fix for the third and the
+  runtime always uses it. All three are pinned by the server-generated vectors
+  in `testdata/reactor_v2_reference_vectors.json` — same master key, tenant and
+  derived subkey as the §8 fixture, so one loader serves both.
+
+  Three behaviours are structural rather than documented. The runtime **declares
+  no topology**: the `ReactorTransport` protocol has no declare or bind method
+  at all, the aio-pika adapter attaches with `get_queue(..., ensure=False)` so
+  not even a passive declare goes on the wire, and tests drive both against
+  fakes that *do* offer `declare_queue`/`declare_exchange`/`bind`, asserting
+  none is ever called (§22.1). It **fails closed on its own errors**: a raising
+  handler, a handler that outruns `timeout_ms`, an unparseable body, a closed
+  window or a failed publication each publish *nothing*, so the operator's
+  `failure_policy` decides rather than a synthesized `allow` from inside the
+  library (§22.10 rule 2). And it **does not filter a patch** — one forbidden
+  key rejects the whole patch server-side, and pruning it would leave the
+  author believing a field was set (§22.4 rule 1).
+
+  §22.7's hot-path exclusion is honoured by absence: the single check, the batch
+  check and token introspection appear in no constant, no registry row and no
+  example, and a test scans the reactor source for their names rather than
+  trusting a comment.
+
+  Not shipped, deliberately: a typed client for the §22.9 admin CRUD endpoints.
+  That subsection is informative, and §22.9 specifically warns against
+  re-deriving `PUT` merge semantics or the `failure_policy` re-derivation
+  client-side — so the right surface is the server's. Reactor HKDF derivation
+  also stays out, exactly as §8 already has it: §8.1 hands this SDK the
+  pre-derived tenant subkey and it never sees the master key.
+
 - **CONTRACT.md §21.7.2 DPoP proof verification (RFC 9449).** New `axiam_sdk._dpop`
   implements all ten checks and returns the proof key's RFC 7638 thumbprint, so a
   value passed on to rule 9 can only have come from a proof that verified.
