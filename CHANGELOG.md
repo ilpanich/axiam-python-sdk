@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-alpha25] - 2026-08-16
+
+### Added
+
+- Ship the CONTRACT.md §22 reactor runtime (R2.5) (#46)
+- Extend §10.1 rule 9 for DPoP and implement §21.7.2 (#43)
+- Subject_token_type is required (contract 1.13)
+- §15.7 — external-IdP subject tokens at the exchange (X4)
+- Wire §20.3 challenge emission into the §11 guards, plus the example pair (#37)
+- §20 — UMA 2.0 Protection API and ticket grant
+- Report clamped settings via §19 ConfigClamped (contract 1.9)
+- §16 retry, §17 memo, §18 close(), §19 telemetry (D5) (#34)
+- Device grant, token exchange, logout helpers; re-vendor (D6)
+
+### Changed
+
+- Re-vendor CONTRACT.md 1.19, openapi.json and proto/ from main (R5.8) (#45)
+- Contract 1.15 — §10.1 rule 9, sender-constrained access tokens (#42)
+- Add the §20.7 required timeout assertion
+- Retire the "measured residual" justification (contract 1.14)
+- Re-sync to contract 1.14 (#302 closed)
+- Format PERFORMANCE.md's example to ruff's blank-line rules
+- Close the async residual — it is CPython, not the SDK (D1/J5)
+
+### Fixed
+
+- Close the coverage fail_under rounding loophole (precision=2)
+- R5.7 — F-11/F-14 conformance follow-ups (F-08 already fixed) (#44)
+- Export the token-type constants from axiam_sdk
+
 ## [Unreleased]
 
 ### Added
