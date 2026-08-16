@@ -61,7 +61,7 @@ from axiam_sdk.amqp import (
     ReactorConfig,
     ReactorDecision,
     ReactorEvent,
-    abstain,
+    ReactorRouter,
     aio_pika_dialer,
     allow,
     default_failure_policy_for,
@@ -100,24 +100,17 @@ def on_telemetry(event: TelemetryEvent) -> None:
         )
 
 
-async def decide(event: ReactorEvent) -> ReactorDecision:
-    """Answer one event with one of §22.10's three answers.
-
-    The payload is tenant business data: readable by design, but do not log it
-    at info level (§22.12).
-    """
-    if event.event == TOKEN_PRE_ISSUE:
-        return enrich_token(event)
-    if event.event == LOGIN_POST_AUTH:
-        return screen_login(event)
-    if event.event == GRANT_PRE_ASSIGN:
-        return four_eyes(event)
-    # An event we did not register for should never arrive. Abstaining publishes
-    # nothing and lets the failure policy decide, which is the honest answer to
-    # "I do not know what this is".
-    return abstain()
+#: One handler per event (§22.14), instead of an ``if`` chain whose last line
+#: answers on behalf of code that never ran. A misspelled name below fails at
+#: import time; an event nobody bound abstains, so the registration's
+#: ``failure_policy`` decides rather than this file.
+#:
+#: The payload each handler reads is tenant business data: readable by design,
+#: but not logged at info level (§22.12).
+router = ReactorRouter()
 
 
+@router.on(TOKEN_PRE_ISSUE)
 def enrich_token(event: ReactorEvent) -> ReactorDecision:
     """Add ``ext.`` claims to a token being issued.
 
@@ -155,6 +148,7 @@ def enrich_token(event: ReactorEvent) -> ReactorDecision:
     return mutate(patch)
 
 
+@router.on(LOGIN_POST_AUTH)
 def screen_login(event: ReactorEvent) -> ReactorDecision:
     """Veto or step-up an interactive sign-in.
 
@@ -181,6 +175,7 @@ def screen_login(event: ReactorEvent) -> ReactorDecision:
     return allow()
 
 
+@router.on(GRANT_PRE_ASSIGN)
 def four_eyes(event: ReactorEvent) -> ReactorDecision:
     """Refuse a self-granted admin role.
 
@@ -210,7 +205,9 @@ async def main() -> None:
     # The strictest default among the events we registered for (§22.8). Shown
     # here because it is worth knowing before you go live, not because the SDK
     # needs it: the server derives it from the registration.
-    policy = default_failure_policy_for([TOKEN_PRE_ISSUE, LOGIN_POST_AUTH, GRANT_PRE_ASSIGN])
+    # Derived from the events the router actually binds, not from a restatement
+    # of the registration (§22.14): the two lists cannot drift apart.
+    policy = default_failure_policy_for(router.events)
     LOGGER.info("failure policy when this reactor is unreachable: %s", policy)
     LOGGER.info("consuming %s (declared by the server)", reactor_queue_name(tenant_id, reactor_id))
 
@@ -227,7 +224,7 @@ async def main() -> None:
                 logger=LOGGER,
                 telemetry_hook=on_telemetry,
             ),
-            decide,
+            router.handler(),
         )
     )
 
