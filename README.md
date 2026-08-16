@@ -258,7 +258,7 @@ router = ReactorRouter()
 
 
 @router.on(TOKEN_PRE_ISSUE)
-def enrich_token(event: ReactorEvent) -> ReactorDecision:   # sync or async, both work
+def enrich_token(event: ReactorEvent) -> ReactorDecision:  # sync or async, both work
     return mutate({"ext.cost_center": "42"})
 
 
@@ -291,7 +291,7 @@ class Reactor:
     def enrich(self, event: ReactorEvent) -> ReactorDecision: ...
 
 
-handler = reactor_handlers(Reactor())          # or reactor_handlers({TOKEN_PRE_ISSUE: fn})
+handler = reactor_handlers(Reactor())  # or reactor_handlers({TOKEN_PRE_ISSUE: fn})
 ```
 
 It is pure sugar: the value it produces is exactly the handler `reactor_serve` already
