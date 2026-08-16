@@ -9,7 +9,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "1.0.0-alpha24"
+    "version": "1.0.0-alpha26"
   },
   "paths": {
     "/.well-known/openid-configuration": {
@@ -6409,6 +6409,104 @@
         ]
       }
     },
+    "/api/v1/scim-tokens": {
+      "get": {
+        "tags": [
+          "scim-tokens"
+        ],
+        "summary": "`GET /api/v1/scim-tokens`",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Tokens for this tenant (metadata only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScimTokenResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "scim-tokens"
+        ],
+        "summary": "`POST /api/v1/scim-tokens`",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateScimTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Token minted; the handle is returned once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateScimTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid lifetime, or the named user cannot use SCIM"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/scim-tokens/{id}": {
+      "delete": {
+        "tags": [
+          "scim-tokens"
+        ],
+        "summary": "`DELETE /api/v1/scim-tokens/{id}`",
+        "description": "Revokes rather than deletes: the row is what lets an operator later answer\n\"was this credential still live on the day of the incident?\", and a\ndeleted row answers nothing.",
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Token revoked"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/service-accounts": {
       "get": {
         "tags": [
@@ -9515,7 +9613,7 @@
           },
           "dpop_require_nonce": {
             "type": "boolean",
-            "description": "RFC 9449 §8 — require this client's DPoP proofs to carry a\nserver-issued nonce. Costs a round trip on the first request of each\nnonce window; `false` (the default) is the pre-v39 behaviour."
+            "description": "RFC 9449 §8 — require this client's DPoP proofs to carry a\nserver-issued nonce.\n\n**Not implemented in this build (SEC-097).** `true` is refused with\n`400`; only `false` (the default) is accepted. Nothing reads the stored\nvalue, so accepting `true` would persist and echo back a security\nswitch that does nothing. DPoP proofs are made single-use at the token\nendpoint by `jti` replay detection instead — see\n`docs/security-profiles.md`."
           },
           "grant_types": {
             "type": "array",
@@ -9876,6 +9974,52 @@
             "type": "string"
           }
         }
+      },
+      "CreateScimTokenRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "user_id"
+        ],
+        "properties": {
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Lifetime in days. Defaults to the deployment maximum, and is refused\nabove it."
+          },
+          "name": {
+            "type": "string",
+            "description": "Operator-facing label, e.g. `\"okta-production\"`."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The tenant user the token authenticates as. Must already hold\n`scim:provision` — see [`create`]."
+          }
+        }
+      },
+      "CreateScimTokenResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ScimTokenResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "provisioning_token"
+            ],
+            "properties": {
+              "provisioning_token": {
+                "type": "string",
+                "description": "The plaintext handle — shown once, never retrievable again."
+              }
+            }
+          }
+        ],
+        "description": "The one-time reveal. Same shape as service-account creation: the secret is\nreturned once and only its hash is kept."
       },
       "CreateScope": {
         "type": "object",
@@ -12894,6 +13038,75 @@
             }
           }
         }
+      },
+      "ScimTokenResponse": {
+        "type": "object",
+        "description": "Metadata only. The handle is never in a list response — it exists in\nplaintext exactly once, in [`CreateScimTokenResponse`].",
+        "required": [
+          "id",
+          "tenant_id",
+          "user_id",
+          "name",
+          "created_by",
+          "status",
+          "expires_at",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ScimTokenStatus"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ScimTokenStatus": {
+        "type": "string",
+        "description": "Why a token is or is not currently usable — for display only. The\nauthentication path never surfaces this distinction on the wire.",
+        "enum": [
+          "active",
+          "expired",
+          "revoked"
+        ]
       },
       "Scope": {
         "type": "object",
