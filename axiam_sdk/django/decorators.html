@@ -101,7 +101,7 @@ function.</p>
 
                         <label class="view-source-button" for="mod-decorators-view-source"><span>View Source</span></label>
 
-                        <div class="pdoc-code codehilite"><pre><span></span><span id="L-1"><a href="#L-1"><span class="linenos">  1</span></a><span class="sd">&quot;&quot;&quot;Django view decorators layering CONTRACT.md §11 declarative authorization</span>
+                        <div class="pdoc-code codehilite"><pre><span></span><span id="L-1"><a href="#L-1"><span class="linenos">  1</span></a><span class="sd">"""Django view decorators layering CONTRACT.md §11 declarative authorization</span>
 </span><span id="L-2"><a href="#L-2"><span class="linenos">  2</span></a><span class="sd">on top of ``request.axiam_user`` (D-10 continuation).</span>
 </span><span id="L-3"><a href="#L-3"><span class="linenos">  3</span></a>
 </span><span id="L-4"><a href="#L-4"><span class="linenos">  4</span></a><span class="sd">:func:`require_auth`, :func:`require_access`, and :func:`require_role` are an</span>
@@ -119,14 +119,14 @@ function.</p>
 </span><span id="L-16"><a href="#L-16"><span class="linenos"> 16</span></a><span class="sd">This module is imported ONLY as ``axiam_sdk.django.decorators`` (never from</span>
 </span><span id="L-17"><a href="#L-17"><span class="linenos"> 17</span></a><span class="sd">the top-level ``axiam_sdk/__init__.py``), so pure-REST/gRPC/AMQP consumers of</span>
 </span><span id="L-18"><a href="#L-18"><span class="linenos"> 18</span></a><span class="sd">``axiam-sdk`` are never forced to install ``django`` (mirrors</span>
-</span><span id="L-19"><a href="#L-19"><span class="linenos"> 19</span></a><span class="sd">``axiam_sdk.django.middleware``&#39;s own import discipline).</span>
+</span><span id="L-19"><a href="#L-19"><span class="linenos"> 19</span></a><span class="sd">``axiam_sdk.django.middleware``'s own import discipline).</span>
 </span><span id="L-20"><a href="#L-20"><span class="linenos"> 20</span></a>
 </span><span id="L-21"><a href="#L-21"><span class="linenos"> 21</span></a><span class="sd">Security-critical invariant — subject propagation (CONTRACT.md §11.2.2):</span>
-</span><span id="L-22"><a href="#L-22"><span class="linenos"> 22</span></a><span class="sd">:func:`require_access` calls the sync :class:`~axiam_sdk.AxiamClient`&#39;s</span>
+</span><span id="L-22"><a href="#L-22"><span class="linenos"> 22</span></a><span class="sd">:func:`require_access` calls the sync :class:`~axiam_sdk.AxiamClient`'s</span>
 </span><span id="L-23"><a href="#L-23"><span class="linenos"> 23</span></a><span class="sd">``check_access(...)`` with ``subject_id`` set to the *authenticated</span>
-</span><span id="L-24"><a href="#L-24"><span class="linenos"> 24</span></a><span class="sd">request&#39;s* ``user_id`` — never this client&#39;s own (often service-account)</span>
-</span><span id="L-25"><a href="#L-25"><span class="linenos"> 25</span></a><span class="sd">identity. Omitting ``subject_id`` would check the service account&#39;s own</span>
-</span><span id="L-26"><a href="#L-26"><span class="linenos"> 26</span></a><span class="sd">permissions instead of the end user&#39;s.</span>
+</span><span id="L-24"><a href="#L-24"><span class="linenos"> 24</span></a><span class="sd">request's* ``user_id`` — never this client's own (often service-account)</span>
+</span><span id="L-25"><a href="#L-25"><span class="linenos"> 25</span></a><span class="sd">identity. Omitting ``subject_id`` would check the service account's own</span>
+</span><span id="L-26"><a href="#L-26"><span class="linenos"> 26</span></a><span class="sd">permissions instead of the end user's.</span>
 </span><span id="L-27"><a href="#L-27"><span class="linenos"> 27</span></a>
 </span><span id="L-28"><a href="#L-28"><span class="linenos"> 28</span></a><span class="sd">Security-critical invariant — no token leakage: no raw token value is ever</span>
 </span><span id="L-29"><a href="#L-29"><span class="linenos"> 29</span></a><span class="sd">included in any response body here (``request.axiam_user`` carries no token</span>
@@ -141,7 +141,7 @@ function.</p>
 </span><span id="L-38"><a href="#L-38"><span class="linenos"> 38</span></a><span class="sd">wrapped view is conditionally awaited, via</span>
 </span><span id="L-39"><a href="#L-39"><span class="linenos"> 39</span></a><span class="sd">``asgiref.sync.iscoroutinefunction``, when the view itself is a coroutine</span>
 </span><span id="L-40"><a href="#L-40"><span class="linenos"> 40</span></a><span class="sd">function.</span>
-</span><span id="L-41"><a href="#L-41"><span class="linenos"> 41</span></a><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="L-41"><a href="#L-41"><span class="linenos"> 41</span></a><span class="sd">"""</span>
 </span><span id="L-42"><a href="#L-42"><span class="linenos"> 42</span></a>
 </span><span id="L-43"><a href="#L-43"><span class="linenos"> 43</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 </span><span id="L-44"><a href="#L-44"><span class="linenos"> 44</span></a>
@@ -160,7 +160,7 @@ function.</p>
 </span><span id="L-57"><a href="#L-57"><span class="linenos"> 57</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk.django.middleware</span><span class="w"> </span><span class="kn">import</span> <span class="n">AxiamUser</span>
 </span><span id="L-58"><a href="#L-58"><span class="linenos"> 58</span></a>
 </span><span id="L-59"><a href="#L-59"><span class="linenos"> 59</span></a><span class="c1">#: Standardized 401 JSON error body shape (CONTRACT.md §10/§11) — mirrors</span>
-</span><span id="L-60"><a href="#L-60"><span class="linenos"> 60</span></a><span class="c1">#: ``axiam_sdk.django.middleware``&#39;s own ``_error_response`` shape.</span>
+</span><span id="L-60"><a href="#L-60"><span class="linenos"> 60</span></a><span class="c1">#: ``axiam_sdk.django.middleware``'s own ``_error_response`` shape.</span>
 </span><span id="L-61"><a href="#L-61"><span class="linenos"> 61</span></a><span class="n">_AUTH_FAILED_STATUS</span> <span class="o">=</span> <span class="mi">401</span>
 </span><span id="L-62"><a href="#L-62"><span class="linenos"> 62</span></a>
 </span><span id="L-63"><a href="#L-63"><span class="linenos"> 63</span></a><span class="c1">#: §11.2.5 error mapping for the declarative authorization helpers.</span>
@@ -168,20 +168,20 @@ function.</p>
 </span><span id="L-65"><a href="#L-65"><span class="linenos"> 65</span></a><span class="n">_INVALID_REQUEST_STATUS</span> <span class="o">=</span> <span class="mi">400</span>
 </span><span id="L-66"><a href="#L-66"><span class="linenos"> 66</span></a><span class="n">_AUTHZ_UNAVAILABLE_STATUS</span> <span class="o">=</span> <span class="mi">503</span>
 </span><span id="L-67"><a href="#L-67"><span class="linenos"> 67</span></a>
-</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a><span class="n">_View</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;_View&quot;</span><span class="p">,</span> <span class="n">bound</span><span class="o">=</span><span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span>
+</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a><span class="n">_View</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">"_View"</span><span class="p">,</span> <span class="n">bound</span><span class="o">=</span><span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span>
 </span><span id="L-69"><a href="#L-69"><span class="linenos"> 69</span></a>
 </span><span id="L-70"><a href="#L-70"><span class="linenos"> 70</span></a>
 </span><span id="L-71"><a href="#L-71"><span class="linenos"> 71</span></a><span class="k">def</span><span class="w"> </span><span class="nf">_missing_middleware_response</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">JsonResponse</span><span class="p">:</span>
-</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Standardized 401 JSON response for a view guarded by one of this</span>
-</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a><span class="sd">    module&#39;s decorators when ``request.axiam_user`` is absent — either</span>
+</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a><span class="w">    </span><span class="sd">"""Standardized 401 JSON response for a view guarded by one of this</span>
+</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a><span class="sd">    module's decorators when ``request.axiam_user`` is absent — either</span>
 </span><span id="L-74"><a href="#L-74"><span class="linenos"> 74</span></a><span class="sd">    :class:`~axiam_sdk.django.middleware.AxiamAuthMiddleware` is not</span>
-</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a><span class="sd">    installed, or the request never passed its authentication check.&quot;&quot;&quot;</span>
+</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a><span class="sd">    installed, or the request never passed its authentication check."""</span>
 </span><span id="L-76"><a href="#L-76"><span class="linenos"> 76</span></a>    <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="L-77"><a href="#L-77"><span class="linenos"> 77</span></a>        <span class="p">{</span>
-</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>            <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authentication_failed&quot;</span><span class="p">,</span>
-</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a>            <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="p">(</span>
-</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a>                <span class="s2">&quot;request.axiam_user is not set — is &quot;</span>
-</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a>                <span class="s2">&quot;axiam_sdk.django.middleware.AxiamAuthMiddleware installed?&quot;</span>
+</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>            <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authentication_failed"</span><span class="p">,</span>
+</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a>            <span class="s2">"message"</span><span class="p">:</span> <span class="p">(</span>
+</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a>                <span class="s2">"request.axiam_user is not set — is "</span>
+</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a>                <span class="s2">"axiam_sdk.django.middleware.AxiamAuthMiddleware installed?"</span>
 </span><span id="L-82"><a href="#L-82"><span class="linenos"> 82</span></a>            <span class="p">),</span>
 </span><span id="L-83"><a href="#L-83"><span class="linenos"> 83</span></a>        <span class="p">},</span>
 </span><span id="L-84"><a href="#L-84"><span class="linenos"> 84</span></a>        <span class="n">status</span><span class="o">=</span><span class="n">_AUTH_FAILED_STATUS</span><span class="p">,</span>
@@ -189,26 +189,26 @@ function.</p>
 </span><span id="L-86"><a href="#L-86"><span class="linenos"> 86</span></a>
 </span><span id="L-87"><a href="#L-87"><span class="linenos"> 87</span></a>
 </span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a><span class="k">def</span><span class="w"> </span><span class="nf">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AxiamUser</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Read ``request.axiam_user`` (set by ``AxiamAuthMiddleware``) without</span>
+</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a><span class="w">    </span><span class="sd">"""Read ``request.axiam_user`` (set by ``AxiamAuthMiddleware``) without</span>
 </span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a><span class="sd">    raising — ``None`` when absent, so callers can degrade to</span>
 </span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a><span class="sd">    :func:`_missing_middleware_response` (CONTRACT.md §11.2.1: never a</span>
-</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a><span class="sd">    separate/duplicated authentication path).&quot;&quot;&quot;</span>
-</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="n">user</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">&quot;axiam_user&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a><span class="sd">    separate/duplicated authentication path)."""</span>
+</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="n">user</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="s2">"axiam_user"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 </span><span id="L-94"><a href="#L-94"><span class="linenos"> 94</span></a>    <span class="k">return</span> <span class="n">user</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="n">AxiamUser</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
 </span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a>
 </span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a>
 </span><span id="L-97"><a href="#L-97"><span class="linenos"> 97</span></a><span class="k">def</span><span class="w"> </span><span class="nf">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">,</span> <span class="n">guard</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Wrap ``view`` so ``guard(request, *args, **kwargs)`` runs first; a</span>
+</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a><span class="w">    </span><span class="sd">"""Wrap ``view`` so ``guard(request, *args, **kwargs)`` runs first; a</span>
 </span><span id="L-99"><a href="#L-99"><span class="linenos"> 99</span></a><span class="sd">    non-``None`` return short-circuits with that response, otherwise the</span>
 </span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a><span class="sd">    original ``view`` is called (awaited when ``view`` is a coroutine</span>
-</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a><span class="sd">    function, per this module&#39;s async-view dispatch decision, see module</span>
-</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a><span class="sd">    docstring).&quot;&quot;&quot;</span>
+</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a><span class="sd">    function, per this module's async-view dispatch decision, see module</span>
+</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a><span class="sd">    docstring)."""</span>
 </span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a>    <span class="k">if</span> <span class="n">iscoroutinefunction</span><span class="p">(</span><span class="n">view</span><span class="p">):</span>
 </span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a>
 </span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>        <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">view</span><span class="p">)</span>
 </span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">async_wrapper</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a><span class="w">            </span><span class="sd">&quot;&quot;&quot;Async dispatch path: run the (sync) guard, then await the</span>
-</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a><span class="sd">            wrapped coroutine view if it passed.&quot;&quot;&quot;</span>
+</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a><span class="w">            </span><span class="sd">"""Async dispatch path: run the (sync) guard, then await the</span>
+</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a><span class="sd">            wrapped coroutine view if it passed."""</span>
 </span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>            <span class="n">error</span> <span class="o">=</span> <span class="n">guard</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>            <span class="k">if</span> <span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>                <span class="k">return</span> <span class="n">error</span>
@@ -218,8 +218,8 @@ function.</p>
 </span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>
 </span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>    <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">view</span><span class="p">)</span>
 </span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">sync_wrapper</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
-</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Sync dispatch path: run the guard, then call the wrapped view if</span>
-</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a><span class="sd">        it passed.&quot;&quot;&quot;</span>
+</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a><span class="w">        </span><span class="sd">"""Sync dispatch path: run the guard, then call the wrapped view if</span>
+</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a><span class="sd">        it passed."""</span>
 </span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>        <span class="n">error</span> <span class="o">=</span> <span class="n">guard</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 </span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>        <span class="k">if</span> <span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>            <span class="k">return</span> <span class="n">error</span>
@@ -229,7 +229,7 @@ function.</p>
 </span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>
 </span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>
 </span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_auth</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator requiring an authenticated AXIAM identity</span>
+</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a><span class="w">    </span><span class="sd">"""View decorator requiring an authenticated AXIAM identity</span>
 </span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a><span class="sd">    (CONTRACT.md §11) — pure sugar over</span>
 </span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a><span class="sd">    :class:`~axiam_sdk.django.middleware.AxiamAuthMiddleware` for call sites</span>
 </span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a><span class="sd">    that want the requirement spelled out per-view. Responds 401</span>
@@ -241,11 +241,11 @@ function.</p>
 </span><span id="L-138"><a href="#L-138"><span class="linenos">138</span></a><span class="sd">        def my_view(request):</span>
 </span><span id="L-139"><a href="#L-139"><span class="linenos">139</span></a><span class="sd">            user = request.axiam_user</span>
 </span><span id="L-140"><a href="#L-140"><span class="linenos">140</span></a><span class="sd">            ...</span>
-</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a><span class="sd">    """</span>
 </span><span id="L-142"><a href="#L-142"><span class="linenos">142</span></a>
 </span><span id="L-143"><a href="#L-143"><span class="linenos">143</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Return the standardized 401 response when unauthenticated, else</span>
-</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a><span class="sd">        ``None`` to let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a><span class="w">        </span><span class="sd">"""Return the standardized 401 response when unauthenticated, else</span>
+</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a><span class="sd">        ``None`` to let the view proceed."""</span>
 </span><span id="L-146"><a href="#L-146"><span class="linenos">146</span></a>        <span class="k">if</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="L-147"><a href="#L-147"><span class="linenos">147</span></a>            <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
 </span><span id="L-148"><a href="#L-148"><span class="linenos">148</span></a>        <span class="k">return</span> <span class="kc">None</span>
@@ -254,16 +254,16 @@ function.</p>
 </span><span id="L-151"><a href="#L-151"><span class="linenos">151</span></a>
 </span><span id="L-152"><a href="#L-152"><span class="linenos">152</span></a>
 </span><span id="L-153"><a href="#L-153"><span class="linenos">153</span></a><span class="k">def</span><span class="w"> </span><span class="nf">_denied</span><span class="p">(</span><span class="n">action</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">challenger</span><span class="p">:</span> <span class="n">UmaChallenger</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">JsonResponse</span><span class="p">:</span>
-</span><span id="L-154"><a href="#L-154"><span class="linenos">154</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Build the 403, minting a §20.3 challenge when one was configured.</span>
+</span><span id="L-154"><a href="#L-154"><span class="linenos">154</span></a><span class="w">    </span><span class="sd">"""Build the 403, minting a §20.3 challenge when one was configured.</span>
 </span><span id="L-155"><a href="#L-155"><span class="linenos">155</span></a>
 </span><span id="L-156"><a href="#L-156"><span class="linenos">156</span></a><span class="sd">    Only ever reached on a path that has already decided to refuse, so minting</span>
 </span><span id="L-157"><a href="#L-157"><span class="linenos">157</span></a><span class="sd">    cannot change the outcome — at worst it fails and the caller gets the plain</span>
 </span><span id="L-158"><a href="#L-158"><span class="linenos">158</span></a><span class="sd">    403 they would have got anyway.</span>
-</span><span id="L-159"><a href="#L-159"><span class="linenos">159</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="L-159"><a href="#L-159"><span class="linenos">159</span></a><span class="sd">    """</span>
 </span><span id="L-160"><a href="#L-160"><span class="linenos">160</span></a>    <span class="n">response</span> <span class="o">=</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="L-161"><a href="#L-161"><span class="linenos">161</span></a>        <span class="p">{</span>
-</span><span id="L-162"><a href="#L-162"><span class="linenos">162</span></a>            <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authorization_denied&quot;</span><span class="p">,</span>
-</span><span id="L-163"><a href="#L-163"><span class="linenos">163</span></a>            <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;caller lacks permission for action </span><span class="si">{</span><span class="n">action</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="L-162"><a href="#L-162"><span class="linenos">162</span></a>            <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="L-163"><a href="#L-163"><span class="linenos">163</span></a>            <span class="s2">"message"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"caller lacks permission for action </span><span class="si">{</span><span class="n">action</span><span class="si">!r}</span><span class="s2">"</span><span class="p">,</span>
 </span><span id="L-164"><a href="#L-164"><span class="linenos">164</span></a>        <span class="p">},</span>
 </span><span id="L-165"><a href="#L-165"><span class="linenos">165</span></a>        <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
 </span><span id="L-166"><a href="#L-166"><span class="linenos">166</span></a>    <span class="p">)</span>
@@ -279,7 +279,7 @@ function.</p>
 </span><span id="L-176"><a href="#L-176"><span class="linenos">176</span></a>            <span class="n">challenger</span><span class="o">.</span><span class="n">pat</span><span class="p">,</span>
 </span><span id="L-177"><a href="#L-177"><span class="linenos">177</span></a>            <span class="p">[</span><span class="n">RequestedPermission</span><span class="p">(</span><span class="n">resource_id</span><span class="o">=</span><span class="n">resource_id</span><span class="p">,</span> <span class="n">resource_scopes</span><span class="o">=</span><span class="p">[</span><span class="n">action</span><span class="p">])],</span>
 </span><span id="L-178"><a href="#L-178"><span class="linenos">178</span></a>        <span class="p">)</span>
-</span><span id="L-179"><a href="#L-179"><span class="linenos">179</span></a>    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - see UmaChallenger&#39;s &quot;failure is not escalation&quot;</span>
+</span><span id="L-179"><a href="#L-179"><span class="linenos">179</span></a>    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>  <span class="c1"># noqa: BLE001 - see UmaChallenger's "failure is not escalation"</span>
 </span><span id="L-180"><a href="#L-180"><span class="linenos">180</span></a>        <span class="c1"># Deliberately broad and deliberately silent: any failure to mint leaves</span>
 </span><span id="L-181"><a href="#L-181"><span class="linenos">181</span></a>        <span class="c1"># the denial exactly as it was. Not logged either, because a Protection</span>
 </span><span id="L-182"><a href="#L-182"><span class="linenos">182</span></a>        <span class="c1"># API failure message can echo a credential and §11.2.8 keeps those out</span>
@@ -287,7 +287,7 @@ function.</p>
 </span><span id="L-184"><a href="#L-184"><span class="linenos">184</span></a>        <span class="k">return</span> <span class="n">response</span>
 </span><span id="L-185"><a href="#L-185"><span class="linenos">185</span></a>
 </span><span id="L-186"><a href="#L-186"><span class="linenos">186</span></a>    <span class="c1"># Additive: the body above is the unchanged §11.2.5 shape.</span>
-</span><span id="L-187"><a href="#L-187"><span class="linenos">187</span></a>    <span class="n">response</span><span class="p">[</span><span class="s2">&quot;WWW-Authenticate&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">uma_challenge_header</span><span class="p">(</span><span class="n">challenger</span><span class="o">.</span><span class="n">realm</span><span class="p">,</span> <span class="n">challenger</span><span class="o">.</span><span class="n">as_uri</span><span class="p">,</span> <span class="n">ticket</span><span class="p">)</span>
+</span><span id="L-187"><a href="#L-187"><span class="linenos">187</span></a>    <span class="n">response</span><span class="p">[</span><span class="s2">"WWW-Authenticate"</span><span class="p">]</span> <span class="o">=</span> <span class="n">uma_challenge_header</span><span class="p">(</span><span class="n">challenger</span><span class="o">.</span><span class="n">realm</span><span class="p">,</span> <span class="n">challenger</span><span class="o">.</span><span class="n">as_uri</span><span class="p">,</span> <span class="n">ticket</span><span class="p">)</span>
 </span><span id="L-188"><a href="#L-188"><span class="linenos">188</span></a>    <span class="k">return</span> <span class="n">response</span>
 </span><span id="L-189"><a href="#L-189"><span class="linenos">189</span></a>
 </span><span id="L-190"><a href="#L-190"><span class="linenos">190</span></a>
@@ -295,35 +295,35 @@ function.</p>
 </span><span id="L-192"><a href="#L-192"><span class="linenos">192</span></a>    <span class="n">client</span><span class="p">:</span> <span class="n">AxiamClient</span><span class="p">,</span>
 </span><span id="L-193"><a href="#L-193"><span class="linenos">193</span></a>    <span class="n">action</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
 </span><span id="L-194"><a href="#L-194"><span class="linenos">194</span></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="L-195"><a href="#L-195"><span class="linenos">195</span></a>    <span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;pk&quot;</span><span class="p">,</span>
+</span><span id="L-195"><a href="#L-195"><span class="linenos">195</span></a>    <span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"pk"</span><span class="p">,</span>
 </span><span id="L-196"><a href="#L-196"><span class="linenos">196</span></a>    <span class="n">scope</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="L-197"><a href="#L-197"><span class="linenos">197</span></a>    <span class="n">uma_challenge</span><span class="p">:</span> <span class="n">UmaChallenger</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="L-198"><a href="#L-198"><span class="linenos">198</span></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
-</span><span id="L-199"><a href="#L-199"><span class="linenos">199</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator factory requiring an AXIAM authorization check for</span>
-</span><span id="L-200"><a href="#L-200"><span class="linenos">200</span></a><span class="sd">    ``action`` on a resource resolved from the view&#39;s keyword arguments</span>
+</span><span id="L-199"><a href="#L-199"><span class="linenos">199</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring an AXIAM authorization check for</span>
+</span><span id="L-200"><a href="#L-200"><span class="linenos">200</span></a><span class="sd">    ``action`` on a resource resolved from the view's keyword arguments</span>
 </span><span id="L-201"><a href="#L-201"><span class="linenos">201</span></a><span class="sd">    (CONTRACT.md §11).</span>
 </span><span id="L-202"><a href="#L-202"><span class="linenos">202</span></a>
 </span><span id="L-203"><a href="#L-203"><span class="linenos">203</span></a><span class="sd">    Usage::</span>
 </span><span id="L-204"><a href="#L-204"><span class="linenos">204</span></a>
-</span><span id="L-205"><a href="#L-205"><span class="linenos">205</span></a><span class="sd">        @require_access(client, &quot;documents:read&quot;, resource_param=&quot;doc_id&quot;)</span>
+</span><span id="L-205"><a href="#L-205"><span class="linenos">205</span></a><span class="sd">        @require_access(client, "documents:read", resource_param="doc_id")</span>
 </span><span id="L-206"><a href="#L-206"><span class="linenos">206</span></a><span class="sd">        def get_document(request, doc_id):</span>
 </span><span id="L-207"><a href="#L-207"><span class="linenos">207</span></a><span class="sd">            ...</span>
 </span><span id="L-208"><a href="#L-208"><span class="linenos">208</span></a>
-</span><span id="L-209"><a href="#L-209"><span class="linenos">209</span></a><span class="sd">    ``resource_param`` (default ``&quot;pk&quot;``, Django&#39;s own singular-object</span>
+</span><span id="L-209"><a href="#L-209"><span class="linenos">209</span></a><span class="sd">    ``resource_param`` (default ``"pk"``, Django's own singular-object</span>
 </span><span id="L-210"><a href="#L-210"><span class="linenos">210</span></a><span class="sd">    convention) names the view kwarg — typically a captured URL path</span>
-</span><span id="L-211"><a href="#L-211"><span class="linenos">211</span></a><span class="sd">    converter, e.g. ``path(&quot;documents/&lt;uuid:doc_id&gt;/&quot;, ...)`` — carrying the</span>
+</span><span id="L-211"><a href="#L-211"><span class="linenos">211</span></a><span class="sd">    converter, e.g. ``path("documents/&lt;uuid:doc_id&gt;/", ...)`` — carrying the</span>
 </span><span id="L-212"><a href="#L-212"><span class="linenos">212</span></a><span class="sd">    resource UUID (CONTRACT.md §11.2.3). A missing or unparseable value is a</span>
 </span><span id="L-213"><a href="#L-213"><span class="linenos">213</span></a><span class="sd">    programming error surfaced as 400 ``invalid_request`` — never a silent</span>
 </span><span id="L-214"><a href="#L-214"><span class="linenos">214</span></a><span class="sd">    allow, never a nil/empty-UUID fallback.</span>
 </span><span id="L-215"><a href="#L-215"><span class="linenos">215</span></a>
 </span><span id="L-216"><a href="#L-216"><span class="linenos">216</span></a><span class="sd">    The check is made with ``subject_id`` set to the *authenticated</span>
-</span><span id="L-217"><a href="#L-217"><span class="linenos">217</span></a><span class="sd">    request&#39;s* ``user_id`` (CONTRACT.md §11.2.2) — never this ``client``&#39;s</span>
+</span><span id="L-217"><a href="#L-217"><span class="linenos">217</span></a><span class="sd">    request's* ``user_id`` (CONTRACT.md §11.2.2) — never this ``client``'s</span>
 </span><span id="L-218"><a href="#L-218"><span class="linenos">218</span></a><span class="sd">    own (often service-account) identity. Denied (``allowed=False`` or an</span>
 </span><span id="L-219"><a href="#L-219"><span class="linenos">219</span></a><span class="sd">    ``AuthzError`` from the server, e.g. the client lacks</span>
 </span><span id="L-220"><a href="#L-220"><span class="linenos">220</span></a><span class="sd">    ``authz:check_as``) responds 403 ``authorization_denied``. A transport</span>
 </span><span id="L-221"><a href="#L-221"><span class="linenos">221</span></a><span class="sd">    failure (``AuthError``/``NetworkError`` — the SDK could not obtain a</span>
 </span><span id="L-222"><a href="#L-222"><span class="linenos">222</span></a><span class="sd">    decision at all) **fails closed** with 503 ``authz_unavailable``</span>
-</span><span id="L-223"><a href="#L-223"><span class="linenos">223</span></a><span class="sd">    (CONTRACT.md §11.2.5) — never allow, never retry beyond the client&#39;s own</span>
+</span><span id="L-223"><a href="#L-223"><span class="linenos">223</span></a><span class="sd">    (CONTRACT.md §11.2.5) — never allow, never retry beyond the client's own</span>
 </span><span id="L-224"><a href="#L-224"><span class="linenos">224</span></a><span class="sd">    bounded refresh. No decision caching (§11.2.6): every request performs a</span>
 </span><span id="L-225"><a href="#L-225"><span class="linenos">225</span></a><span class="sd">    fresh ``check_access`` call.</span>
 </span><span id="L-226"><a href="#L-226"><span class="linenos">226</span></a>
@@ -334,16 +334,16 @@ function.</p>
 </span><span id="L-231"><a href="#L-231"><span class="linenos">231</span></a><span class="sd">    403 body is unchanged, so a client that does not speak UMA sees exactly what</span>
 </span><span id="L-232"><a href="#L-232"><span class="linenos">232</span></a><span class="sd">    it saw before. It is opt-in, and minting failures do not escalate the</span>
 </span><span id="L-233"><a href="#L-233"><span class="linenos">233</span></a><span class="sd">    denial; see :class:`~axiam_sdk.UmaChallenger` for why both matter.</span>
-</span><span id="L-234"><a href="#L-234"><span class="linenos">234</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="L-234"><a href="#L-234"><span class="linenos">234</span></a><span class="sd">    """</span>
 </span><span id="L-235"><a href="#L-235"><span class="linenos">235</span></a>
 </span><span id="L-236"><a href="#L-236"><span class="linenos">236</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="L-237"><a href="#L-237"><span class="linenos">237</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Bind ``action``/``resource_param``/``scope`` to a guard wrapping</span>
-</span><span id="L-238"><a href="#L-238"><span class="linenos">238</span></a><span class="sd">        ``view`` (see :func:`require_access`&#39;s docstring for the pipeline).&quot;&quot;&quot;</span>
+</span><span id="L-237"><a href="#L-237"><span class="linenos">237</span></a><span class="w">        </span><span class="sd">"""Bind ``action``/``resource_param``/``scope`` to a guard wrapping</span>
+</span><span id="L-238"><a href="#L-238"><span class="linenos">238</span></a><span class="sd">        ``view`` (see :func:`require_access`'s docstring for the pipeline)."""</span>
 </span><span id="L-239"><a href="#L-239"><span class="linenos">239</span></a>
 </span><span id="L-240"><a href="#L-240"><span class="linenos">240</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-241"><a href="#L-241"><span class="linenos">241</span></a><span class="w">            </span><span class="sd">&quot;&quot;&quot;Authenticate, resolve + validate the resource id, then</span>
+</span><span id="L-241"><a href="#L-241"><span class="linenos">241</span></a><span class="w">            </span><span class="sd">"""Authenticate, resolve + validate the resource id, then</span>
 </span><span id="L-242"><a href="#L-242"><span class="linenos">242</span></a><span class="sd">            perform the authorization check — returns a JSON error response</span>
-</span><span id="L-243"><a href="#L-243"><span class="linenos">243</span></a><span class="sd">            on any failure, or ``None`` to let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="L-243"><a href="#L-243"><span class="linenos">243</span></a><span class="sd">            on any failure, or ``None`` to let the view proceed."""</span>
 </span><span id="L-244"><a href="#L-244"><span class="linenos">244</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
 </span><span id="L-245"><a href="#L-245"><span class="linenos">245</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="L-246"><a href="#L-246"><span class="linenos">246</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
@@ -354,8 +354,8 @@ function.</p>
 </span><span id="L-251"><a href="#L-251"><span class="linenos">251</span></a>            <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">AttributeError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
 </span><span id="L-252"><a href="#L-252"><span class="linenos">252</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="L-253"><a href="#L-253"><span class="linenos">253</span></a>                    <span class="p">{</span>
-</span><span id="L-254"><a href="#L-254"><span class="linenos">254</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;invalid_request&quot;</span><span class="p">,</span>
-</span><span id="L-255"><a href="#L-255"><span class="linenos">255</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;missing or invalid resource id for </span><span class="si">{</span><span class="n">resource_param</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="L-254"><a href="#L-254"><span class="linenos">254</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"invalid_request"</span><span class="p">,</span>
+</span><span id="L-255"><a href="#L-255"><span class="linenos">255</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"missing or invalid resource id for </span><span class="si">{</span><span class="n">resource_param</span><span class="si">!r}</span><span class="s2">"</span><span class="p">,</span>
 </span><span id="L-256"><a href="#L-256"><span class="linenos">256</span></a>                    <span class="p">},</span>
 </span><span id="L-257"><a href="#L-257"><span class="linenos">257</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_INVALID_REQUEST_STATUS</span><span class="p">,</span>
 </span><span id="L-258"><a href="#L-258"><span class="linenos">258</span></a>                <span class="p">)</span>
@@ -369,12 +369,12 @@ function.</p>
 </span><span id="L-266"><a href="#L-266"><span class="linenos">266</span></a>                <span class="k">return</span> <span class="n">_denied</span><span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">uma_challenge</span><span class="p">)</span>
 </span><span id="L-267"><a href="#L-267"><span class="linenos">267</span></a>            <span class="k">except</span> <span class="p">(</span><span class="n">AuthError</span><span class="p">,</span> <span class="n">NetworkError</span><span class="p">):</span>
 </span><span id="L-268"><a href="#L-268"><span class="linenos">268</span></a>                <span class="c1"># §11.2.5: fail closed — a transport failure while calling</span>
-</span><span id="L-269"><a href="#L-269"><span class="linenos">269</span></a>                <span class="c1"># the authz endpoint is &quot;couldn&#39;t decide&quot;, never a silent</span>
+</span><span id="L-269"><a href="#L-269"><span class="linenos">269</span></a>                <span class="c1"># the authz endpoint is "couldn't decide", never a silent</span>
 </span><span id="L-270"><a href="#L-270"><span class="linenos">270</span></a>                <span class="c1"># allow.</span>
 </span><span id="L-271"><a href="#L-271"><span class="linenos">271</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="L-272"><a href="#L-272"><span class="linenos">272</span></a>                    <span class="p">{</span>
-</span><span id="L-273"><a href="#L-273"><span class="linenos">273</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authz_unavailable&quot;</span><span class="p">,</span>
-</span><span id="L-274"><a href="#L-274"><span class="linenos">274</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="s2">&quot;authorization service unavailable&quot;</span><span class="p">,</span>
+</span><span id="L-273"><a href="#L-273"><span class="linenos">273</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authz_unavailable"</span><span class="p">,</span>
+</span><span id="L-274"><a href="#L-274"><span class="linenos">274</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"authorization service unavailable"</span><span class="p">,</span>
 </span><span id="L-275"><a href="#L-275"><span class="linenos">275</span></a>                    <span class="p">},</span>
 </span><span id="L-276"><a href="#L-276"><span class="linenos">276</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_UNAVAILABLE_STATUS</span><span class="p">,</span>
 </span><span id="L-277"><a href="#L-277"><span class="linenos">277</span></a>                <span class="p">)</span>
@@ -389,7 +389,7 @@ function.</p>
 </span><span id="L-286"><a href="#L-286"><span class="linenos">286</span></a>
 </span><span id="L-287"><a href="#L-287"><span class="linenos">287</span></a>
 </span><span id="L-288"><a href="#L-288"><span class="linenos">288</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_role</span><span class="p">(</span><span class="o">*</span><span class="n">roles</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
-</span><span id="L-289"><a href="#L-289"><span class="linenos">289</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator factory requiring the authenticated identity&#39;s</span>
+</span><span id="L-289"><a href="#L-289"><span class="linenos">289</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring the authenticated identity's</span>
 </span><span id="L-290"><a href="#L-290"><span class="linenos">290</span></a><span class="sd">    verified ``roles`` to contain at least one of ``roles`` (CONTRACT.md</span>
 </span><span id="L-291"><a href="#L-291"><span class="linenos">291</span></a><span class="sd">    §11).</span>
 </span><span id="L-292"><a href="#L-292"><span class="linenos">292</span></a>
@@ -402,26 +402,26 @@ function.</p>
 </span><span id="L-299"><a href="#L-299"><span class="linenos">299</span></a>
 </span><span id="L-300"><a href="#L-300"><span class="linenos">300</span></a><span class="sd">    Usage::</span>
 </span><span id="L-301"><a href="#L-301"><span class="linenos">301</span></a>
-</span><span id="L-302"><a href="#L-302"><span class="linenos">302</span></a><span class="sd">        @require_role(&quot;admin&quot;, &quot;auditor&quot;)</span>
+</span><span id="L-302"><a href="#L-302"><span class="linenos">302</span></a><span class="sd">        @require_role("admin", "auditor")</span>
 </span><span id="L-303"><a href="#L-303"><span class="linenos">303</span></a><span class="sd">        def reset_view(request):</span>
 </span><span id="L-304"><a href="#L-304"><span class="linenos">304</span></a><span class="sd">            ...</span>
-</span><span id="L-305"><a href="#L-305"><span class="linenos">305</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="L-305"><a href="#L-305"><span class="linenos">305</span></a><span class="sd">    """</span>
 </span><span id="L-306"><a href="#L-306"><span class="linenos">306</span></a>
 </span><span id="L-307"><a href="#L-307"><span class="linenos">307</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="L-308"><a href="#L-308"><span class="linenos">308</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Bind ``roles`` to a guard wrapping ``view`` (see</span>
-</span><span id="L-309"><a href="#L-309"><span class="linenos">309</span></a><span class="sd">        :func:`require_role`&#39;s docstring for the pipeline).&quot;&quot;&quot;</span>
+</span><span id="L-308"><a href="#L-308"><span class="linenos">308</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
+</span><span id="L-309"><a href="#L-309"><span class="linenos">309</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
 </span><span id="L-310"><a href="#L-310"><span class="linenos">310</span></a>
 </span><span id="L-311"><a href="#L-311"><span class="linenos">311</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-312"><a href="#L-312"><span class="linenos">312</span></a><span class="w">            </span><span class="sd">&quot;&quot;&quot;Return a 403/401 JSON response on failure, else ``None`` to</span>
-</span><span id="L-313"><a href="#L-313"><span class="linenos">313</span></a><span class="sd">            let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="L-312"><a href="#L-312"><span class="linenos">312</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="L-313"><a href="#L-313"><span class="linenos">313</span></a><span class="sd">            let the view proceed."""</span>
 </span><span id="L-314"><a href="#L-314"><span class="linenos">314</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
 </span><span id="L-315"><a href="#L-315"><span class="linenos">315</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="L-316"><a href="#L-316"><span class="linenos">316</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
 </span><span id="L-317"><a href="#L-317"><span class="linenos">317</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
 </span><span id="L-318"><a href="#L-318"><span class="linenos">318</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="L-319"><a href="#L-319"><span class="linenos">319</span></a>                    <span class="p">{</span>
-</span><span id="L-320"><a href="#L-320"><span class="linenos">320</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authorization_denied&quot;</span><span class="p">,</span>
-</span><span id="L-321"><a href="#L-321"><span class="linenos">321</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="s2">&quot;caller lacks a required role&quot;</span><span class="p">,</span>
+</span><span id="L-320"><a href="#L-320"><span class="linenos">320</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="L-321"><a href="#L-321"><span class="linenos">321</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
 </span><span id="L-322"><a href="#L-322"><span class="linenos">322</span></a>                    <span class="p">},</span>
 </span><span id="L-323"><a href="#L-323"><span class="linenos">323</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
 </span><span id="L-324"><a href="#L-324"><span class="linenos">324</span></a>                <span class="p">)</span>
@@ -432,7 +432,7 @@ function.</p>
 </span><span id="L-329"><a href="#L-329"><span class="linenos">329</span></a>    <span class="k">return</span> <span class="n">decorator</span>
 </span><span id="L-330"><a href="#L-330"><span class="linenos">330</span></a>
 </span><span id="L-331"><a href="#L-331"><span class="linenos">331</span></a>
-</span><span id="L-332"><a href="#L-332"><span class="linenos">332</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;require_access&quot;</span><span class="p">,</span> <span class="s2">&quot;require_auth&quot;</span><span class="p">,</span> <span class="s2">&quot;require_role&quot;</span><span class="p">]</span>
+</span><span id="L-332"><a href="#L-332"><span class="linenos">332</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"require_access"</span><span class="p">,</span> <span class="s2">"require_auth"</span><span class="p">,</span> <span class="s2">"require_role"</span><span class="p">]</span>
 </span></pre></div>
 
 
@@ -442,7 +442,7 @@ function.</p>
 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">require_access</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">client</span><span class="p">:</span> <span class="n"><a href="../../axiam_sdk.html#AxiamClient">axiam_sdk.AxiamClient</a></span>,</span><span class="param">	<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;pk&#39;</span>,</span><span class="param">	<span class="n">scope</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">uma_challenge</span><span class="p">:</span> <span class="n"><a href="../../axiam_sdk.html#UmaChallenger">axiam_sdk.UmaChallenger</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="n">Callable</span><span class="p">[[</span><span class="o">~</span><span class="n">_View</span><span class="p">],</span> <span class="o">~</span><span class="n">_View</span><span class="p">]</span>:</span></span>
+        <span class="name">require_access</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">client</span><span class="p">:</span> <span class="n"><a href="../../axiam_sdk.html#AxiamClient">axiam_sdk.AxiamClient</a></span>,</span><span class="param">	<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'pk'</span>,</span><span class="param">	<span class="n">scope</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">uma_challenge</span><span class="p">:</span> <span class="n"><a href="../../axiam_sdk.html#UmaChallenger">axiam_sdk.UmaChallenger</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="n">Callable</span><span class="p">[[</span><span class="o">~</span><span class="n">_View</span><span class="p">],</span> <span class="o">~</span><span class="n">_View</span><span class="p">]</span>:</span></span>
 
                 <label class="view-source-button" for="require_access-view-source"><span>View Source</span></label>
 
@@ -452,35 +452,35 @@ function.</p>
 </span><span id="require_access-193"><a href="#require_access-193"><span class="linenos">193</span></a>    <span class="n">client</span><span class="p">:</span> <span class="n">AxiamClient</span><span class="p">,</span>
 </span><span id="require_access-194"><a href="#require_access-194"><span class="linenos">194</span></a>    <span class="n">action</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
 </span><span id="require_access-195"><a href="#require_access-195"><span class="linenos">195</span></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="require_access-196"><a href="#require_access-196"><span class="linenos">196</span></a>    <span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;pk&quot;</span><span class="p">,</span>
+</span><span id="require_access-196"><a href="#require_access-196"><span class="linenos">196</span></a>    <span class="n">resource_param</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"pk"</span><span class="p">,</span>
 </span><span id="require_access-197"><a href="#require_access-197"><span class="linenos">197</span></a>    <span class="n">scope</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="require_access-198"><a href="#require_access-198"><span class="linenos">198</span></a>    <span class="n">uma_challenge</span><span class="p">:</span> <span class="n">UmaChallenger</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="require_access-199"><a href="#require_access-199"><span class="linenos">199</span></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
-</span><span id="require_access-200"><a href="#require_access-200"><span class="linenos">200</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator factory requiring an AXIAM authorization check for</span>
-</span><span id="require_access-201"><a href="#require_access-201"><span class="linenos">201</span></a><span class="sd">    ``action`` on a resource resolved from the view&#39;s keyword arguments</span>
+</span><span id="require_access-200"><a href="#require_access-200"><span class="linenos">200</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring an AXIAM authorization check for</span>
+</span><span id="require_access-201"><a href="#require_access-201"><span class="linenos">201</span></a><span class="sd">    ``action`` on a resource resolved from the view's keyword arguments</span>
 </span><span id="require_access-202"><a href="#require_access-202"><span class="linenos">202</span></a><span class="sd">    (CONTRACT.md §11).</span>
 </span><span id="require_access-203"><a href="#require_access-203"><span class="linenos">203</span></a>
 </span><span id="require_access-204"><a href="#require_access-204"><span class="linenos">204</span></a><span class="sd">    Usage::</span>
 </span><span id="require_access-205"><a href="#require_access-205"><span class="linenos">205</span></a>
-</span><span id="require_access-206"><a href="#require_access-206"><span class="linenos">206</span></a><span class="sd">        @require_access(client, &quot;documents:read&quot;, resource_param=&quot;doc_id&quot;)</span>
+</span><span id="require_access-206"><a href="#require_access-206"><span class="linenos">206</span></a><span class="sd">        @require_access(client, "documents:read", resource_param="doc_id")</span>
 </span><span id="require_access-207"><a href="#require_access-207"><span class="linenos">207</span></a><span class="sd">        def get_document(request, doc_id):</span>
 </span><span id="require_access-208"><a href="#require_access-208"><span class="linenos">208</span></a><span class="sd">            ...</span>
 </span><span id="require_access-209"><a href="#require_access-209"><span class="linenos">209</span></a>
-</span><span id="require_access-210"><a href="#require_access-210"><span class="linenos">210</span></a><span class="sd">    ``resource_param`` (default ``&quot;pk&quot;``, Django&#39;s own singular-object</span>
+</span><span id="require_access-210"><a href="#require_access-210"><span class="linenos">210</span></a><span class="sd">    ``resource_param`` (default ``"pk"``, Django's own singular-object</span>
 </span><span id="require_access-211"><a href="#require_access-211"><span class="linenos">211</span></a><span class="sd">    convention) names the view kwarg — typically a captured URL path</span>
-</span><span id="require_access-212"><a href="#require_access-212"><span class="linenos">212</span></a><span class="sd">    converter, e.g. ``path(&quot;documents/&lt;uuid:doc_id&gt;/&quot;, ...)`` — carrying the</span>
+</span><span id="require_access-212"><a href="#require_access-212"><span class="linenos">212</span></a><span class="sd">    converter, e.g. ``path("documents/&lt;uuid:doc_id&gt;/", ...)`` — carrying the</span>
 </span><span id="require_access-213"><a href="#require_access-213"><span class="linenos">213</span></a><span class="sd">    resource UUID (CONTRACT.md §11.2.3). A missing or unparseable value is a</span>
 </span><span id="require_access-214"><a href="#require_access-214"><span class="linenos">214</span></a><span class="sd">    programming error surfaced as 400 ``invalid_request`` — never a silent</span>
 </span><span id="require_access-215"><a href="#require_access-215"><span class="linenos">215</span></a><span class="sd">    allow, never a nil/empty-UUID fallback.</span>
 </span><span id="require_access-216"><a href="#require_access-216"><span class="linenos">216</span></a>
 </span><span id="require_access-217"><a href="#require_access-217"><span class="linenos">217</span></a><span class="sd">    The check is made with ``subject_id`` set to the *authenticated</span>
-</span><span id="require_access-218"><a href="#require_access-218"><span class="linenos">218</span></a><span class="sd">    request&#39;s* ``user_id`` (CONTRACT.md §11.2.2) — never this ``client``&#39;s</span>
+</span><span id="require_access-218"><a href="#require_access-218"><span class="linenos">218</span></a><span class="sd">    request's* ``user_id`` (CONTRACT.md §11.2.2) — never this ``client``'s</span>
 </span><span id="require_access-219"><a href="#require_access-219"><span class="linenos">219</span></a><span class="sd">    own (often service-account) identity. Denied (``allowed=False`` or an</span>
 </span><span id="require_access-220"><a href="#require_access-220"><span class="linenos">220</span></a><span class="sd">    ``AuthzError`` from the server, e.g. the client lacks</span>
 </span><span id="require_access-221"><a href="#require_access-221"><span class="linenos">221</span></a><span class="sd">    ``authz:check_as``) responds 403 ``authorization_denied``. A transport</span>
 </span><span id="require_access-222"><a href="#require_access-222"><span class="linenos">222</span></a><span class="sd">    failure (``AuthError``/``NetworkError`` — the SDK could not obtain a</span>
 </span><span id="require_access-223"><a href="#require_access-223"><span class="linenos">223</span></a><span class="sd">    decision at all) **fails closed** with 503 ``authz_unavailable``</span>
-</span><span id="require_access-224"><a href="#require_access-224"><span class="linenos">224</span></a><span class="sd">    (CONTRACT.md §11.2.5) — never allow, never retry beyond the client&#39;s own</span>
+</span><span id="require_access-224"><a href="#require_access-224"><span class="linenos">224</span></a><span class="sd">    (CONTRACT.md §11.2.5) — never allow, never retry beyond the client's own</span>
 </span><span id="require_access-225"><a href="#require_access-225"><span class="linenos">225</span></a><span class="sd">    bounded refresh. No decision caching (§11.2.6): every request performs a</span>
 </span><span id="require_access-226"><a href="#require_access-226"><span class="linenos">226</span></a><span class="sd">    fresh ``check_access`` call.</span>
 </span><span id="require_access-227"><a href="#require_access-227"><span class="linenos">227</span></a>
@@ -491,16 +491,16 @@ function.</p>
 </span><span id="require_access-232"><a href="#require_access-232"><span class="linenos">232</span></a><span class="sd">    403 body is unchanged, so a client that does not speak UMA sees exactly what</span>
 </span><span id="require_access-233"><a href="#require_access-233"><span class="linenos">233</span></a><span class="sd">    it saw before. It is opt-in, and minting failures do not escalate the</span>
 </span><span id="require_access-234"><a href="#require_access-234"><span class="linenos">234</span></a><span class="sd">    denial; see :class:`~axiam_sdk.UmaChallenger` for why both matter.</span>
-</span><span id="require_access-235"><a href="#require_access-235"><span class="linenos">235</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="require_access-235"><a href="#require_access-235"><span class="linenos">235</span></a><span class="sd">    """</span>
 </span><span id="require_access-236"><a href="#require_access-236"><span class="linenos">236</span></a>
 </span><span id="require_access-237"><a href="#require_access-237"><span class="linenos">237</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="require_access-238"><a href="#require_access-238"><span class="linenos">238</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Bind ``action``/``resource_param``/``scope`` to a guard wrapping</span>
-</span><span id="require_access-239"><a href="#require_access-239"><span class="linenos">239</span></a><span class="sd">        ``view`` (see :func:`require_access`&#39;s docstring for the pipeline).&quot;&quot;&quot;</span>
+</span><span id="require_access-238"><a href="#require_access-238"><span class="linenos">238</span></a><span class="w">        </span><span class="sd">"""Bind ``action``/``resource_param``/``scope`` to a guard wrapping</span>
+</span><span id="require_access-239"><a href="#require_access-239"><span class="linenos">239</span></a><span class="sd">        ``view`` (see :func:`require_access`'s docstring for the pipeline)."""</span>
 </span><span id="require_access-240"><a href="#require_access-240"><span class="linenos">240</span></a>
 </span><span id="require_access-241"><a href="#require_access-241"><span class="linenos">241</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="require_access-242"><a href="#require_access-242"><span class="linenos">242</span></a><span class="w">            </span><span class="sd">&quot;&quot;&quot;Authenticate, resolve + validate the resource id, then</span>
+</span><span id="require_access-242"><a href="#require_access-242"><span class="linenos">242</span></a><span class="w">            </span><span class="sd">"""Authenticate, resolve + validate the resource id, then</span>
 </span><span id="require_access-243"><a href="#require_access-243"><span class="linenos">243</span></a><span class="sd">            perform the authorization check — returns a JSON error response</span>
-</span><span id="require_access-244"><a href="#require_access-244"><span class="linenos">244</span></a><span class="sd">            on any failure, or ``None`` to let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="require_access-244"><a href="#require_access-244"><span class="linenos">244</span></a><span class="sd">            on any failure, or ``None`` to let the view proceed."""</span>
 </span><span id="require_access-245"><a href="#require_access-245"><span class="linenos">245</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
 </span><span id="require_access-246"><a href="#require_access-246"><span class="linenos">246</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="require_access-247"><a href="#require_access-247"><span class="linenos">247</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
@@ -511,8 +511,8 @@ function.</p>
 </span><span id="require_access-252"><a href="#require_access-252"><span class="linenos">252</span></a>            <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">AttributeError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
 </span><span id="require_access-253"><a href="#require_access-253"><span class="linenos">253</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="require_access-254"><a href="#require_access-254"><span class="linenos">254</span></a>                    <span class="p">{</span>
-</span><span id="require_access-255"><a href="#require_access-255"><span class="linenos">255</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;invalid_request&quot;</span><span class="p">,</span>
-</span><span id="require_access-256"><a href="#require_access-256"><span class="linenos">256</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;missing or invalid resource id for </span><span class="si">{</span><span class="n">resource_param</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">,</span>
+</span><span id="require_access-255"><a href="#require_access-255"><span class="linenos">255</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"invalid_request"</span><span class="p">,</span>
+</span><span id="require_access-256"><a href="#require_access-256"><span class="linenos">256</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"missing or invalid resource id for </span><span class="si">{</span><span class="n">resource_param</span><span class="si">!r}</span><span class="s2">"</span><span class="p">,</span>
 </span><span id="require_access-257"><a href="#require_access-257"><span class="linenos">257</span></a>                    <span class="p">},</span>
 </span><span id="require_access-258"><a href="#require_access-258"><span class="linenos">258</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_INVALID_REQUEST_STATUS</span><span class="p">,</span>
 </span><span id="require_access-259"><a href="#require_access-259"><span class="linenos">259</span></a>                <span class="p">)</span>
@@ -526,12 +526,12 @@ function.</p>
 </span><span id="require_access-267"><a href="#require_access-267"><span class="linenos">267</span></a>                <span class="k">return</span> <span class="n">_denied</span><span class="p">(</span><span class="n">action</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">uma_challenge</span><span class="p">)</span>
 </span><span id="require_access-268"><a href="#require_access-268"><span class="linenos">268</span></a>            <span class="k">except</span> <span class="p">(</span><span class="n">AuthError</span><span class="p">,</span> <span class="n">NetworkError</span><span class="p">):</span>
 </span><span id="require_access-269"><a href="#require_access-269"><span class="linenos">269</span></a>                <span class="c1"># §11.2.5: fail closed — a transport failure while calling</span>
-</span><span id="require_access-270"><a href="#require_access-270"><span class="linenos">270</span></a>                <span class="c1"># the authz endpoint is &quot;couldn&#39;t decide&quot;, never a silent</span>
+</span><span id="require_access-270"><a href="#require_access-270"><span class="linenos">270</span></a>                <span class="c1"># the authz endpoint is "couldn't decide", never a silent</span>
 </span><span id="require_access-271"><a href="#require_access-271"><span class="linenos">271</span></a>                <span class="c1"># allow.</span>
 </span><span id="require_access-272"><a href="#require_access-272"><span class="linenos">272</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="require_access-273"><a href="#require_access-273"><span class="linenos">273</span></a>                    <span class="p">{</span>
-</span><span id="require_access-274"><a href="#require_access-274"><span class="linenos">274</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authz_unavailable&quot;</span><span class="p">,</span>
-</span><span id="require_access-275"><a href="#require_access-275"><span class="linenos">275</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="s2">&quot;authorization service unavailable&quot;</span><span class="p">,</span>
+</span><span id="require_access-274"><a href="#require_access-274"><span class="linenos">274</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authz_unavailable"</span><span class="p">,</span>
+</span><span id="require_access-275"><a href="#require_access-275"><span class="linenos">275</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"authorization service unavailable"</span><span class="p">,</span>
 </span><span id="require_access-276"><a href="#require_access-276"><span class="linenos">276</span></a>                    <span class="p">},</span>
 </span><span id="require_access-277"><a href="#require_access-277"><span class="linenos">277</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_UNAVAILABLE_STATUS</span><span class="p">,</span>
 </span><span id="require_access-278"><a href="#require_access-278"><span class="linenos">278</span></a>                <span class="p">)</span>
@@ -598,7 +598,7 @@ denial; see <code>~<a href="../../axiam_sdk.html#UmaChallenger">axiam_sdk.UmaCha
     </div>
     <a class="headerlink" href="#require_auth"></a>
             <div class="pdoc-code codehilite"><pre><span></span><span id="require_auth-129"><a href="#require_auth-129"><span class="linenos">129</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_auth</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="require_auth-130"><a href="#require_auth-130"><span class="linenos">130</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator requiring an authenticated AXIAM identity</span>
+</span><span id="require_auth-130"><a href="#require_auth-130"><span class="linenos">130</span></a><span class="w">    </span><span class="sd">"""View decorator requiring an authenticated AXIAM identity</span>
 </span><span id="require_auth-131"><a href="#require_auth-131"><span class="linenos">131</span></a><span class="sd">    (CONTRACT.md §11) — pure sugar over</span>
 </span><span id="require_auth-132"><a href="#require_auth-132"><span class="linenos">132</span></a><span class="sd">    :class:`~axiam_sdk.django.middleware.AxiamAuthMiddleware` for call sites</span>
 </span><span id="require_auth-133"><a href="#require_auth-133"><span class="linenos">133</span></a><span class="sd">    that want the requirement spelled out per-view. Responds 401</span>
@@ -610,11 +610,11 @@ denial; see <code>~<a href="../../axiam_sdk.html#UmaChallenger">axiam_sdk.UmaCha
 </span><span id="require_auth-139"><a href="#require_auth-139"><span class="linenos">139</span></a><span class="sd">        def my_view(request):</span>
 </span><span id="require_auth-140"><a href="#require_auth-140"><span class="linenos">140</span></a><span class="sd">            user = request.axiam_user</span>
 </span><span id="require_auth-141"><a href="#require_auth-141"><span class="linenos">141</span></a><span class="sd">            ...</span>
-</span><span id="require_auth-142"><a href="#require_auth-142"><span class="linenos">142</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="require_auth-142"><a href="#require_auth-142"><span class="linenos">142</span></a><span class="sd">    """</span>
 </span><span id="require_auth-143"><a href="#require_auth-143"><span class="linenos">143</span></a>
 </span><span id="require_auth-144"><a href="#require_auth-144"><span class="linenos">144</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="require_auth-145"><a href="#require_auth-145"><span class="linenos">145</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Return the standardized 401 response when unauthenticated, else</span>
-</span><span id="require_auth-146"><a href="#require_auth-146"><span class="linenos">146</span></a><span class="sd">        ``None`` to let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="require_auth-145"><a href="#require_auth-145"><span class="linenos">145</span></a><span class="w">        </span><span class="sd">"""Return the standardized 401 response when unauthenticated, else</span>
+</span><span id="require_auth-146"><a href="#require_auth-146"><span class="linenos">146</span></a><span class="sd">        ``None`` to let the view proceed."""</span>
 </span><span id="require_auth-147"><a href="#require_auth-147"><span class="linenos">147</span></a>        <span class="k">if</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="require_auth-148"><a href="#require_auth-148"><span class="linenos">148</span></a>            <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
 </span><span id="require_auth-149"><a href="#require_auth-149"><span class="linenos">149</span></a>        <span class="k">return</span> <span class="kc">None</span>
@@ -652,7 +652,7 @@ def my_view(request):
     </div>
     <a class="headerlink" href="#require_role"></a>
             <div class="pdoc-code codehilite"><pre><span></span><span id="require_role-289"><a href="#require_role-289"><span class="linenos">289</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_role</span><span class="p">(</span><span class="o">*</span><span class="n">roles</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
-</span><span id="require_role-290"><a href="#require_role-290"><span class="linenos">290</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;View decorator factory requiring the authenticated identity&#39;s</span>
+</span><span id="require_role-290"><a href="#require_role-290"><span class="linenos">290</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring the authenticated identity's</span>
 </span><span id="require_role-291"><a href="#require_role-291"><span class="linenos">291</span></a><span class="sd">    verified ``roles`` to contain at least one of ``roles`` (CONTRACT.md</span>
 </span><span id="require_role-292"><a href="#require_role-292"><span class="linenos">292</span></a><span class="sd">    §11).</span>
 </span><span id="require_role-293"><a href="#require_role-293"><span class="linenos">293</span></a>
@@ -665,26 +665,26 @@ def my_view(request):
 </span><span id="require_role-300"><a href="#require_role-300"><span class="linenos">300</span></a>
 </span><span id="require_role-301"><a href="#require_role-301"><span class="linenos">301</span></a><span class="sd">    Usage::</span>
 </span><span id="require_role-302"><a href="#require_role-302"><span class="linenos">302</span></a>
-</span><span id="require_role-303"><a href="#require_role-303"><span class="linenos">303</span></a><span class="sd">        @require_role(&quot;admin&quot;, &quot;auditor&quot;)</span>
+</span><span id="require_role-303"><a href="#require_role-303"><span class="linenos">303</span></a><span class="sd">        @require_role("admin", "auditor")</span>
 </span><span id="require_role-304"><a href="#require_role-304"><span class="linenos">304</span></a><span class="sd">        def reset_view(request):</span>
 </span><span id="require_role-305"><a href="#require_role-305"><span class="linenos">305</span></a><span class="sd">            ...</span>
-</span><span id="require_role-306"><a href="#require_role-306"><span class="linenos">306</span></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="require_role-306"><a href="#require_role-306"><span class="linenos">306</span></a><span class="sd">    """</span>
 </span><span id="require_role-307"><a href="#require_role-307"><span class="linenos">307</span></a>
 </span><span id="require_role-308"><a href="#require_role-308"><span class="linenos">308</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="require_role-309"><a href="#require_role-309"><span class="linenos">309</span></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Bind ``roles`` to a guard wrapping ``view`` (see</span>
-</span><span id="require_role-310"><a href="#require_role-310"><span class="linenos">310</span></a><span class="sd">        :func:`require_role`&#39;s docstring for the pipeline).&quot;&quot;&quot;</span>
+</span><span id="require_role-309"><a href="#require_role-309"><span class="linenos">309</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
+</span><span id="require_role-310"><a href="#require_role-310"><span class="linenos">310</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
 </span><span id="require_role-311"><a href="#require_role-311"><span class="linenos">311</span></a>
 </span><span id="require_role-312"><a href="#require_role-312"><span class="linenos">312</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="require_role-313"><a href="#require_role-313"><span class="linenos">313</span></a><span class="w">            </span><span class="sd">&quot;&quot;&quot;Return a 403/401 JSON response on failure, else ``None`` to</span>
-</span><span id="require_role-314"><a href="#require_role-314"><span class="linenos">314</span></a><span class="sd">            let the view proceed.&quot;&quot;&quot;</span>
+</span><span id="require_role-313"><a href="#require_role-313"><span class="linenos">313</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="require_role-314"><a href="#require_role-314"><span class="linenos">314</span></a><span class="sd">            let the view proceed."""</span>
 </span><span id="require_role-315"><a href="#require_role-315"><span class="linenos">315</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
 </span><span id="require_role-316"><a href="#require_role-316"><span class="linenos">316</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
 </span><span id="require_role-317"><a href="#require_role-317"><span class="linenos">317</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">()</span>
 </span><span id="require_role-318"><a href="#require_role-318"><span class="linenos">318</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
 </span><span id="require_role-319"><a href="#require_role-319"><span class="linenos">319</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
 </span><span id="require_role-320"><a href="#require_role-320"><span class="linenos">320</span></a>                    <span class="p">{</span>
-</span><span id="require_role-321"><a href="#require_role-321"><span class="linenos">321</span></a>                        <span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="s2">&quot;authorization_denied&quot;</span><span class="p">,</span>
-</span><span id="require_role-322"><a href="#require_role-322"><span class="linenos">322</span></a>                        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="s2">&quot;caller lacks a required role&quot;</span><span class="p">,</span>
+</span><span id="require_role-321"><a href="#require_role-321"><span class="linenos">321</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="require_role-322"><a href="#require_role-322"><span class="linenos">322</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
 </span><span id="require_role-323"><a href="#require_role-323"><span class="linenos">323</span></a>                    <span class="p">},</span>
 </span><span id="require_role-324"><a href="#require_role-324"><span class="linenos">324</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
 </span><span id="require_role-325"><a href="#require_role-325"><span class="linenos">325</span></a>                <span class="p">)</span>
