@@ -45,7 +45,10 @@ async def handler(event: dict[str, Any]) -> None:
 
 
 async def main() -> None:
-    amqp_url = getenv("AMQP_URL", "amqp://guest:guest@localhost:5672")
+    # §8b: amqps:// only. The AXIAM server is TLS-only and has no plaintext
+    # listener — HMAC proves who wrote a message, it does not keep the
+    # subject, resource and action off the wire in cleartext.
+    amqp_url = getenv("AMQP_URL", "amqps://guest:guest@localhost:5671")
     queue_name = getenv("AXIAM_AMQP_QUEUE", "axiam.authz.request")
 
     # §8.1: the per-tenant AMQP signing secret MUST be obtained from the
