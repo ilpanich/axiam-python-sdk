@@ -241,6 +241,63 @@ await reactor_serve(
 )
 ```
 
+#### Binding handlers per event (§22.14)
+
+The `if` chain above is the shape every multi-event reactor grows, and its last line —
+`return allow()` — answers on behalf of code that never ran. That is the defect §22.10
+rule 2 forbids the *runtime* from committing, relocated into your file where the rule does
+not reach it: an operator who set `fail_closed` on the registration has it defeated there.
+
+`ReactorRouter` is §22.14's declarative form, in the spirit of the §11 declarative
+authorization helpers:
+
+```python
+from axiam_sdk.amqp import LOGIN_POST_AUTH, TOKEN_PRE_ISSUE, ReactorRouter, reactor_serve
+
+router = ReactorRouter()
+
+
+@router.on(TOKEN_PRE_ISSUE)
+def enrich_token(event: ReactorEvent) -> ReactorDecision:  # sync or async, both work
+    return mutate({"ext.cost_center": "42"})
+
+
+@router.on(LOGIN_POST_AUTH)
+async def screen_login(event: ReactorEvent) -> ReactorDecision:
+    return deny("embargoed region") if await embargoed(event) else allow()
+
+
+await reactor_serve(dialer, config, router.handler())
+```
+
+- **A misspelled event is refused when you bind it** — `ReactorRouter` accepts only §22.5
+  registry names, which is also how it refuses the three hot-path operations §22.7
+  excludes: they are in no registry row.
+- **An unbound event abstains** — no reply, and the registration's `failure_policy` decides
+  (§22.8), exactly as it decides a timeout. Never a synthesized `allow`.
+- A duplicate binding raises rather than silently overwriting, and `router.events` feeds
+  `default_failure_policy_for` so you can see what an unreachable reactor costs before you
+  go live.
+
+For a class-based reactor, mark the methods and collect them — bound methods keep their
+instance:
+
+```python
+from axiam_sdk.amqp import on_reactor_event, reactor_handlers
+
+
+class Reactor:
+    @on_reactor_event(TOKEN_PRE_ISSUE)
+    def enrich(self, event: ReactorEvent) -> ReactorDecision: ...
+
+
+handler = reactor_handlers(Reactor())  # or reactor_handlers({TOKEN_PRE_ISSUE: fn})
+```
+
+It is pure sugar: the value it produces is exactly the handler `reactor_serve` already
+takes. It opens nothing, verifies nothing, signs nothing, does not filter a patch, and a
+handler's own exception reaches the runtime unchanged so nothing is published.
+
 See [`examples/reactor.py`](./examples/reactor.py) for a complete three-hook reactor with
 graceful shutdown and a telemetry hook.
 

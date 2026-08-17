@@ -31,6 +31,9 @@ field-allow-listed mutation — inside a timeout the server declared.
   :func:`default_failure_policy_for` — the §22.5 registry, its mutable-field
   allow-lists and §22.8's strictest-wins failure-policy composition.
 - :func:`aio_pika_dialer` — an ``amqps://``-only dialer (§8b).
+- :class:`ReactorRouter` / :func:`on_reactor_event` / :func:`reactor_handlers` —
+  §22.14's declarative binding: one handler per event instead of an ``if`` chain
+  whose final ``return allow()`` answers for code that never ran.
 
 §8's HMAC runs in BOTH directions on the reactor exchange: the server signs the
 event, the reactor signs the reply with the same tenant subkey, and an unsigned
@@ -103,6 +106,11 @@ from axiam_sdk.amqp._reactor_registry import (
     reactor_queue_name,
     reactor_routing_key,
 )
+from axiam_sdk.amqp._reactor_router import (
+    ReactorRouter,
+    on_reactor_event,
+    reactor_handlers,
+)
 from axiam_sdk.amqp._replay import DEFAULT_SKEW_SECONDS, NonceStore, validate_freshness
 
 __all__ = [
@@ -171,4 +179,8 @@ __all__ = [
     "MAX_REACTOR_TIMEOUT_MS",
     "REACTOR_CHAIN_CEILING_MS",
     "DEFAULT_REACTOR_MAX_IN_FLIGHT",
+    # §22.14 — declarative handler binding.
+    "ReactorRouter",
+    "on_reactor_event",
+    "reactor_handlers",
 ]

@@ -2222,6 +2222,30 @@ slug-only-client consequence apply unchanged.
 7. **`scope` in the response is the granted set, which may be narrower than requested** even
    on success (when `scope` was omitted and the client's registration bounds the subject's
    own). Applications MUST be able to read what they actually got.
+8. **`token_type` on the exchange response MUST be read, not assumed `Bearer`** (SEC-096).
+   An exchanging client registered for DPoP- or certificate-bound access tokens now receives
+   a **sender-constrained** exchanged token: the response carries `"token_type": "DPoP"` when
+   the result is bound to the client's proof key, and the token itself carries a `cnf` naming
+   the constraint the client proved *on this request*. §10.1 rule 9 applies to it in full — a
+   resource server MUST NOT accept it as a bearer token.
+
+   Before SEC-096 the exchange grant stripped sender-constraining unconditionally: a client
+   holding a `cnf.jkt`-bound token could exchange it and receive a plain bearer token with the
+   same subject and a subset of the same scopes. It also skipped the FAPI profile gate, so a
+   `fapi2` client could obtain an unconstrained token from this grant while being refused one
+   from the three grants the gate guarded. Both are closed, and the consequences an SDK must
+   handle are:
+
+   * an SDK that hard-codes `Bearer` when forwarding the exchanged token will send a DPoP
+     token under the wrong scheme;
+   * a `fapi2` client, or any client registered for binding, that exchanges **without**
+     presenting its certificate or proof now receives `invalid_client` rather than an unbound
+     token. That refusal is correct and MUST NOT be retried unbound.
+
+   A client that registered no binding — every client that existed before X5.1 — sees exactly
+   the bytes it saw before: `"token_type": "Bearer"` and no `cnf`.
+
+   The same rule applies verbatim to the §20 uma-ticket grant's RPT.
 
 ### §15.3 Error mapping
 
@@ -3557,14 +3581,26 @@ body (§22.3), which is the single-use handle binding one reply to one event. An
 SDK MUST copy `correlation_id` from the event body into the reply body; copying
 it only into the AMQP property produces a reply the server discards.
 
-*Scope note, accurate as of contract 1.18: the server's lapin
-`ReactorTransport` implementation is not yet merged (the trait is defined in
-`dispatcher.rs`; the dispatch chain is broker-free and fully tested against it).
-The signed bodies, their field order, and every validation rule below are
-implemented and locked. The two AMQP basic properties named in this paragraph
-are the standard RPC convention the transport will use and are the one part of
-this section not yet pinned by a running implementation — an SDK that echoes
-`reply_to`/`correlation_id` from the delivery will be correct either way.*
+*Scope note closed as of contract 1.21: the server's lapin `ReactorTransport`
+is merged (`crates/axiam-amqp/src/reactor/transport.rs`), `axiam-server`
+composes it, and the whole section — signed bodies, field order, validation
+rules and the two reply-addressing properties above — is now pinned by a
+running implementation exercised against a real broker in
+`crates/axiam-amqp/tests/reactor_containerized_test.rs`.*
+
+**One clarification the implementation makes normative for the server, and
+changes nothing for an SDK.** An `intercept` event is published to the
+reactor's queue directly, through the default exchange, rather than fanned out
+through `axiam.reactor.events`. The routing key is per `(tenant, event)`, so a
+publish through the exchange reaches every reactor registered for that event at
+once, while §22.6's chain dispatches sequentially in priority order and
+correlates exactly one reply per event — fanning one `correlation_id` out to
+the whole chain would let whichever reactor answered first be consumed as the
+reply of whichever reactor the chain was waiting on. The exchange and the
+bindings are still declared by the server for every registration and every
+event it names. **A reactor runtime sees no difference:** it consumes the queue
+whose name it was configured with, and it MUST still not declare or bind
+anything.
 
 ### §22.2 Message security — §8 in both directions
 
@@ -3911,6 +3947,34 @@ that pair is the whole difference between "no reactor was configured" and "the
 reactor never answered". An SDK surfacing reactor health MUST NOT infer health
 from the outcome alone.
 
+**Only `intercept` registrations have a failure policy that can affect an
+outcome (SEC-099).** A `listen`-mode registration is never dispatched to
+synchronously and can never deny — including on the two out-of-chain failure
+paths (the in-flight cap breach and the unreadable registry) where the server
+resolves policies without contacting anyone. `default_failure_policy_for` still
+assigns a listener `fail_closed` when it subscribes to `login.post_auth`,
+because the default is derived from the *events*, not the mode; that stored
+value is inert for a listener and an admin UI MUST NOT present it as a control
+that does something.
+
+**An unreadable registration store is not evidence that no veto was registered
+(SEC-100, and §14.2 of the F4-bis review).** When the server cannot read the
+registrations for `(tenant, event)` and has nothing cached, it applies the
+**event's** default failure policy — so `login.post_auth`, `user.pre_create`,
+`user.pre_update` and `grant.pre_assign` deny. This is a normative server
+behaviour an SDK author cannot infer from the per-registration table above, and
+an operator reading that table would not predict a deny with no registration in
+sight. Two bounds on it, both of which an SDK or admin UI may rely on:
+
+* a tenant the server can establish has **no reactor registrations at all** is
+  exempt — there is provably nothing to consult, so it allows;
+* once any successful read has happened, the stale list is served instead, and
+  the per-registration policies in the table above apply as usual.
+
+The alternative — treating an unreadable store as "no reactors" — would give
+every `fail_closed` control in the deployment an availability-shaped off switch,
+which is the failure mode `fail_closed` exists to prevent.
+
 ### §22.9 Registration (informative — the admin surface)
 
 Reactors are registered through the admin REST API; an SDK that exposes reactor
@@ -3957,6 +4021,36 @@ Two behaviours a client MUST NOT re-derive locally:
    reactor that was enrichment-only and is now also registered for
    `login.post_auth` must not keep passing when unreachable. An SDK MUST NOT
    preserve the old stored policy on the client side to "avoid a surprise".
+3. **A registration may be refused with `503` when it could never be
+   delivered to** (SEC-101). `POST /api/v1/reactors` and any `PUT` that would
+   leave the registration **enabled** answer `503 service_unavailable` with a
+   body naming the reason, in two cases. The first is a deployment that
+   composes a transport which fails every round trip; accepting the
+   registration would hand a tenant admin a complete, self-inflicted login
+   outage through a supported admin action, because the transport fails,
+   `login.post_auth` defaults to `fail_closed`, and the first login after the
+   registration is denied. The second is `mode: "listen"`, for as long as no
+   hook site fans out to listeners — the registration would receive nothing
+   and, being a listener, would produce no outcome in which its silence could
+   be noticed. `enabled: false`, `DELETE` and creating-already-disabled stay
+   open in both cases: an operator must always keep a way out.
+
+   A **broker outage is deliberately not one of these cases.** Since the lapin
+   transport merged (§22.1) the server composes a transport that reports itself
+   dispatchable even while its broker session is down; a dispatch during the
+   outage fails fast and each registration's `failure_policy` decides, exactly
+   as §22.8 specifies. Refusing registrations for the duration of a blip would
+   turn a broker problem into an admin-API problem.
+
+   Two exits stay open by design and an SDK MUST NOT block them client-side: a
+   `PUT` setting `enabled: false` and a `DELETE` are **always** permitted, and
+   creating an already-disabled registration is permitted too (it dispatches to
+   nothing, so it causes no outage, and staging configuration ahead of the
+   transport is a legitimate workflow).
+
+   An SDK MUST surface this `503` as the server's message rather than retrying:
+   it is not transient in the RFC 9110 sense. It clears when the operator
+   deploys a build whose transport works, not on the next attempt.
 
 ### §22.10 The SDK runtime helper
 
@@ -4093,6 +4187,136 @@ events per §18; and the signing key never appears in any log line or error
 payload (scan the serialized output for the fixture value, as §12/§14/§15/§20
 require).
 
+### §22.14 Declarative handler binding (contract 1.22)
+
+**Requirement level: SHOULD**, for the eight SDKs that ship a §22.10 runtime.
+Additive in the strongest sense: no signature moves, no existing rule changes,
+and an SDK that ships `reactor_serve` and nothing from this subsection is
+exactly as conformant as it was under 1.21.
+
+§22.10's handler is **one** function from an event to one answer, which is the
+right shape for the wire and the wrong shape for the code. A reactor registered
+for three events opens with a dispatch on `event.event`, and that dispatch is
+where two defects live. The first is cheap: a misspelled event name compiles,
+binds nothing, and is discovered as an event that never fires. The second is
+not. It is the catch-all arm:
+
+```
+default:
+    return allow();   // ← this is the bug
+```
+
+That line answers on behalf of code that never ran. It is the same defect
+§22.10 rule 2 already forbids the *runtime* from committing — synthesizing an
+`allow` for a handler that did not produce one — relocated into user code,
+where the rule does not reach it. An operator who set `fail_closed` on a
+registration has it defeated by a `default` arm in a file they never read.
+
+This subsection is the declarative form: bind one handler per event, and let
+the SDK compose them into the single handler §22.10 takes. It is **pure
+sugar**, in the same sense and for the same reason as §11's declarative
+authorization helpers — it runs strictly on top of the runtime, consumes what
+the runtime already verified, and re-implements no part of §22.1–§22.8.
+
+| Canonical | Rust | TypeScript | Python | Java | Kotlin | C# | PHP | Go | Swift | C | C++ |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `reactor_handlers` | `#[reactor_handler]` + `ReactorRouter` | `reactorHandlers` | `ReactorRouter` / `@on_reactor_event` | `@OnReactorEvent` + `ReactorHandlers` | `reactorHandlers { }` | `[OnReactorEvent]` + `ReactorHandlers` | `#[OnReactorEvent]` + `ReactorHandlers` | `ReactorMux` | — (§22.11) | — (§22.11) | — (§22.11) |
+
+Each language uses the metadata mechanism it already uses for §11 — Java
+annotations, C# and PHP attributes, a Python decorator, a Rust attribute macro —
+and Go, which has no such mechanism and did not get one for §11 either, uses a
+binding table named for `http.ServeMux`. Where an SDK offers both a declarative
+form and a builder, the two MUST produce the same handler and be governed by
+every rule below.
+
+**Kotlin is the one place this section diverges from §11**, and the reason is
+worth recording rather than discovering. §11 gave Kotlin annotations; §22.14
+gives it a type-safe builder, because a Kotlin reactor handler is a `suspend`
+function. Collecting annotated `suspend` members means invoking through the
+hidden `Continuation` parameter, which needs `kotlin-reflect` on every
+consumer's runtime classpath — a dependency an SDK should not add to hand out an
+attribute. A builder is Kotlin's own declarative mechanism, costs nothing, and
+type-checks the lambda against `suspend (ReactorEvent) -> ReactorDecision` at
+compile time, which is stricter than what the reflection would have bought. An
+SDK in the same position — a language where the handler shape cannot be
+collected without a new runtime dependency — MAY make the same trade, and MUST
+document it where the helper is documented.
+
+**Six rules, and the fourth is the one this subsection exists for.**
+
+1. **It composes; it does not replace.** The binder's output is exactly the
+   handler `reactor_serve` accepts. It MUST NOT open a connection, consume a
+   queue, verify an event, sign a reply, or interpret `timeout_ms`. An SDK that
+   makes the binder mandatory has removed the plain-handler form §22.10 names,
+   which is a breaking change dressed as an ergonomic one — the binder is
+   always additive.
+
+2. **A name outside the §22.5 registry is refused at bind time**, not at
+   dispatch time. Failing when the binding is written is the entire point: a
+   typo that survives to production is discovered as silence, and silence on a
+   `fail_open` event is indistinguishable from a healthy reactor with nothing
+   to say.
+
+   This is also, and deliberately, how §22.7's three hot-path operations are
+   refused: they are in no registry row, so they fail rule 2 like any other
+   unknown name. An SDK MUST NOT introduce a separate hot-path list to produce
+   a more specific error message — that list would be a constant naming them,
+   which §22.13's hot-path assertion forbids outright. The error message names
+   the registry; it does not name what is absent from it.
+
+3. **One handler per event.** A second binding for an already-bound event is an
+   error, never a silent overwrite. Which of two handlers runs is not something
+   the author of either can see from their own file.
+
+4. **An event with no bound handler MUST abstain** — publish no reply, and let
+   the registration's `failure_policy` resolve it exactly as §22.8 resolves a
+   timeout. It MUST NOT be answered `allow`, and MUST NOT be answered `deny`
+   either: the binder does not know what the registration was for, and the
+   operator's policy does.
+
+   An SDK MAY let the caller install an explicit fallback handler for
+   unbound events. It MUST NOT default that fallback to any of the three
+   answers.
+
+5. **A handler's own failure propagates unchanged.** The binder MUST NOT catch
+   an exception, error return or panic and MUST NOT convert one into an answer.
+   §22.10 rule 2 puts the fail-closed obligation on the runtime, and a binder
+   that swallowed a failure before the runtime saw it would satisfy the letter
+   of that rule while defeating it.
+
+6. **It MUST NOT filter a patch** (§22.10 rule 3). A binder sits between the
+   handler and the runtime and is therefore the newest place to be tempted into
+   "helpfully" pruning a forbidden key.
+
+An SDK SHOULD expose the bound event names, so a reactor author can compute
+§22.8's strictest-wins default from the code that actually handles the events
+rather than from a restatement of the registration.
+
+**Conformance.** §22.14 is not a separate claim. An SDK that ships §22 with the
+binder and one that ships §22 without it both write "conforms to … §22"; the
+subsection is an ergonomic obligation on how the helper behaves *if* it exists,
+not a new capability to advertise.
+
+#### §22.14.1 Required tests
+
+Six, mirroring the six rules, and all of them run against a fake — none needs a
+broker:
+
+1. **Dispatch.** Two events bound to two handlers reach their own handler, and
+   the composed value is accepted by `reactor_serve`'s handler parameter
+   (a compile-time assertion where the language has one).
+2. **Bind-time rejection.** A misspelled registry name is refused when bound.
+3. **Hot path.** Binding `authz.check`, `authz.check_batch` or
+   `token.introspect` is refused — asserted on behaviour, in whichever test
+   file the SDK's §22.13 hot-path source scan already permits to name them.
+4. **Unbound abstains.** An event with no handler produces **no reply** —
+   assert zero published messages, and assert specifically that the answer is
+   not `allow`. This is rule 4, and it is the test that distinguishes this
+   subsection from a `switch`.
+5. **Failure propagates.** A handler that throws/returns an error/panics
+   reaches the runtime unchanged, and the runtime publishes nothing.
+6. **Duplicate refused.** Binding the same event twice is an error.
+
 ---
 
 ### OpenAPI Export Feature Flag
@@ -4101,6 +4325,6 @@ require).
 
 ---
 
-*Contract version: 1.19 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07; §8b AMQP transport, §10.2 gRPC revocation modes, §12.7 logout helpers, §14 device authorization grant and §15 token exchange added 2026-08; §14.3 rule 4 / §14.6 credential-adoption errata 2026-08 (contract 1.7); §16 retry policy, §17 decision memo, §18 deterministic shutdown and §19 telemetry hooks added 2026-08, with §11.2 rules 5–6 and §14.2 rule 6 amended to point at them (contract 1.8); §16 preamble errata + §19 `config_clamped` event 2026-08 (contract 1.9) — the divergence table rewritten from wire-counting conformance tests rather than greps, and a clamped setting must now be reported through §19 rather than applied silently; §20 UMA 2.0 Protection API and ticket grant added 2026-08 (contract 1.10), carrying the one documented exception to §16 retry policy; §12.6's Swift/C/C++ deferral lifted 2026-08 (contract 1.11), porting §12 and §12.7 to those three SDKs and widening §7's C/C++ rows to rule 3's single explicit accessor; §2's `/oauth2/*` error rows and §12.3 rule 3 rewritten to dispatch on the `error` field at any status rather than enumerating 400/401 2026-08 (contract 1.12), so §20.4's 403 `access_denied` reaches the shared mapper and the nine grant-local mappers it forced become removable; §15.1's signature gains a REQUIRED `subject_token_type` and §15.7's prohibition on defaulting it becomes structural rather than documentary 2026-08 (contract 1.13) — a breaking change to all eleven SDKs, taken because an optional parameter with a default is the same guess §15.7 forbids, moved from the SDK's code into its signature; §20.2 rule 6's second reason restated 2026-08 (contract 1.14) — **documentation only, no SDK behaviour changes and no signature moves**. ilpanich/axiam#302 closed: the server now decides the ticket race with a transaction the storage engine arbitrates plus a nonce read back after it commits, so the "measured residual of roughly 1 in 640" the rule cited no longer exists. The rule is unchanged and its first reason (a spent ticket makes the retry useless) was always sufficient on its own; what changes is that the second reason now rests on what an SDK can actually know — it is talking to a server whose storage engine it cannot attest, and the guarantee is conditional on that engine being persistent; **§10.1 rule 9 (sender-constrained tokens) and §21 (FAPI 2.0 profile, mTLS client credentials, RFC 9207 `iss`) added 2026-08 (contract 1.15)** — one new normative rule for every SDK: a token carrying `cnf` is not a bearer token and MUST NOT be accepted as one, and a `cnf` naming a confirmation method the SDK cannot check MUST be refused rather than read as unconstrained. No signature moves and no breaking change to any existing call; the compatibility risk runs the other way, and the required positive regression test (an **unbound** token is still accepted with or without a certificate) is there because the likeliest wrong implementation of rule 9 is one that starts demanding certificates from every caller. Everything else in §21 is informative: mTLS client authentication is optional for the client role, and RFC 9207 `iss` validation is a SHOULD that any SDK talking to more than one issuer should treat as a MUST; **§10.1 rule 9 extended for DPoP and §21.6–§21.9 added 2026-08 (contract 1.16)** — the server gained the second half of two X5.1 rows, `private_key_jwt` client authentication (RFC 7523 §2.2) and DPoP sender-constrained tokens (RFC 9449), and rule 9's four-row table becomes a ten-row one **extended in place** rather than duplicated. The SDK-visible surface is the resource-server side only: a `cnf` may now carry `jkt`, an SDK that cannot verify a DPoP proof MUST refuse such a token rather than accept it as a bearer, and a `cnf` naming **both** methods is a conjunction — "check whichever we can" is forbidden, as is reading an empty `cnf` as unbound. No signature moves and no breaking change to any existing call; the compatibility risk again runs the other way, and the positive regression test is widened to say an **unbound** token must still be accepted with no certificate *and* no proof. Client-side proof generation is a per-language judgement call and §21.7.3 makes declining a supported answer with exactly three obligations (reject, document, test) — §21.9 records each SDK's posture, and the C and C++ SDKs decline §21.7.2 deliberately rather than by omission. §21.8 (`private_key_jwt`) is informative throughout: the client role may keep using `client_secret_post` or mTLS; **§10.3 (sender-constrained tokens over gRPC) added 2026-08 (contract 1.17)** — the X5 work landed REST-first, and gRPC introspection was found to carry no `cnf` at all, which meant an SDK validating through `TokenService` could not satisfy rule 9 detail 4 even in principle: it had no way to tell a bound token from a bearer one and was forced into the exact downgrade rule 9 exists to prevent. `ValidateTokenResponse` and `IntrospectTokenResponse` now carry `cnf` and `token_type`, and introspection additionally gains the RFC 7662 §2.2 fields it had always been missing (`scope`, `client_id`) plus `permissions` (§20 UMA RPT) and `ext_exchange_iss` (X4 provenance). All additive proto fields, so an older client keeps working and simply does not see them — which is the risk, and why §10.3 is normative rather than informative. One wire-level subtlety has its own rule: proto3 cannot distinguish an absent string from an empty one, so an **empty** `CnfClaim` must be refused rather than read as unbound, exactly as rule 9's "names neither" row requires. SDKs must NOT copy the server's own gRPC-side refusal of DPoP-bound tokens — AXIAM's interceptor declines them because a tonic interceptor sees neither `htm` nor `htu`, whereas an SDK guarding a real endpoint knows both; **§22 (Reactors — AMQP extension actors) added 2026-08 (contract 1.18)** — **non-breaking / additive**, and additive in the strongest sense: no existing signature moves, no existing rule changes, and an SDK that ships no reactor runtime is exactly as conformant as it was under 1.17. The chapter documents a server surface that already exists (`crates/axiam-amqp/src/reactor/`, `crates/axiam-core/src/models/reactor.rs`): a Reactor is an external process that subscribes to hook events on the AMQP bus and answers allow/deny/mutate under a signed, timeout-bounded, field-allow-listed protocol — Zitadel-Actions parity without loading third-party code into the security kernel. Two things in it are new obligations rather than new options. The first is that §8's HMAC now runs in **both directions** on one exchange: the server signs the event, the reactor signs the reply with the same tenant subkey, and an unsigned or stale reply is discarded as though the reactor had never answered — with one canonicalization difference that will cost an implementer a day if it is not stated, namely that `hmac_signature` is serialized as `null` inside a reactor body rather than omitted as it is in §8's own two message types. That is why §22.13's vectors ship beside the §8 vectors, in the same fixture directory and under the same master key, tenant and derived subkey: one loader serves both, and the difference is a test rather than a paragraph to remember. The second is the hot-path exclusion (§22.7), written as a **MUST NOT** rather than a note — `authz.check`, `authz.check_batch` and `token.introspect` are not hookable and no SDK may present them as such, because a reactor round-trip is milliseconds and the check path's budget is microseconds; an application needing external input on a decision writes a deny grant, which the engine evaluates at hot-path cost. Swift, C and C++ ship no runtime (§22.11) for the same reason §8 has never listed them among the SDKs that speak AMQP — no vendorable client for those targets — but §22.1–§22.8 binds a hand-rolled integrator on them in full, a split that follows the §12.6 precedent contract 1.11 lifted while cutting at the seam between protocol and convenience rather than across a whole section. One scope note travels with the chapter: the server's lapin transport is not yet merged, so the two AMQP basic properties §22.1 names for reply addressing are the standard RPC convention rather than an implemented one — every signed body, field order, allow-list and validation rule in the chapter is implemented and tested today. Recorded here and not in the Breaking Changes Log above, which is untouched, because nothing breaks; **SDK-Q10 closed 2026-08 (contract 1.19)** — the last deferred contract item, and the one that had been deferred because every closure looked like a break. The gRPC decision's `deny_reason` and the REST decision's `reason` were the same string under two names, so an SDK speaking both transports reconciled them in its own mapper and the two same-named `AccessDecision` types could disagree about their own field list. Closed by **deprecate-and-add**: `CheckAccessResponse` gains `reason` (field 4, explicit presence — absent on an allow, present on every refusal, exactly the REST shape), `deny_reason` is marked `[deprecated = true]` and keeps carrying the identical string until it is **removed at AXIAM 2.0**, and §11.2 rule 9's amendment states the one migration rule: read `reason`, fall back to `deny_reason` only when `reason` is absent on a refusal, expose one reason accessor rather than two. Nothing breaks on the wire today and no signature moves. The same amendment settles the two shapes that went with it — the decision is `allowed` + `reason_code` + `reason` and carries no `resource_type`/`resourceType` (the server has never had one), and gRPC `subject_id` becomes optional the way REST's is, with an **empty** value meaning "the subject in the verified token". That last one is deliberately not proto3 `optional`: `buf breaking` refuses the cardinality change, so empty carries the meaning proto3 cannot express as absence — the same constraint §10.3 already records for an empty `CnfClaim`*
+*Contract version: 1.22 — Phase 15 (sdk-foundation); §11 declarative authorization helpers added 2026-07; §6.1 mTLS client certificates and Kotlin/Swift/C/C++ SDK columns added 2026-07; §1.1 gRPC-only `get_user_info` operation added 2026-07; §12 OIDC/SSO relying-party helpers and the `OAuthProtocolError` taxonomy sub-type added 2026-07; §7 accessor rules, §9 rule 5, and the §12 cross-SDK clarifications from the eight-SDK conformance review added 2026-07; §9 rule 6 single-flight implementation invariants and the extended §9 test requirement added 2026-07; §8b AMQP transport, §10.2 gRPC revocation modes, §12.7 logout helpers, §14 device authorization grant and §15 token exchange added 2026-08; §14.3 rule 4 / §14.6 credential-adoption errata 2026-08 (contract 1.7); §16 retry policy, §17 decision memo, §18 deterministic shutdown and §19 telemetry hooks added 2026-08, with §11.2 rules 5–6 and §14.2 rule 6 amended to point at them (contract 1.8); §16 preamble errata + §19 `config_clamped` event 2026-08 (contract 1.9) — the divergence table rewritten from wire-counting conformance tests rather than greps, and a clamped setting must now be reported through §19 rather than applied silently; §20 UMA 2.0 Protection API and ticket grant added 2026-08 (contract 1.10), carrying the one documented exception to §16 retry policy; §12.6's Swift/C/C++ deferral lifted 2026-08 (contract 1.11), porting §12 and §12.7 to those three SDKs and widening §7's C/C++ rows to rule 3's single explicit accessor; §2's `/oauth2/*` error rows and §12.3 rule 3 rewritten to dispatch on the `error` field at any status rather than enumerating 400/401 2026-08 (contract 1.12), so §20.4's 403 `access_denied` reaches the shared mapper and the nine grant-local mappers it forced become removable; §15.1's signature gains a REQUIRED `subject_token_type` and §15.7's prohibition on defaulting it becomes structural rather than documentary 2026-08 (contract 1.13) — a breaking change to all eleven SDKs, taken because an optional parameter with a default is the same guess §15.7 forbids, moved from the SDK's code into its signature; §20.2 rule 6's second reason restated 2026-08 (contract 1.14) — **documentation only, no SDK behaviour changes and no signature moves**. ilpanich/axiam#302 closed: the server now decides the ticket race with a transaction the storage engine arbitrates plus a nonce read back after it commits, so the "measured residual of roughly 1 in 640" the rule cited no longer exists. The rule is unchanged and its first reason (a spent ticket makes the retry useless) was always sufficient on its own; what changes is that the second reason now rests on what an SDK can actually know — it is talking to a server whose storage engine it cannot attest, and the guarantee is conditional on that engine being persistent; **§10.1 rule 9 (sender-constrained tokens) and §21 (FAPI 2.0 profile, mTLS client credentials, RFC 9207 `iss`) added 2026-08 (contract 1.15)** — one new normative rule for every SDK: a token carrying `cnf` is not a bearer token and MUST NOT be accepted as one, and a `cnf` naming a confirmation method the SDK cannot check MUST be refused rather than read as unconstrained. No signature moves and no breaking change to any existing call; the compatibility risk runs the other way, and the required positive regression test (an **unbound** token is still accepted with or without a certificate) is there because the likeliest wrong implementation of rule 9 is one that starts demanding certificates from every caller. Everything else in §21 is informative: mTLS client authentication is optional for the client role, and RFC 9207 `iss` validation is a SHOULD that any SDK talking to more than one issuer should treat as a MUST; **§10.1 rule 9 extended for DPoP and §21.6–§21.9 added 2026-08 (contract 1.16)** — the server gained the second half of two X5.1 rows, `private_key_jwt` client authentication (RFC 7523 §2.2) and DPoP sender-constrained tokens (RFC 9449), and rule 9's four-row table becomes a ten-row one **extended in place** rather than duplicated. The SDK-visible surface is the resource-server side only: a `cnf` may now carry `jkt`, an SDK that cannot verify a DPoP proof MUST refuse such a token rather than accept it as a bearer, and a `cnf` naming **both** methods is a conjunction — "check whichever we can" is forbidden, as is reading an empty `cnf` as unbound. No signature moves and no breaking change to any existing call; the compatibility risk again runs the other way, and the positive regression test is widened to say an **unbound** token must still be accepted with no certificate *and* no proof. Client-side proof generation is a per-language judgement call and §21.7.3 makes declining a supported answer with exactly three obligations (reject, document, test) — §21.9 records each SDK's posture, and the C and C++ SDKs decline §21.7.2 deliberately rather than by omission. §21.8 (`private_key_jwt`) is informative throughout: the client role may keep using `client_secret_post` or mTLS; **§10.3 (sender-constrained tokens over gRPC) added 2026-08 (contract 1.17)** — the X5 work landed REST-first, and gRPC introspection was found to carry no `cnf` at all, which meant an SDK validating through `TokenService` could not satisfy rule 9 detail 4 even in principle: it had no way to tell a bound token from a bearer one and was forced into the exact downgrade rule 9 exists to prevent. `ValidateTokenResponse` and `IntrospectTokenResponse` now carry `cnf` and `token_type`, and introspection additionally gains the RFC 7662 §2.2 fields it had always been missing (`scope`, `client_id`) plus `permissions` (§20 UMA RPT) and `ext_exchange_iss` (X4 provenance). All additive proto fields, so an older client keeps working and simply does not see them — which is the risk, and why §10.3 is normative rather than informative. One wire-level subtlety has its own rule: proto3 cannot distinguish an absent string from an empty one, so an **empty** `CnfClaim` must be refused rather than read as unbound, exactly as rule 9's "names neither" row requires. SDKs must NOT copy the server's own gRPC-side refusal of DPoP-bound tokens — AXIAM's interceptor declines them because a tonic interceptor sees neither `htm` nor `htu`, whereas an SDK guarding a real endpoint knows both; **§22 (Reactors — AMQP extension actors) added 2026-08 (contract 1.18)** — **non-breaking / additive**, and additive in the strongest sense: no existing signature moves, no existing rule changes, and an SDK that ships no reactor runtime is exactly as conformant as it was under 1.17. The chapter documents a server surface that already exists (`crates/axiam-amqp/src/reactor/`, `crates/axiam-core/src/models/reactor.rs`): a Reactor is an external process that subscribes to hook events on the AMQP bus and answers allow/deny/mutate under a signed, timeout-bounded, field-allow-listed protocol — Zitadel-Actions parity without loading third-party code into the security kernel. Two things in it are new obligations rather than new options. The first is that §8's HMAC now runs in **both directions** on one exchange: the server signs the event, the reactor signs the reply with the same tenant subkey, and an unsigned or stale reply is discarded as though the reactor had never answered — with one canonicalization difference that will cost an implementer a day if it is not stated, namely that `hmac_signature` is serialized as `null` inside a reactor body rather than omitted as it is in §8's own two message types. That is why §22.13's vectors ship beside the §8 vectors, in the same fixture directory and under the same master key, tenant and derived subkey: one loader serves both, and the difference is a test rather than a paragraph to remember. The second is the hot-path exclusion (§22.7), written as a **MUST NOT** rather than a note — `authz.check`, `authz.check_batch` and `token.introspect` are not hookable and no SDK may present them as such, because a reactor round-trip is milliseconds and the check path's budget is microseconds; an application needing external input on a decision writes a deny grant, which the engine evaluates at hot-path cost. Swift, C and C++ ship no runtime (§22.11) for the same reason §8 has never listed them among the SDKs that speak AMQP — no vendorable client for those targets — but §22.1–§22.8 binds a hand-rolled integrator on them in full, a split that follows the §12.6 precedent contract 1.11 lifted while cutting at the seam between protocol and convenience rather than across a whole section. One scope note travels with the chapter: the server's lapin transport is not yet merged, so the two AMQP basic properties §22.1 names for reply addressing are the standard RPC convention rather than an implemented one — every signed body, field order, allow-list and validation rule in the chapter is implemented and tested today. Recorded here and not in the Breaking Changes Log above, which is untouched, because nothing breaks; **SDK-Q10 closed 2026-08 (contract 1.19)** — the last deferred contract item, and the one that had been deferred because every closure looked like a break. The gRPC decision's `deny_reason` and the REST decision's `reason` were the same string under two names, so an SDK speaking both transports reconciled them in its own mapper and the two same-named `AccessDecision` types could disagree about their own field list. Closed by **deprecate-and-add**: `CheckAccessResponse` gains `reason` (field 4, explicit presence — absent on an allow, present on every refusal, exactly the REST shape), `deny_reason` is marked `[deprecated = true]` and keeps carrying the identical string until it is **removed at AXIAM 2.0**, and §11.2 rule 9's amendment states the one migration rule: read `reason`, fall back to `deny_reason` only when `reason` is absent on a refusal, expose one reason accessor rather than two. Nothing breaks on the wire today and no signature moves. The same amendment settles the two shapes that went with it — the decision is `allowed` + `reason_code` + `reason` and carries no `resource_type`/`resourceType` (the server has never had one), and gRPC `subject_id` becomes optional the way REST's is, with an **empty** value meaning "the subject in the verified token". That last one is deliberately not proto3 `optional`: `buf breaking` refuses the cardinality change, so empty carries the meaning proto3 cannot express as absence — the same constraint §10.3 already records for an empty `CnfClaim`; **§15.2 rule 8, §22.8's listen/unreadable-registry paragraphs and §22.9 rule 3 added 2026-08 (contract 1.20)** — the medium-severity half of the F4-bis security review (SEC-096, SEC-099, SEC-100, SEC-101). One of the four is an SDK-visible **behaviour** change and it is the one to read: an exchanged token (and a §20 RPT) is now sender-constrained to whatever the *exchanging client* proved on that request, so `token_type` may be `DPoP` where it was always `Bearer`, the token may carry a `cnf` that §10.1 rule 9 governs, and a client registered for binding that exchanges without presenting its credential now receives `invalid_client` instead of an unbound token. No signature moves, and a client that registered no binding — every client that existed before X5.1 — receives byte-identical responses. The other three are statements of server behaviour an SDK could not have inferred: a `listen` registration can never deny even on the two out-of-chain failure paths, an unreadable registration store applies the *event's* default policy but exempts a tenant with no registrations at all, and a reactor registration is refused with `503` while the server's transport cannot dispatch — with `enabled: false`, `DELETE` and creating-already-disabled deliberately left open as the operator's way out; **§22.1's scope note closed and §22.9 rule 3 widened 2026-08 (contract 1.21)** — **no SDK behaviour changes and no signature moves**. The server's lapin `ReactorTransport` is merged (`crates/axiam-amqp/src/reactor/transport.rs`) and `axiam-server` composes it, so the one part of §22 that was not pinned by a running implementation — the two AMQP basic properties used for reply addressing — now is, exercised against a live broker in `crates/axiam-amqp/tests/reactor_containerized_test.rs`. An SDK that already echoed `reply_to`/`correlation_id` from the delivery, which the scope note told it to do, needs no change. Two things are worth reading anyway. The first is a server-side clarification with a security reason behind it: an `intercept` event goes to the reactor's queue directly rather than through the topic exchange, because the routing key is per `(tenant, event)` and a fan-out would let whichever reactor answered first be consumed as the reply of whichever reactor the priority-ordered chain was waiting on — the exchange and bindings are still declared by the server, and a reactor runtime still consumes its configured queue and still declares nothing. The second is that §22.9 rule 3's `503` now has a second trigger, `mode: "listen"`, for as long as no hook site fans out to listeners: such a registration receives nothing and, being a listener, produces no outcome in which its silence could be noticed, so refusing it is more honest than accepting it. `enabled: false`, `DELETE` and creating-already-disabled stay open, as they already did. A **broker outage is explicitly not** a `503` trigger — the merged transport reports itself dispatchable while disconnected and lets each registration's `failure_policy` decide, per §22.8, because refusing registrations for the duration of a blip would turn a broker problem into an admin-API problem; **§22.14 (declarative handler binding) added 2026-08 (contract 1.22)** — **additive, SHOULD-level, no signature moves and no behaviour change to any existing call.** §22.10's handler is one function from an event to one answer, which is right for the wire and wrong for the code: a reactor registered for three events opens with a dispatch on the event name, and the catch-all arm of that dispatch is almost always written `return allow()`. That line is §22.10 rule 2's defect — synthesizing an answer for a handler that never ran — relocated out of the runtime, where the rule binds, and into user code, where it does not. Every SDK example this project ships had one, which is how the pattern was found. The subsection defines the declarative form each language already uses for §11 (annotations in Java and Kotlin, attributes in C# and PHP, a decorator in Python, an attribute macro in Rust, a `ServeMux`-shaped binding table in Go and a typed record in TypeScript), and pins six rules on it. Five are restatements aimed one layer up — compose rather than replace, refuse an unregistered name at bind time, one handler per event, propagate a handler's own failure unchanged, never filter a patch. The sixth is the reason the subsection exists: an event with no bound handler MUST abstain, letting the registration's `failure_policy` decide exactly as it decides a timeout, and MUST NOT be answered `allow` or `deny`. Rule 2 carries one instruction that reads backwards until you see why: an SDK MUST NOT keep its own list of the three hot-path operations to give them a better error message, because that list would be a constant naming them and §22.13's hot-path assertion forbids exactly that — they are refused as unknown names, like any other name absent from the §22.5 registry. Nothing here is a new conformance claim: an SDK shipping §22 with the binder and one shipping §22 without it both write "conforms to … §22"*
 *Binding since: 2026-06-30*
 *Reference: D-09, D-10 in `.planning/phases/15-sdk-foundation/15-CONTEXT.md`*
