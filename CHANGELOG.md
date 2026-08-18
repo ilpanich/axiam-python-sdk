@@ -162,6 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor `openapi.json` at 1.0.0-alpha27 — the copy was pinned at alpha26 and
+  failing the cross-repo artifact-drift gate
 - **Re-sync vendored `CONTRACT.md`, `openapi.json` and `proto/` to contract 1.19**
   (upstream **R5.8**). The vendored copies had been pinned at the 1.15-era artifacts and
   drifted three contract revisions behind `ilpanich/axiam@main`. All five files are now
