@@ -265,7 +265,13 @@ def derive_x(identity: str, password: str, salt: bytes, kdf: SrpKdf) -> bytes:
                 "this tenant requires argon2id for SRP, which needs the optional "
                 "`argon2-cffi` dependency: pip install axiam-sdk[srp]"
             ) from exc
-        return hash_secret_raw(
+        # Annotated rather than returned directly: `argon2` is an optional extra
+        # that mypy runs without (see pyproject's override), so `hash_secret_raw`
+        # resolves to Any there and --strict refuses to return it as `bytes`.
+        # The annotation narrows it in that case and stays correct in the one
+        # where the extra IS installed and the call is already typed — which a
+        # `cast` would not, as mypy then reports the cast as redundant.
+        raw: bytes = hash_secret_raw(
             secret=secret,
             salt=salt,
             time_cost=kdf.iterations,
@@ -274,6 +280,7 @@ def derive_x(identity: str, password: str, salt: bytes, kdf: SrpKdf) -> bytes:
             hash_len=32,
             type=Type.ID,
         )
+        return raw
 
     if kdf.kdf == "pbkdf2_sha256":
         return hashlib.pbkdf2_hmac("sha256", secret, salt, kdf.iterations, dklen=32)

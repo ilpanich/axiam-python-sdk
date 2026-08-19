@@ -134,6 +134,21 @@ ignore_missing_imports = true
 module = ["grpc", "grpc.*"]
 ignore_missing_imports = true
 
+# argon2-cffi is an OPTIONAL extra (`pip install axiam-sdk[srp]`): it carries a
+# compiled wheel, and a consumer whose tenant uses pbkdf2_sha256 — or who never
+# calls SRP — should not be made to install one. The SDK therefore imports it
+# lazily, inside the argon2id branch, and refuses with a NetworkError naming the
+# extra when it is absent. mypy is run without it installed, so the import is
+# unresolvable there by design rather than by omission.
+[[tool.mypy.overrides]]
+module = ["argon2", "argon2.*"]
+ignore_missing_imports = true
+
+# With argon2 untyped (above), hash_secret_raw's return resolves to Any, and
+# --strict rejects returning it from a function declared to return bytes. The
+# derivation is cast at its one call site rather than relaxed here; this entry
+# only covers the import.
+
 # With grpc untyped (above), grpc.UnaryUnaryClientInterceptor /
 # grpc.aio.UnaryUnaryClientInterceptor resolve to Any; the two concrete
 # interceptor classes must subclass them. Permit subclassing-Any for this
