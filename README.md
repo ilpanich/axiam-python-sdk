@@ -21,7 +21,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21, §22 (including
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21, §22, §23 (including
 §6.1 mTLS and the §10.1 minimum local-verification set).
 
 §12.7, §14, §15 and §22 are named rather than folded into the range because they
@@ -645,6 +645,80 @@ builds a two-route `APIRouter` (login redirect + callback); `axiam_sdk.django.oi
 builds a `(login_view, callback_view)` pair sharing one state store. Both
 delegate entirely to the operations above and to the existing session/cookie
 machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
+
+## Secure Remote Password (§23)
+
+`login_srp` proves the password without sending it. What crosses the wire is
+`A` and a proof, neither of which is useful to anyone who does not already hold
+the account's verifier.
+
+```python
+# Same LoginResult as login(), including the mfa_required case.
+result = client.login_srp("alice", "correct horse battery staple")
+```
+
+Fall back to `login()` when the tenant does not offer SRP. That case is a
+`NetworkError` naming SRP, deliberately **not** an `AuthError`, so it cannot be
+mistaken for a bad password:
+
+```python
+try:
+    result = client.login_srp(user, password)
+except NetworkError as exc:
+    if "does not offer Secure Remote Password" not in str(exc):
+        raise
+    result = client.login(user, password)
+```
+
+### Enrolment
+
+The server cannot compute a verifier — it never sees the plaintext — so one has
+to be sent with any request that sets a password:
+
+```python
+srp = client.srp_enrollment(
+    identity="alice",  # the USERNAME — see below
+    password="new password",
+    group="rfc5054_4096",
+    kdf="argon2id",
+)
+# send `srp` as the request's `srp` field
+```
+
+The tenant's group and KDF come from `GET /api/v1/auth/me` for an authenticated
+caller, or `GET /api/v1/auth/reset/context` for a reset-token holder.
+
+### Installing
+
+Argon2id — AXIAM's default KDF — needs an extra:
+
+```bash
+pip install axiam-sdk[srp]
+```
+
+It is an extra rather than a dependency because it carries a compiled wheel, and
+a tenant on `pbkdf2_sha256` works without it. Without it, a tenant on `argon2id`
+raises `NetworkError` naming the extra rather than silently falling back to
+PBKDF2 — which would derive a different `x` and report "invalid password" for a
+password that is entirely correct.
+
+### Three things that will bite you
+
+**The identity is the username, always.** `x` is derived over
+`username ":" password`. A user may sign in with their email, but only the
+username is inside the KDF — which is why the challenge response carries an
+`identity` field and why `login_srp` uses that rather than what was typed.
+Enrolling against an email produces a verifier no login can satisfy.
+
+**It blocks, and on `AsyncAxiamClient` it blocks the event loop.** The KDF is
+CPU-bound: Argon2id at 19 MiB by default, tens to hundreds of milliseconds. That
+cost is what makes a stolen verifier expensive to attack. On a server handling
+other requests, wrap the call in `asyncio.to_thread`.
+
+**What it protects, and what it does not.** A TLS-terminating proxy, an
+accidentally verbose request log, or a heap dump on the server can no longer
+capture a plaintext password, because the server never has one. It does **not**
+protect against a compromised AXIAM server.
 
 ## Device authorization grant (§14)
 

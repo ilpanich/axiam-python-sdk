@@ -37,6 +37,14 @@ django = ["django"]
 # application still chooses the loop (see docs/performance.md) — so it is an
 # extra rather than a dependency, and it is Linux/macOS only.
 speed = ["uvloop>=0.19; sys_platform != 'win32'"]
+# CONTRACT.md §23 SRP with Argon2id, which is what AXIAM's default policy asks
+# for. An extra rather than a dependency because it carries a compiled wheel,
+# and a consumer whose tenant uses `pbkdf2_sha256` — or who never calls SRP at
+# all — should not be made to install one. Without it, a tenant on argon2id
+# raises NetworkError naming the extra rather than silently falling back to
+# PBKDF2, which would derive a different `x` and report "invalid password" for
+# a password that is entirely correct.
+srp = ["argon2-cffi>=23.1"]
 dev = [
     "grpcio-tools>=1.78,<1.84",
     "mypy",
