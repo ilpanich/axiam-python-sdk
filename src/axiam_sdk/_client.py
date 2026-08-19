@@ -60,6 +60,10 @@ from axiam_sdk._session import _Session
 from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
 
 LOGIN_PATH = "/api/v1/auth/login"
+SRP_CHALLENGE_PATH = "/api/v1/auth/srp/challenge"
+SRP_VERIFY_PATH = "/api/v1/auth/srp/verify"
+#: The group an exchange opens in before the server has named one.
+DEFAULT_SRP_GROUP = "rfc5054_4096"
 MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify"
 REFRESH_PATH = "/api/v1/auth/refresh"
 LOGOUT_PATH = "/api/v1/auth/logout"
@@ -258,6 +262,156 @@ class _AxiamClientBase(_OidcMixin):
             body["org_id"] = self._org_id
         elif self._org_slug:
             body["org_slug"] = self._org_slug
+        return body
+
+    # ------------------------------------------------------------------
+    # SRP-6a (CONTRACT.md §23) — shared between the sync and async clients
+    # ------------------------------------------------------------------
+    #
+    # Everything except the two HTTP sends lives here. Duplicating the protocol
+    # across the two client classes is how they end up disagreeing about which
+    # identity goes into the KDF or whether M2 was checked.
+
+    def _srp_challenge_body(self, username_or_email: str, client_public: str) -> dict[str, Any]:
+        """Build the ``POST /api/v1/auth/srp/challenge`` body.
+
+        Reuses :meth:`_login_body` so tenant/org resolution cannot drift between
+        the two login paths, then drops ``password`` — it has no business on
+        this request, and that is the entire point of the exchange.
+        """
+        body = self._login_body(username_or_email, "")
+        body.pop("password", None)
+        body["client_public"] = client_public
+        return body
+
+    def _srp_begin(self, group_name: str) -> tuple[Any, dict[str, Any]]:
+        """Open an exchange in ``group_name``, returning the session and body."""
+        from ._srp import SrpClientSession, parse_group
+
+        group = parse_group(group_name)
+        session = SrpClientSession.begin(group)
+        return session, {"client_public": session.client_public}
+
+    def _srp_finish(
+        self, session: Any, challenge: dict[str, Any], password: str
+    ) -> tuple[str, str]:
+        """Derive ``x`` and produce ``(M1, expected M2)`` from a challenge."""
+        from ._srp import SrpKdf, derive_x
+
+        kdf = SrpKdf.from_wire(
+            challenge["kdf"],
+            int(challenge["iterations"]),
+            challenge.get("memory_kib"),
+            challenge.get("parallelism"),
+        )
+        try:
+            salt = bytes.fromhex(challenge["salt"])
+        except ValueError as exc:
+            raise NetworkError("SRP: the server's salt is not valid hex") from exc
+
+        # ``challenge["identity"]``, never what the caller typed (§23.3 rule 2):
+        # a user may sign in with a username *or* an email while only one of the
+        # two is bound into ``x``.
+        x = derive_x(challenge["identity"], password, salt, kdf)
+        proofs = session.finish(challenge["identity"], challenge["salt"], challenge["b_pub"], x)
+        return proofs.client_proof, proofs.expected_server_proof
+
+    def _srp_check_server_proof(self, expected: str, response: httpx.Response) -> None:
+        """Verify the server's ``M2`` (§23.3 rule 6).
+
+        A mismatch means the endpoint that answered does not hold this account's
+        verifier, so it is not the server it claims to be. Hard failure: without
+        this the client has proved itself to the server but has not proved the
+        server to itself, which is half the protocol.
+        """
+        from ._srp import verify_server_proof
+
+        try:
+            actual = response.json().get("server_proof")
+        except ValueError:
+            actual = None
+        if not verify_server_proof(expected, actual):
+            raise AuthError("SRP: the server failed to prove it holds this account's verifier")
+
+    def _srp_challenge_error(self, response: httpx.Response) -> Exception:
+        """Map a non-200 challenge response.
+
+        A ``404`` is a property of the tenant ("SRP is off here"), not of the
+        user and not of the credentials — so it is a ``NetworkError`` a caller
+        can fall back on, never an ``AuthError`` that would be shown as "invalid
+        password".
+        """
+        if response.status_code == httpx.codes.NOT_FOUND:
+            return NetworkError(
+                "this tenant does not offer Secure Remote Password "
+                "(srp_mode is disabled); use login() instead"
+            )
+        return error_from_http_status(response.status_code, "SRP challenge failed")
+
+    def srp_available(self) -> bool:
+        """Whether this runtime can perform SRP (§23.1).
+
+        Always ``True`` for Python: ``int`` is arbitrary-precision and
+        ``hashlib`` supplies both hash and PBKDF2. Argon2id additionally needs
+        the ``srp`` extra, which :func:`~axiam_sdk._srp.argon2_available`
+        reports separately — a tenant on ``pbkdf2_sha256`` works without it.
+
+        It exists because §23.1 puts it in the locked method vocabulary for
+        every SDK, and in PHP — which needs ``ext-gmp`` or ``ext-bcmath`` and is
+        guaranteed neither — it genuinely answers ``False``.
+        """
+        return True
+
+    def srp_enrollment(
+        self,
+        identity: str,
+        password: str,
+        group: str = "rfc5054_4096",
+        kdf: str = "argon2id",
+        iterations: int | None = None,
+        memory_kib: int | None = None,
+        parallelism: int | None = None,
+    ) -> dict[str, Any]:
+        """Compute a verifier to send with any request that sets a password.
+
+        The server cannot compute this — it never sees the plaintext — so it has
+        to arrive with the request or not at all.
+
+        ``identity`` MUST be the account's **username**: the canonical identity
+        the challenge endpoint will later hand back. Passing an email produces a
+        verifier no login can ever satisfy.
+
+        ``group`` and ``kdf`` come from the tenant's policy, which
+        ``GET /api/v1/auth/me`` reports for an authenticated caller and
+        ``GET /api/v1/auth/reset/context`` for a reset-token holder.
+        """
+        from ._srp import SrpKdf, compute_verifier, derive_x, generate_salt, parse_group
+
+        parsed_group = parse_group(group)
+        if kdf == "argon2id":
+            resolved = SrpKdf(
+                "argon2id",
+                iterations if iterations is not None else 2,
+                memory_kib if memory_kib is not None else 19456,
+                parallelism if parallelism is not None else 1,
+            )
+        else:
+            resolved = SrpKdf.from_wire(kdf, iterations if iterations is not None else 600_000)
+
+        salt = generate_salt()
+        x = derive_x(identity, password, bytes.fromhex(salt), resolved)
+
+        body: dict[str, Any] = {
+            "group": parsed_group.name,
+            "kdf": resolved.kdf,
+            "iterations": resolved.iterations,
+            "salt": salt,
+            "verifier": compute_verifier(parsed_group, x),
+        }
+        if resolved.memory_kib is not None:
+            body["memory_kib"] = resolved.memory_kib
+        if resolved.parallelism is not None:
+            body["parallelism"] = resolved.parallelism
         return body
 
     def _mfa_verify_body(self, mfa_token: Any, code: str) -> dict[str, str]:
@@ -528,6 +682,74 @@ class AxiamClient(_AxiamClientBase):
         )
         response = self._session._send_sync(request)
         return self._handle_login_response(response)
+
+    def login_srp(self, username_or_email: str, password: str) -> LoginResult:
+        """SRP-6a login (CONTRACT.md §23) — the password never leaves this process.
+
+        Returns the same :class:`LoginResult` as :meth:`login`, including the
+        ``mfa_required`` case, so a caller needs one result handler for both.
+
+        What crosses the wire is ``A`` and a proof, neither of which is useful
+        without the account's verifier — so a TLS-terminating proxy, an
+        accidentally verbose request log, or a heap dump on the server cannot
+        capture a plaintext password, because the server never has one. It does
+        **not** protect against a compromised AXIAM server.
+
+        :raises NetworkError: when the tenant has SRP disabled, or when this SDK
+            cannot perform the group or KDF the server named. Deliberately not
+            ``AuthError``: reporting a client-side capability gap as a
+            credential failure would send a user off to reset a working password.
+        :raises AuthError: for a wrong password, and for a server whose ``M2``
+            does not verify — in which case no session is returned, because an
+            endpoint that cannot prove it holds the verifier is not the server
+            it claims to be.
+
+        This runs the tenant's KDF: Argon2id at 19 MiB by default, tens to
+        hundreds of milliseconds of blocking work. That cost is the point.
+        """
+        self._ensure_open()
+        self._on_credential_change()
+
+        session, challenge = self._srp_exchange_sync(username_or_email, DEFAULT_SRP_GROUP)
+        # The server named a group other than the one ``A`` was computed in, so
+        # the exchange restarts. Rare — the opening guess is AXIAM's own default
+        # — but a tenant on a narrower group must work rather than fail.
+        if challenge["group"] != DEFAULT_SRP_GROUP:
+            session, challenge = self._srp_exchange_sync(username_or_email, challenge["group"])
+
+        client_proof, expected_server_proof = self._srp_finish(session, challenge, password)
+
+        request = self._session.sync_client.build_request(
+            "POST",
+            SRP_VERIFY_PATH,
+            json={"srp_session": challenge["srp_session"], "client_proof": client_proof},
+        )
+        response = self._session._send_sync(request)
+        if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
+            raise error_from_http_status(response.status_code, "SRP verification failed")
+
+        # Checked BEFORE anything from the response is stored: a rogue server
+        # that cannot prove itself must not get the chance to collect an MFA
+        # code either.
+        self._srp_check_server_proof(expected_server_proof, response)
+        return self._handle_login_response(response)
+
+    def _srp_exchange_sync(
+        self, username_or_email: str, group_name: str
+    ) -> tuple[Any, dict[str, Any]]:
+        """Open an SRP exchange in *group_name* and return the session and challenge.
+
+        Split out because the group the server names may differ from the one
+        ``A`` was computed in, in which case the caller runs this a second
+        time rather than continuing in the wrong group.
+        """
+        session, extra = self._srp_begin(group_name)
+        body = self._srp_challenge_body(username_or_email, extra["client_public"])
+        request = self._session.sync_client.build_request("POST", SRP_CHALLENGE_PATH, json=body)
+        response = self._session._send_sync(request)
+        if response.status_code != httpx.codes.OK:
+            raise self._srp_challenge_error(response)
+        return session, response.json()
 
     def verify_mfa(self, mfa_token: Any, code: str) -> LoginResult:
         """``POST /api/v1/auth/mfa/verify`` (CONTRACT.md §1) — completes the

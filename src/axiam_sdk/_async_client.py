@@ -25,9 +25,12 @@ from axiam_sdk._client import (
     ACCESS_COOKIE,
     BATCH_CHECK_PATH,
     CHECK_PATH,
+    DEFAULT_SRP_GROUP,
     LOGIN_PATH,
     LOGOUT_PATH,
     MFA_VERIFY_PATH,
+    SRP_CHALLENGE_PATH,
+    SRP_VERIFY_PATH,
     _AxiamClientBase,
 )
 from axiam_sdk._decision_memo import memo_key
@@ -122,6 +125,60 @@ class AsyncAxiamClient(_AxiamClientBase):
         )
         response = await self._session._send_async(request)
         return self._handle_login_response(response)
+
+    async def login_srp(self, username_or_email: str, password: str) -> LoginResult:
+        """SRP-6a login (CONTRACT.md §23) — the password never leaves this process.
+
+        The async twin of :meth:`AxiamClient.login_srp`; see that method for the
+        full contract. Returns the same :class:`LoginResult` as :meth:`login`,
+        including the ``mfa_required`` case.
+
+        .. warning::
+           The KDF is CPU-bound and **blocks the event loop**: Argon2id at
+           AXIAM's default parameters allocates 19 MiB and takes tens to
+           hundreds of milliseconds. That cost is deliberate — it is what makes
+           a stolen verifier expensive to attack — but on a server handling
+           other requests, run this via :func:`asyncio.to_thread`.
+        """
+        self._ensure_open()
+        self._on_credential_change()
+
+        session, challenge = await self._srp_exchange_async(username_or_email, DEFAULT_SRP_GROUP)
+        if challenge["group"] != DEFAULT_SRP_GROUP:
+            session, challenge = await self._srp_exchange_async(
+                username_or_email, challenge["group"]
+            )
+
+        client_proof, expected_server_proof = self._srp_finish(session, challenge, password)
+
+        request = self._session.async_client.build_request(
+            "POST",
+            SRP_VERIFY_PATH,
+            json={"srp_session": challenge["srp_session"], "client_proof": client_proof},
+        )
+        response = await self._session._send_async(request)
+        if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
+            raise error_from_http_status(response.status_code, "SRP verification failed")
+
+        self._srp_check_server_proof(expected_server_proof, response)
+        return self._handle_login_response(response)
+
+    async def _srp_exchange_async(
+        self, username_or_email: str, group_name: str
+    ) -> tuple[Any, dict[str, Any]]:
+        """Open an SRP exchange in *group_name* and return the session and challenge.
+
+        Split out because the group the server names may differ from the one
+        ``A`` was computed in, in which case the caller runs this a second
+        time rather than continuing in the wrong group.
+        """
+        session, extra = self._srp_begin(group_name)
+        body = self._srp_challenge_body(username_or_email, extra["client_public"])
+        request = self._session.async_client.build_request("POST", SRP_CHALLENGE_PATH, json=body)
+        response = await self._session._send_async(request)
+        if response.status_code != httpx.codes.OK:
+            raise self._srp_challenge_error(response)
+        return session, response.json()
 
     async def verify_mfa(self, mfa_token: Any, code: str) -> LoginResult:
         """``POST /api/v1/auth/mfa/verify`` (CONTRACT.md §1) — completes the
