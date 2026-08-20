@@ -25,12 +25,12 @@ from axiam_sdk._client import (
     ACCESS_COOKIE,
     BATCH_CHECK_PATH,
     CHECK_PATH,
-    DEFAULT_SRP_GROUP,
     LOGIN_PATH,
     LOGOUT_PATH,
     MFA_VERIFY_PATH,
-    SRP_CHALLENGE_PATH,
-    SRP_VERIFY_PATH,
+    OPAQUE_LOGIN_FINISH_PATH,
+    OPAQUE_LOGIN_START_PATH,
+    OPAQUE_REGISTER_START_PATH,
     _AxiamClientBase,
 )
 from axiam_sdk._decision_memo import memo_key
@@ -126,59 +126,74 @@ class AsyncAxiamClient(_AxiamClientBase):
         response = await self._session._send_async(request)
         return self._handle_login_response(response)
 
-    async def login_srp(self, username_or_email: str, password: str) -> LoginResult:
-        """SRP-6a login (CONTRACT.md §23) — the password never leaves this process.
+    async def login_opaque(self, username_or_email: str, password: str) -> LoginResult:
+        """OPAQUE login (CONTRACT.md §23) — the password never leaves this process.
 
-        The async twin of :meth:`AxiamClient.login_srp`; see that method for the
-        full contract. Returns the same :class:`LoginResult` as :meth:`login`,
-        including the ``mfa_required`` case.
+        The async twin of :meth:`AxiamClient.login_opaque`; see that method for
+        the full contract. Returns the same :class:`LoginResult` as
+        :meth:`login`, including the ``mfa_required`` case.
 
-        .. warning::
-           The KDF is CPU-bound and **blocks the event loop**: Argon2id at
-           AXIAM's default parameters allocates 19 MiB and takes tens to
-           hundreds of milliseconds. That cost is deliberate — it is what makes
-           a stolen verifier expensive to attack — but on a server handling
-           other requests, run this via :func:`asyncio.to_thread`.
+        The key-stretching function runs on the event loop thread and blocks it:
+        Argon2id at 19 MiB by default is tens to hundreds of milliseconds. In a
+        server handling other requests concurrently, wrap the call in
+        :func:`asyncio.to_thread`.
         """
+        from ._opaque import start_login
+
         self._ensure_open()
         self._on_credential_change()
 
-        session, challenge = await self._srp_exchange_async(username_or_email, DEFAULT_SRP_GROUP)
-        if challenge["group"] != DEFAULT_SRP_GROUP:
-            session, challenge = await self._srp_exchange_async(
-                username_or_email, challenge["group"]
-            )
-
-        client_proof, expected_server_proof = self._srp_finish(session, challenge, password)
+        exchange = start_login(password)
 
         request = self._session.async_client.build_request(
             "POST",
-            SRP_VERIFY_PATH,
-            json={"srp_session": challenge["srp_session"], "client_proof": client_proof},
+            OPAQUE_LOGIN_START_PATH,
+            json=self._opaque_login_start_body(username_or_email, exchange.ke1),
+        )
+        response = await self._session._send_async(request)
+        if response.status_code != httpx.codes.OK:
+            raise self._opaque_start_error(response, "login/start")
+        started = response.json()
+
+        ke3 = self._opaque_finish_login(exchange, started, password)
+
+        request = self._session.async_client.build_request(
+            "POST",
+            OPAQUE_LOGIN_FINISH_PATH,
+            json={"opaque_session": started["opaque_session"], "ke3": ke3},
         )
         response = await self._session._send_async(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
-            raise error_from_http_status(response.status_code, "SRP verification failed")
-
-        self._srp_check_server_proof(expected_server_proof, response)
+            raise error_from_http_status(response.status_code, "OPAQUE login/finish failed")
         return self._handle_login_response(response)
 
-    async def _srp_exchange_async(
-        self, username_or_email: str, group_name: str
-    ) -> tuple[Any, dict[str, Any]]:
-        """Open an SRP exchange in *group_name* and return the session and challenge.
+    async def opaque_enrollment(self, password: str) -> dict[str, Any]:
+        """Build a registration record for *password*.
 
-        Split out because the group the server names may differ from the one
-        ``A`` was computed in, in which case the caller runs this a second
-        time rather than continuing in the wrong group.
+        The async twin of :meth:`AxiamClient.opaque_enrollment`; see that method
+        for the full contract.
         """
-        session, extra = self._srp_begin(group_name)
-        body = self._srp_challenge_body(username_or_email, extra["client_public"])
-        request = self._session.async_client.build_request("POST", SRP_CHALLENGE_PATH, json=body)
+        from ._opaque import KsfParams, start_registration
+
+        self._ensure_open()
+        exchange = start_registration(password)
+
+        request = self._session.async_client.build_request(
+            "POST",
+            OPAQUE_REGISTER_START_PATH,
+            json=self._opaque_register_start_body(exchange.request),
+        )
         response = await self._session._send_async(request)
         if response.status_code != httpx.codes.OK:
-            raise self._srp_challenge_error(response)
-        return session, response.json()
+            raise self._opaque_start_error(response, "register/start")
+        started = response.json()
+
+        return {
+            "opaque_session": started["opaque_session"],
+            "registration_record": exchange.finish(
+                password, started["registration_response"], KsfParams.from_wire(started)
+            ),
+        }
 
     async def verify_mfa(self, mfa_token: Any, code: str) -> LoginResult:
         """``POST /api/v1/auth/mfa/verify`` (CONTRACT.md §1) — completes the

@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- OPAQUE (RFC 9807) login and enrolment (CONTRACT §23): `login_opaque` and
+  `opaque_enrollment` on both `AxiamClient` and `AsyncAxiamClient`, plus
+  `opaque_available()` for choosing the password path up front.
+- `examples/opaque_login.py`.
+
+### Removed
+
+- **BREAKING** — SRP-6a. `login_srp`, `srp_enrollment`, the `axiam_sdk._srp`
+  module, `srp-test-vectors.json` and the `[srp]` extra (`argon2-cffi`) are all
+  gone. AXIAM's server-side SRP endpoints are removed in the same release, so
+  keeping the client would leave a method that only ever returns 404.
+
+### Changed
+
+- **BREAKING** — the OPAQUE protocol is NOT implemented in this SDK. CONTRACT
+  §23.1 forbids it, so the client half is a `ctypes` binding to
+  `libaxiam_opaque_ffi` — the same implementation the AXIAM server links,
+  published as a per-platform asset on the axiam release page. There is
+  deliberately no `[opaque]` extra: the artifact is not a PyPI distribution,
+  and a name that installed nothing would read as though it installed the
+  thing. Put the library on the loader path or point `AXIAM_OPAQUE_LIBRARY` at
+  it.
+- Failure taxonomy for the OPAQUE path: a tenant with OPAQUE disabled, an
+  absent library, and a key-stretching function this build cannot perform are
+  all `NetworkError` (a caller can fall back, or an operator can act);
+  everything else is `AuthError` and must NOT be retried over `login()`
+  (§23.4 rule 7).
+
 ## [1.0.0-alpha31] - 2026-08-20
 
 ### Changed

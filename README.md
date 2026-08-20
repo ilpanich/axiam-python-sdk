@@ -646,79 +646,118 @@ builds a `(login_view, callback_view)` pair sharing one state store. Both
 delegate entirely to the operations above and to the existing session/cookie
 machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
 
-## Secure Remote Password (§23)
+## OPAQUE (§23)
 
-`login_srp` proves the password without sending it. What crosses the wire is
-`A` and a proof, neither of which is useful to anyone who does not already hold
-the account's verifier.
+`login_opaque` authenticates the password without sending it. What crosses the
+wire is a blinded group element and a MAC, neither useful without the account's
+registration record **and** the tenant's OPRF seed.
 
 ```python
 # Same LoginResult as login(), including the mfa_required case.
-result = client.login_srp("alice", "correct horse battery staple")
+result = client.login_opaque("alice", "correct horse battery staple")
 ```
 
-Fall back to `login()` when the tenant does not offer SRP. That case is a
-`NetworkError` naming SRP, deliberately **not** an `AuthError`, so it cannot be
-mistaken for a bad password:
+Unlike the SRP-6a this replaces, it returns without verifying a server proof
+separately, and nothing is missing: RFC 9807's AKE authenticates the server
+during the handshake, so opening `KE2` **is** the proof that it holds the
+record. The old contract had to mandate an `M2` check in capitals because
+skipping it kept only half the protocol; there is now nothing to skip.
+
+Fall back to `login()` when the tenant does not offer OPAQUE. That case is a
+`NetworkError`, deliberately **not** an `AuthError`, so it cannot be mistaken
+for a bad password:
 
 ```python
 try:
-    result = client.login_srp(user, password)
+    result = client.login_opaque(user, password)
 except NetworkError as exc:
-    if "does not offer Secure Remote Password" not in str(exc):
-        raise
+    if "opaque_mode is disabled" not in str(exc):
+        raise  # a KSF this build cannot perform — not a fallback case
     result = client.login(user, password)
 ```
 
+`AuthError` from `login_opaque` is the whole of the authentication check, and
+covers both halves of the mutual authentication: a wrong password, an account
+that does not exist, and a server that does not hold the record are
+indistinguishable by design. **Do not retry over `login()`** — that hands the
+plaintext to an endpoint that just failed to prove it holds the record (§23.4
+rule 7).
+
 ### Enrolment
 
-The server cannot compute a verifier — it never sees the plaintext — so one has
-to be sent with any request that sets a password:
+The server cannot build a registration record — it never sees the plaintext —
+so one has to be sent with any request that sets a password:
 
 ```python
-srp = client.srp_enrollment(
-    identity="alice",  # the USERNAME — see below
-    password="new password",
-    group="rfc5054_4096",
-    kdf="argon2id",
-)
-# send `srp` as the request's `srp` field
+enrollment = client.opaque_enrollment("new password")
+# send enrollment["registration_record"] and enrollment["opaque_session"]
+# as the request's `opaque` object
 ```
 
-The tenant's group and KDF come from `GET /api/v1/auth/me` for an authenticated
-caller, or `GET /api/v1/auth/reset/context` for a reset-token holder.
+It is `async`/one round trip because OPAQUE's envelope is sealed under the
+server's oblivious PRF: there is no offline computation that produces a valid
+record. Note the absence of an `identity` argument. The SRP version required
+the account's canonical username, and passing an email produced a verifier no
+login could ever satisfy; a record binds to a credential identifier the server
+chooses, so there is nothing here to get wrong — and a later rename cannot
+invalidate a credential.
+
+There is also no `group` or `kdf` argument. The key-stretching function comes
+from the `*/start` response, every time: a credential enrolled under one cost
+keeps working after a tenant raises its policy, so a client that used local
+defaults would derive a different randomized password and fail against a good
+record.
 
 ### Installing
 
-Argon2id — AXIAM's default KDF — needs an extra:
+The protocol itself is **not** in this SDK. CONTRACT.md §23.1 forbids an SDK
+from implementing OPAQUE — it needs an oblivious PRF, `hash_to_curve`,
+`expand_message_xmd`, an envelope construction and a three-message AKE, and
+eleven independent implementations of that is eleven chances to be subtly and
+silently wrong. What ships here is a `ctypes` binding to
+`libaxiam_opaque_ffi`, the same implementation the AXIAM server links.
+
+That library is a Rust `cdylib` published as a per-platform asset on the
+[axiam release page](https://github.com/ilpanich/axiam/releases), not a PyPI
+distribution — so there is no `axiam-sdk[opaque]` extra, and a name that
+installed nothing while reading as though it installed the thing would be worse
+than its absence. Put the file on the loader path, or point an environment
+variable at it:
 
 ```bash
-pip install axiam-sdk[srp]
+export AXIAM_OPAQUE_LIBRARY=/opt/axiam/libaxiam_opaque_ffi.so
 ```
 
-It is an extra rather than a dependency because it carries a compiled wheel, and
-a tenant on `pbkdf2_sha256` works without it. Without it, a tenant on `argon2id`
-raises `NetworkError` naming the extra rather than silently falling back to
-PBKDF2 — which would derive a different `x` and report "invalid password" for a
-password that is entirely correct.
+Ask before you need it:
 
-### Three things that will bite you
+```python
+if client.opaque_available():
+    result = client.login_opaque(user, password)
+else:
+    result = client.login(user, password)
+```
 
-**The identity is the username, always.** `x` is derived over
-`username ":" password`. A user may sign in with their email, but only the
-username is inside the KDF — which is why the challenge response carries an
-`identity` field and why `login_srp` uses that rather than what was typed.
-Enrolling against an email produces a verifier no login can satisfy.
+It reports rather than raising, so an application can choose the password path
+up front instead of discovering the gap mid-exchange. When it is absent,
+`login_opaque` raises a `NetworkError` naming the artifact and the environment
+variable — never something that looks like a wrong password.
 
-**It blocks, and on `AsyncAxiamClient` it blocks the event loop.** The KDF is
+### Two things that will bite you
+
+**It blocks, and on `AsyncAxiamClient` it blocks the event loop.** The KSF is
 CPU-bound: Argon2id at 19 MiB by default, tens to hundreds of milliseconds. That
-cost is what makes a stolen verifier expensive to attack. On a server handling
-other requests, wrap the call in `asyncio.to_thread`.
+cost is what makes a stolen record expensive to attack even by someone holding
+the OPRF seed. On a server handling other requests, wrap the call in
+`asyncio.to_thread`.
 
 **What it protects, and what it does not.** A TLS-terminating proxy, an
-accidentally verbose request log, or a heap dump on the server can no longer
-capture a plaintext password, because the server never has one. It does **not**
+accidentally verbose request log, or a heap dump on the server cannot capture a
+plaintext password, because the server never has one — and a stolen record
+database is not offline-crackable on its own without the tenant's OPRF seed,
+which is the pre-computation resistance SRP could not offer. It does **not**
 protect against a compromised AXIAM server.
+
+See [`examples/opaque_login.py`](./examples/opaque_login.py).
 
 ## Device authorization grant (§14)
 
