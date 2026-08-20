@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from pydantic import SecretStr
@@ -59,11 +59,16 @@ from axiam_sdk._retry import retry_sync
 from axiam_sdk._session import _Session
 from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Imported for types only. At runtime `_opaque` is imported inside the two
+    # methods that use it, so an installation without `libaxiam_opaque_ffi`
+    # neither pays for the ctypes machinery nor fails at import.
+    from axiam_sdk._opaque import LoginExchange
+
 LOGIN_PATH = "/api/v1/auth/login"
-SRP_CHALLENGE_PATH = "/api/v1/auth/srp/challenge"
-SRP_VERIFY_PATH = "/api/v1/auth/srp/verify"
-#: The group an exchange opens in before the server has named one.
-DEFAULT_SRP_GROUP = "rfc5054_4096"
+OPAQUE_REGISTER_START_PATH = "/api/v1/auth/opaque/register/start"
+OPAQUE_LOGIN_START_PATH = "/api/v1/auth/opaque/login/start"
+OPAQUE_LOGIN_FINISH_PATH = "/api/v1/auth/opaque/login/finish"
 MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify"
 REFRESH_PATH = "/api/v1/auth/refresh"
 LOGOUT_PATH = "/api/v1/auth/logout"
@@ -265,15 +270,15 @@ class _AxiamClientBase(_OidcMixin):
         return body
 
     # ------------------------------------------------------------------
-    # SRP-6a (CONTRACT.md §23) — shared between the sync and async clients
+    # OPAQUE, RFC 9807 (CONTRACT.md §23) — shared between the sync and async clients
     # ------------------------------------------------------------------
     #
     # Everything except the two HTTP sends lives here. Duplicating the protocol
     # across the two client classes is how they end up disagreeing about which
     # identity goes into the KDF or whether M2 was checked.
 
-    def _srp_challenge_body(self, username_or_email: str, client_public: str) -> dict[str, Any]:
-        """Build the ``POST /api/v1/auth/srp/challenge`` body.
+    def _opaque_login_start_body(self, username_or_email: str, ke1: str) -> dict[str, Any]:
+        """Build the ``POST /api/v1/auth/opaque/login/start`` body.
 
         Reuses :meth:`_login_body` so tenant/org resolution cannot drift between
         the two login paths, then drops ``password`` — it has no business on
@@ -281,138 +286,88 @@ class _AxiamClientBase(_OidcMixin):
         """
         body = self._login_body(username_or_email, "")
         body.pop("password", None)
-        body["client_public"] = client_public
+        body["ke1"] = ke1
         return body
 
-    def _srp_begin(self, group_name: str) -> tuple[Any, dict[str, Any]]:
-        """Open an exchange in ``group_name``, returning the session and body."""
-        from ._srp import SrpClientSession, parse_group
+    def _opaque_register_start_body(self, registration_request: str) -> dict[str, Any]:
+        """Build the ``POST /api/v1/auth/opaque/register/start`` body.
 
-        group = parse_group(group_name)
-        session = SrpClientSession.begin(group)
-        return session, {"client_public": session.client_public}
-
-    def _srp_finish(
-        self, session: Any, challenge: dict[str, Any], password: str
-    ) -> tuple[str, str]:
-        """Derive ``x`` and produce ``(M1, expected M2)`` from a challenge."""
-        from ._srp import SrpKdf, derive_x
-
-        kdf = SrpKdf.from_wire(
-            challenge["kdf"],
-            int(challenge["iterations"]),
-            challenge.get("memory_kib"),
-            challenge.get("parallelism"),
-        )
-        try:
-            salt = bytes.fromhex(challenge["salt"])
-        except ValueError as exc:
-            raise NetworkError("SRP: the server's salt is not valid hex") from exc
-
-        # ``challenge["identity"]``, never what the caller typed (§23.3 rule 2):
-        # a user may sign in with a username *or* an email while only one of the
-        # two is bound into ``x``.
-        x = derive_x(challenge["identity"], password, salt, kdf)
-        proofs = session.finish(challenge["identity"], challenge["salt"], challenge["b_pub"], x)
-        return proofs.client_proof, proofs.expected_server_proof
-
-    def _srp_check_server_proof(self, expected: str, response: httpx.Response) -> None:
-        """Verify the server's ``M2`` (§23.3 rule 6).
-
-        A mismatch means the endpoint that answered does not hold this account's
-        verifier, so it is not the server it claims to be. Hard failure: without
-        this the client has proved itself to the server but has not proved the
-        server to itself, which is half the protocol.
+        Same workspace resolution, with both the password *and* the username
+        dropped: enrolment names no account. The record binds to a credential
+        identifier the server chooses, which is why the SRP verifier's
+        ``identity`` argument has no successor here — and why a later rename
+        cannot invalidate a credential.
         """
-        from ._srp import verify_server_proof
+        body = self._login_body("", "")
+        body.pop("password", None)
+        body.pop("username_or_email", None)
+        body["registration_request"] = registration_request
+        return body
 
-        try:
-            actual = response.json().get("server_proof")
-        except ValueError:
-            actual = None
-        if not verify_server_proof(expected, actual):
-            raise AuthError("SRP: the server failed to prove it holds this account's verifier")
+    def _opaque_start_error(self, response: httpx.Response, what: str) -> Exception:
+        """Map a non-200 from either ``*/start`` endpoint.
 
-    def _srp_challenge_error(self, response: httpx.Response) -> Exception:
-        """Map a non-200 challenge response.
-
-        A ``404`` is a property of the tenant ("SRP is off here"), not of the
+        A ``404`` is a property of the tenant ("OPAQUE is off here"), not of the
         user and not of the credentials — so it is a ``NetworkError`` a caller
         can fall back on, never an ``AuthError`` that would be shown as "invalid
         password".
         """
         if response.status_code == httpx.codes.NOT_FOUND:
             return NetworkError(
-                "this tenant does not offer Secure Remote Password "
-                "(srp_mode is disabled); use login() instead"
+                "this tenant does not offer OPAQUE (opaque_mode is disabled); use login() instead"
             )
-        return error_from_http_status(response.status_code, "SRP challenge failed")
+        return error_from_http_status(response.status_code, f"OPAQUE {what} failed")
 
-    def srp_available(self) -> bool:
-        """Whether this runtime can perform SRP (§23.1).
+    def _opaque_finish_login(
+        self, exchange: LoginExchange, started: dict[str, Any], password: str
+    ) -> str:
+        """Open the envelope and produce ``KE3``, or fail the login.
 
-        Always ``True`` for Python: ``int`` is arbitrary-precision and
-        ``hashlib`` supplies both hash and PBKDF2. Argon2id additionally needs
-        the ``srp`` extra, which :func:`~axiam_sdk._srp.argon2_available`
-        reports separately — a tenant on ``pbkdf2_sha256`` works without it.
+        Shared by the sync and async clients so the *meaning* of a failure
+        cannot drift between them, and it turns on which of two exceptions the
+        exchange raises:
 
-        It exists because §23.1 puts it in the locked method vocabulary for
-        every SDK, and in PHP — which needs ``ext-gmp`` or ``ext-bcmath`` and is
-        guaranteed neither — it genuinely answers ``False``.
+        * ``NetworkError`` — the KSF the server named is one this build cannot
+          perform, or a cost is missing or out of range. A configuration
+          problem, re-raised unchanged; flattening it into an authentication
+          failure would report it to the user as a wrong password and send an
+          operator looking in the wrong place.
+        * ``AuthError`` — the envelope did not open, or ``KE2``'s MAC did not
+          verify. A wrong password, an account that does not exist, and a server
+          that does not hold the record are indistinguishable by design.
+
+        Either way nothing further may be sent (§23.4 rule 7), which is why this
+        raises rather than returning a sentinel the caller could ignore. A
+        ``KeyError`` from a ``*/start`` response missing ``ke2`` is a malformed
+        response rather than a credential failure, so it becomes a
+        ``NetworkError``.
         """
-        return True
+        from ._opaque import KsfParams
 
-    def srp_enrollment(
-        self,
-        identity: str,
-        password: str,
-        group: str = "rfc5054_4096",
-        kdf: str = "argon2id",
-        iterations: int | None = None,
-        memory_kib: int | None = None,
-        parallelism: int | None = None,
-    ) -> dict[str, Any]:
-        """Compute a verifier to send with any request that sets a password.
+        try:
+            ke2 = started["ke2"]
+        except KeyError as exc:
+            raise NetworkError("OPAQUE login/start returned no `ke2`") from exc
+        try:
+            return exchange.finish(password, ke2, KsfParams.from_wire(started))
+        except (NetworkError, AuthError):
+            raise
+        except Exception as exc:
+            raise AuthError("invalid credentials") from exc
 
-        The server cannot compute this — it never sees the plaintext — so it has
-        to arrive with the request or not at all.
+    def opaque_available(self) -> bool:
+        """Whether this installation can perform OPAQUE (§23.2).
 
-        ``identity`` MUST be the account's **username**: the canonical identity
-        the challenge endpoint will later hand back. Passing an email produces a
-        verifier no login can ever satisfy.
-
-        ``group`` and ``kdf`` come from the tenant's policy, which
-        ``GET /api/v1/auth/me`` reports for an authenticated caller and
-        ``GET /api/v1/auth/reset/context`` for a reset-token holder.
+        Genuinely able to answer ``False``: the protocol comes from the shared
+        ``libaxiam_opaque_ffi``, a per-platform release asset rather than a
+        PyPI package, and a consumer whose tenant does not use OPAQUE should not
+        be made to carry a compiled artifact. Reports rather than raising, so an
+        application can choose the password path before attempting a login
+        instead of discovering the gap mid-exchange.
         """
-        from ._srp import SrpKdf, compute_verifier, derive_x, generate_salt, parse_group
+        from ._opaque import opaque_available
 
-        parsed_group = parse_group(group)
-        if kdf == "argon2id":
-            resolved = SrpKdf(
-                "argon2id",
-                iterations if iterations is not None else 2,
-                memory_kib if memory_kib is not None else 19456,
-                parallelism if parallelism is not None else 1,
-            )
-        else:
-            resolved = SrpKdf.from_wire(kdf, iterations if iterations is not None else 600_000)
-
-        salt = generate_salt()
-        x = derive_x(identity, password, bytes.fromhex(salt), resolved)
-
-        body: dict[str, Any] = {
-            "group": parsed_group.name,
-            "kdf": resolved.kdf,
-            "iterations": resolved.iterations,
-            "salt": salt,
-            "verifier": compute_verifier(parsed_group, x),
-        }
-        if resolved.memory_kib is not None:
-            body["memory_kib"] = resolved.memory_kib
-        if resolved.parallelism is not None:
-            body["parallelism"] = resolved.parallelism
-        return body
+        return opaque_available()
 
     def _mfa_verify_body(self, mfa_token: Any, code: str) -> dict[str, str]:
         """Build the ``POST /api/v1/auth/mfa/verify`` request body from the
@@ -683,73 +638,118 @@ class AxiamClient(_AxiamClientBase):
         response = self._session._send_sync(request)
         return self._handle_login_response(response)
 
-    def login_srp(self, username_or_email: str, password: str) -> LoginResult:
-        """SRP-6a login (CONTRACT.md §23) — the password never leaves this process.
+    def login_opaque(self, username_or_email: str, password: str) -> LoginResult:
+        """OPAQUE login (CONTRACT.md §23) — the password never leaves this process.
 
         Returns the same :class:`LoginResult` as :meth:`login`, including the
         ``mfa_required`` case, so a caller needs one result handler for both.
 
-        What crosses the wire is ``A`` and a proof, neither of which is useful
-        without the account's verifier — so a TLS-terminating proxy, an
-        accidentally verbose request log, or a heap dump on the server cannot
-        capture a plaintext password, because the server never has one. It does
-        **not** protect against a compromised AXIAM server.
+        What crosses the wire is a blinded group element and a MAC, neither
+        useful without the account's registration record **and** the tenant's
+        OPRF seed — so a TLS-terminating proxy, an accidentally verbose request
+        log, or a heap dump on the server cannot capture a plaintext password,
+        because the server never has one. It also means a stolen record database
+        is not offline-crackable on its own, which is the property SRP could not
+        offer. It does **not** protect against a compromised AXIAM server.
 
-        :raises NetworkError: when the tenant has SRP disabled, or when this SDK
-            cannot perform the group or KDF the server named. Deliberately not
-            ``AuthError``: reporting a client-side capability gap as a
-            credential failure would send a user off to reset a working password.
-        :raises AuthError: for a wrong password, and for a server whose ``M2``
-            does not verify — in which case no session is returned, because an
-            endpoint that cannot prove it holds the verifier is not the server
-            it claims to be.
+        Unlike its SRP predecessor this returns without verifying a server
+        proof, and there is nothing missing: RFC 9807's AKE authenticates the
+        server during the handshake, so opening ``KE2`` *is* the proof that it
+        holds the record. §23.3 rule 6 had to mandate an ``M2`` check in
+        capitals because skipping it kept only half the protocol; there is now
+        nothing to skip.
 
-        This runs the tenant's KDF: Argon2id at 19 MiB by default, tens to
-        hundreds of milliseconds of blocking work. That cost is the point.
+        :raises NetworkError: when the tenant has OPAQUE disabled, when the
+            shared library is not installed, or when the server names a KSF this
+            SDK cannot perform. Deliberately not ``AuthError``: reporting a
+            configuration gap as a credential failure would send a user off to
+            reset a working password, and would stop a caller falling back to
+            :meth:`login`.
+        :raises AuthError: for a wrong password, an account that does not exist,
+            and a server that does not hold the record — indistinguishable by
+            design. **Nothing is sent to ``login/finish`` in that case** (§23.4
+            rule 7), and a caller must not retry over :meth:`login`: that would
+            hand the plaintext to a server that just failed to prove itself.
+
+        This runs the tenant's key-stretching function: Argon2id at 19 MiB by
+        default, tens to hundreds of milliseconds of blocking work. That cost is
+        the point — it is what makes a stolen record expensive to attack even by
+        someone holding the OPRF seed.
         """
+        from ._opaque import start_login
+
         self._ensure_open()
         self._on_credential_change()
 
-        session, challenge = self._srp_exchange_sync(username_or_email, DEFAULT_SRP_GROUP)
-        # The server named a group other than the one ``A`` was computed in, so
-        # the exchange restarts. Rare — the opening guess is AXIAM's own default
-        # — but a tenant on a narrower group must work rather than fail.
-        if challenge["group"] != DEFAULT_SRP_GROUP:
-            session, challenge = self._srp_exchange_sync(username_or_email, challenge["group"])
+        exchange = start_login(password)
 
-        client_proof, expected_server_proof = self._srp_finish(session, challenge, password)
+        # One round trip, always. SRP had to guess a group before the server
+        # named one and restart the exchange if it guessed wrong; ``KE1`` does
+        # not depend on the KSF.
+        request = self._session.sync_client.build_request(
+            "POST",
+            OPAQUE_LOGIN_START_PATH,
+            json=self._opaque_login_start_body(username_or_email, exchange.ke1),
+        )
+        response = self._session._send_sync(request)
+        if response.status_code != httpx.codes.OK:
+            raise self._opaque_start_error(response, "login/start")
+        started = response.json()
+
+        ke3 = self._opaque_finish_login(exchange, started, password)
 
         request = self._session.sync_client.build_request(
             "POST",
-            SRP_VERIFY_PATH,
-            json={"srp_session": challenge["srp_session"], "client_proof": client_proof},
+            OPAQUE_LOGIN_FINISH_PATH,
+            json={"opaque_session": started["opaque_session"], "ke3": ke3},
         )
         response = self._session._send_sync(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
-            raise error_from_http_status(response.status_code, "SRP verification failed")
-
-        # Checked BEFORE anything from the response is stored: a rogue server
-        # that cannot prove itself must not get the chance to collect an MFA
-        # code either.
-        self._srp_check_server_proof(expected_server_proof, response)
+            raise error_from_http_status(response.status_code, "OPAQUE login/finish failed")
         return self._handle_login_response(response)
 
-    def _srp_exchange_sync(
-        self, username_or_email: str, group_name: str
-    ) -> tuple[Any, dict[str, Any]]:
-        """Open an SRP exchange in *group_name* and return the session and challenge.
+    def opaque_enrollment(self, password: str) -> dict[str, Any]:
+        """Build a registration record to send with any request that sets a
+        password (user creation, change-password, reset completion).
 
-        Split out because the group the server names may differ from the one
-        ``A`` was computed in, in which case the caller runs this a second
-        time rather than continuing in the wrong group.
+        The server cannot build one — it never sees the plaintext — so it has to
+        arrive with the request or not at all.
+
+        Performs a ``register/start`` round trip, which the SRP verifier this
+        replaces did not need: OPAQUE's envelope is sealed under the server's
+        oblivious PRF, so there is no offline computation that produces a valid
+        record.
+
+        Note the absence of an ``identity`` argument. The SRP version required
+        the account's canonical username, and passing an email produced a
+        verifier no login could ever satisfy. A record binds to a credential
+        identifier the server chooses, so there is nothing here to get wrong.
+
+        :raises NetworkError: when the tenant has OPAQUE disabled, when the
+            shared library is not installed, or when the server names a KSF this
+            SDK cannot perform.
         """
-        session, extra = self._srp_begin(group_name)
-        body = self._srp_challenge_body(username_or_email, extra["client_public"])
-        request = self._session.sync_client.build_request("POST", SRP_CHALLENGE_PATH, json=body)
+        from ._opaque import KsfParams, start_registration
+
+        self._ensure_open()
+        exchange = start_registration(password)
+
+        request = self._session.sync_client.build_request(
+            "POST",
+            OPAQUE_REGISTER_START_PATH,
+            json=self._opaque_register_start_body(exchange.request),
+        )
         response = self._session._send_sync(request)
         if response.status_code != httpx.codes.OK:
-            raise self._srp_challenge_error(response)
-        return session, response.json()
+            raise self._opaque_start_error(response, "register/start")
+        started = response.json()
+
+        return {
+            "opaque_session": started["opaque_session"],
+            "registration_record": exchange.finish(
+                password, started["registration_response"], KsfParams.from_wire(started)
+            ),
+        }
 
     def verify_mfa(self, mfa_token: Any, code: str) -> LoginResult:
         """``POST /api/v1/auth/mfa/verify`` (CONTRACT.md §1) — completes the

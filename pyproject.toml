@@ -37,14 +37,17 @@ django = ["django"]
 # application still chooses the loop (see docs/performance.md) — so it is an
 # extra rather than a dependency, and it is Linux/macOS only.
 speed = ["uvloop>=0.19; sys_platform != 'win32'"]
-# CONTRACT.md §23 SRP with Argon2id, which is what AXIAM's default policy asks
-# for. An extra rather than a dependency because it carries a compiled wheel,
-# and a consumer whose tenant uses `pbkdf2_sha256` — or who never calls SRP at
-# all — should not be made to install one. Without it, a tenant on argon2id
-# raises NetworkError naming the extra rather than silently falling back to
-# PBKDF2, which would derive a different `x` and report "invalid password" for
-# a password that is entirely correct.
-srp = ["argon2-cffi>=23.1"]
+# CONTRACT.md §23 (OPAQUE, RFC 9807) has NO extra here, deliberately. The
+# client half is `libaxiam_opaque_ffi`, a Rust cdylib published as a per-platform
+# GitHub release asset of ilpanich/axiam — not a PyPI distribution — so there is
+# nothing an extra could resolve. `pip install axiam-sdk[opaque]` would be a
+# name that installs nothing while reading as though it installed the thing.
+# Availability is reported by `AxiamClient.opaque_available()`, and the absent
+# case raises NetworkError naming the artifact and AXIAM_OPAQUE_LIBRARY.
+#
+# The `srp` extra (argon2-cffi) that stood here was removed with SRP itself:
+# `_opaque.py` contains no cryptography, so the SDK derives nothing and needs no
+# KSF of its own.
 dev = [
     "grpcio-tools>=1.78,<1.84",
     "mypy",
@@ -133,21 +136,6 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["grpc", "grpc.*"]
 ignore_missing_imports = true
-
-# argon2-cffi is an OPTIONAL extra (`pip install axiam-sdk[srp]`): it carries a
-# compiled wheel, and a consumer whose tenant uses pbkdf2_sha256 — or who never
-# calls SRP — should not be made to install one. The SDK therefore imports it
-# lazily, inside the argon2id branch, and refuses with a NetworkError naming the
-# extra when it is absent. mypy is run without it installed, so the import is
-# unresolvable there by design rather than by omission.
-[[tool.mypy.overrides]]
-module = ["argon2", "argon2.*"]
-ignore_missing_imports = true
-
-# With argon2 untyped (above), hash_secret_raw's return resolves to Any, and
-# --strict rejects returning it from a function declared to return bytes. The
-# derivation is cast at its one call site rather than relaxed here; this entry
-# only covers the import.
 
 # With grpc untyped (above), grpc.UnaryUnaryClientInterceptor /
 # grpc.aio.UnaryUnaryClientInterceptor resolve to Any; the two concrete
