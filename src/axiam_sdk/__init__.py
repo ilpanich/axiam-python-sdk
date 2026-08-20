@@ -54,7 +54,7 @@ from axiam_sdk._oidc import (
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 
-__version__ = "1.0.0a30"
+__version__ = "1.0.0a31"
 
 from axiam_sdk._decision_memo import DecisionMemo
 from axiam_sdk._telemetry import (
