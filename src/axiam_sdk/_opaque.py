@@ -368,9 +368,16 @@ class RegistrationExchange(_Exchange):
 
     def finish(self, password: str, registration_response: str, ksf: KsfParams) -> str:
         """Seal the envelope, returning the hex ``RegistrationRecord``."""
-        handle = self._consume()
+        # The key-stretching handle is built BEFORE the state is spent, and the
+        # order is load-bearing. ``_build`` refuses an unrecognised function or
+        # an out-of-range cost, and if the state had already been taken out of
+        # its slot by then it could never be freed -- a leaked Rust allocation
+        # per refused attempt, which is once per login against a misconfigured
+        # tenant. Built first, a refusal leaves the exchange intact: ``__del__``
+        # still releases it, and a caller who fixes the parameters can retry.
         ksf_handle = ksf._build(self._lib)
         try:
+            handle = self._consume()
             record = self._lib.axiam_opaque_registration_finish(
                 handle,
                 password.encode("utf-8"),
@@ -410,9 +417,16 @@ class LoginExchange(_Exchange):
         cannot perform is a configuration problem, and reporting it as "invalid
         password" would send an operator looking in the wrong place.
         """
-        handle = self._consume()
+        # The key-stretching handle is built BEFORE the state is spent, and the
+        # order is load-bearing. ``_build`` refuses an unrecognised function or
+        # an out-of-range cost, and if the state had already been taken out of
+        # its slot by then it could never be freed -- a leaked Rust allocation
+        # per refused attempt, which is once per login against a misconfigured
+        # tenant. Built first, a refusal leaves the exchange intact: ``__del__``
+        # still releases it, and a caller who fixes the parameters can retry.
         ksf_handle = ksf._build(self._lib)
         try:
+            handle = self._consume()
             ke3 = self._lib.axiam_opaque_login_finish(
                 handle,
                 password.encode("utf-8"),

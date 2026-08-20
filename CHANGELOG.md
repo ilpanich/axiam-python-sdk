@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- OPAQUE: a refused key-stretching function no longer strands the exchange's
+  native state handle. `finish()` spent the handle before building the KSF, so
+  an unrecognised function or an out-of-range cost left it out of its one-shot
+  slot and unreachable by `__del__` — a leaked Rust allocation once per login
+  attempt against a misconfigured tenant. The KSF is now built first, so a
+  refusal leaves the exchange intact: it is released normally, and a caller who
+  fixes the parameters can retry.
+
+## [Unreleased]
+
 ### Added
 
 - OPAQUE (RFC 9807) login and enrolment (CONTRACT §23): `login_opaque` and
