@@ -16,6 +16,7 @@ be installed — and would be testing ``opaque-ke``, not this module.
 from __future__ import annotations
 
 import ctypes
+import gc
 import secrets
 from collections.abc import Iterator
 from typing import Any
@@ -293,16 +294,39 @@ def test_registration_finish_failure_still_consumed_the_handle(lib: FakeOpaqueLi
     assert lib.ksf_alive == 0
 
 
-def test_a_refused_ksf_does_not_strand_the_state_handle(lib: FakeOpaqueLibrary) -> None:
+def test_a_refused_ksf_leaves_the_exchange_intact(lib: FakeOpaqueLibrary) -> None:
+    # The key-stretching handle is built before the state is spent, so a refusal
+    # is not a spent exchange. Built the other way round the state would be out
+    # of its one-shot slot and unreachable by __del__ — a leaked Rust allocation
+    # per refused attempt, which is once per login against a misconfigured
+    # tenant.
     exchange = _opaque.start_registration(PASSWORD)
     with pytest.raises(NetworkError, match="bcrypt"):
         exchange.finish(
             PASSWORD, REGISTRATION_RESPONSE, _opaque.KsfParams.from_wire({"ksf": "bcrypt"})
         )
-    # The handle was taken before the ksf was built, so it is spent. Retrying
-    # must fail loudly rather than pass a dangling pointer across the ABI.
-    with pytest.raises(NetworkError, match="already been completed"):
-        exchange.finish(PASSWORD, REGISTRATION_RESPONSE, _opaque.KsfParams.from_wire(ARGON2ID))
+
+    assert lib.states_alive == 1, "the state must still be reachable"
+    assert lib.ksf_alive == 0, "a refused ksf allocates nothing to leak"
+
+    # And a caller who fixes the parameters can simply carry on.
+    record = exchange.finish(PASSWORD, REGISTRATION_RESPONSE, _opaque.KsfParams.from_wire(ARGON2ID))
+    assert bytes.fromhex(record).startswith(b"record:")
+    assert lib.states_alive == 0
+
+
+def test_an_out_of_range_cost_also_leaves_the_exchange_intact(lib: FakeOpaqueLibrary) -> None:
+    exchange = _opaque.start_login(PASSWORD)
+    with pytest.raises(NetworkError, match="memory_kib"):
+        exchange.finish(
+            PASSWORD, KE2, _opaque.KsfParams.from_wire({**ARGON2ID, "memory_kib": 4096})
+        )
+
+    assert lib.states_alive == 1
+    # Nothing spent it, so the ordinary release path still works.
+    del exchange
+    gc.collect()
+    assert lib.states_alive == 0
 
 
 # ---------------------------------------------------------------------
@@ -365,8 +389,6 @@ def test_an_abandoned_exchange_releases_its_state(lib: FakeOpaqueLibrary) -> Non
     exchange = _opaque.start_login(PASSWORD)
     assert lib.states_alive == 1
     del exchange
-    import gc
-
     gc.collect()
     assert lib.states_alive == 0
 
