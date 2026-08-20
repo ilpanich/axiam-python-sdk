@@ -7,18 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- OPAQUE: a refused key-stretching function no longer strands the exchange's
-  native state handle. `finish()` spent the handle before building the KSF, so
-  an unrecognised function or an out-of-range cost left it out of its one-shot
-  slot and unreachable by `__del__` — a leaked Rust allocation once per login
-  attempt against a misconfigured tenant. The KSF is now built first, so a
-  refusal leaves the exchange intact: it is released normally, and a caller who
-  fixes the parameters can retry.
-
-## [Unreleased]
-
 ### Added
 
 - OPAQUE (RFC 9807) login and enrolment (CONTRACT §23): `login_opaque` and
@@ -48,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all `NetworkError` (a caller can fall back, or an operator can act);
   everything else is `AuthError` and must NOT be retried over `login()`
   (§23.4 rule 7).
+- Re-vendor `openapi.json` at **1.0.0-alpha32**, matching the server. The
+  content was already byte-identical in every path and schema; only
+  `info.version` differed, which is what the cross-repo artifact-drift gate
+  reports as `STALE`.
+
+### Fixed
+
+- OPAQUE: a refused key-stretching function no longer strands the exchange's
+  native state handle. `finish()` spent the handle before building the KSF, so
+  an unrecognised function or an out-of-range cost left it out of its one-shot
+  slot and unreachable by `__del__` — a leaked Rust allocation once per login
+  attempt against a misconfigured tenant. The KSF is now built first, so a
+  refusal leaves the exchange intact: it is released normally, and a caller who
+  fixes the parameters can retry.
 
 ## [1.0.0-alpha31] - 2026-08-20
 
