@@ -104,27 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report clamped settings via §19 ConfigClamped (contract 1.9)
 - §16 retry, §17 memo, §18 close(), §19 telemetry (D5) (#34)
 - Device grant, token exchange, logout helpers; re-vendor (D6)
-
-### Changed
-
-- Re-vendor CONTRACT.md 1.19, openapi.json and proto/ from main (R5.8) (#45)
-- Contract 1.15 — §10.1 rule 9, sender-constrained access tokens (#42)
-- Add the §20.7 required timeout assertion
-- Retire the "measured residual" justification (contract 1.14)
-- Re-sync to contract 1.14 (#302 closed)
-- Format PERFORMANCE.md's example to ruff's blank-line rules
-- Close the async residual — it is CPython, not the SDK (D1/J5)
-
-### Fixed
-
-- Close the coverage fail_under rounding loophole (precision=2)
-- R5.7 — F-11/F-14 conformance follow-ups (F-08 already fixed) (#44)
-- Export the token-type constants from axiam_sdk
-
-## [Unreleased]
-
-### Added
-
 - **CONTRACT.md §22 — Reactors (AMQP extension actors).** New `axiam_sdk.amqp`
   reactor surface and `reactor_serve(dial, config, handler)`, the name §22.10's
   per-language table gives this runtime in Python: it consumes the
@@ -230,82 +209,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CONTRACT.md §21** — the FAPI 2.0 posture as an SDK sees it. Only rule 9 is normative
   for this SDK.
 
-### Changed
-
-- Re-vendor `openapi.json` at 1.0.0-alpha27 — the copy was pinned at alpha26 and
-  failing the cross-repo artifact-drift gate
-- **Re-sync vendored `CONTRACT.md`, `openapi.json` and `proto/` to contract 1.19**
-  (upstream **R5.8**). The vendored copies had been pinned at the 1.15-era artifacts and
-  drifted three contract revisions behind `ilpanich/axiam@main`. All five files are now
-  byte-identical to upstream, and `proto/axiam/v1/reactor.proto` (contract 1.18 §22, the
-  AMQP reactor protocol) is vendored here for the first time.
-
-- **Regenerated the committed gRPC stubs** (`src/axiam_sdk/grpc/gen`) from the new protos
-  with the pinned `grpcio-tools==1.78.*`, per D-04. The diff is exactly the SDK-Q10 field
-  additions — no toolchain-version churn — and `bash scripts/gen_grpc.sh` is reproducible
-  against it, so CI's drift gate stays clean.
-
-- **CONTRACT.md §11.2 rule 9 — the gRPC decision reads `reason`, not `deny_reason`**
-  (**SDK-Q10**, contract 1.19). `CheckAccessResponse` gains `reason` (proto field 4,
-  explicit presence) carrying the same string the REST decision body has always called
-  `reason`; `deny_reason` (field 2) is now `[deprecated = true]` and is removed at AXIAM
-  2.0. The four duplicated decision-mapping sites (sync/async × single/batch) collapse
-  into one `_to_decision` helper that reads `reason`, falling back to `deny_reason` only
-  when `HasField("reason")` is false — that absence is precisely a pre-SDK-Q10 server, and
-  is why the guard is presence rather than truthiness. `AccessResult` still exposes one
-  `reason`, so this is not a breaking change for callers and nothing changes on the wire
-  today.
-
-  **Known residual, deliberately not taken here:** contract 1.19 also relaxes gRPC
-  `subject_id` to optional (an *empty* value meaning "the subject in the verified token").
-  `check_access`/`batch_check` still take `subject_id` as a required argument — relaxing it
-  is a signature change and belongs in its own change, not in an artifact re-sync.
-
-
-### Changed
-
-- **Re-sync vendored `CONTRACT.md` to contract 1.14** — documentation only, no code change.
-  §20.2 rule 6 (a permission ticket MUST NOT be retried) cited a "measured residual
-  (ilpanich/axiam#302) … roughly 1 in 640" as its second reason. That residual is closed: the
-  server now decides the ticket race with a transaction its storage engine arbitrates plus a
-  redemption nonce read back after the commit. **The rule is unchanged, and this SDK's
-  behaviour is unchanged** — `uma_exchange_ticket` stays excluded from every automatic retry
-  path. What changed is the reasoning: the first reason (a spent ticket makes the retry
-  useless) always stood alone, and the second now rests on what an SDK can actually know —
-  it is talking to a server whose storage engine it cannot attest, and the guarantee is
-  conditional on that engine being persistent.
-- **BREAKING (contract 1.13): `token_exchange`'s `subject_token_type` is now required.** It
-  shipped optional, defaulting to `…:access_token` when `None` — which satisfied §15.7's "never
-  inspect the subject token" while leaving the rule it serves unenforced: an optional argument
-  with a default *is* a default the SDK applies whenever the caller says nothing. §15.1 now
-  makes it required, on both `AxiamClient` and `AsyncAxiamClient`.
-
-  Python refuses the call before any SDK code runs — a `TypeError`, with no wire call. A test
-  asserts that, including zero requests.
-
-  **`ACCESS_TOKEN_TYPE` and `JWT_TOKEN_TYPE` are now exported from `axiam_sdk`**, not just from
-  the private `axiam_sdk._oidc`. They were reachable only through a private module — survivable
-  while the type was optional and defaulted, and not once naming it is mandatory: every caller
-  would have had to import a private module (or retype the URN) to make a call that now requires
-  one.
-
-  **Migration** — one line, naming what you were previously getting by silence:
-
-  ```python
-  exchanged = client.token_exchange(
-      subject_token=user_token,
-      subject_token_type=ACCESS_TOKEN_TYPE,  # <- add this
-      scopes=["orders:read"],
-  )
-  ```
-
-  This closes a gap rather than opening one: `subject_token_type` has always been required *on
-  the wire*, and the SDK was covering for that with a constant which stopped being the only
-  legal value when X4 landed. For a caller who actually held a refresh token, the old default
-  traded the `invalid_request` that names the type for a generic `invalid_grant`.
-
-### Added
-
 - **§15.7 external-IdP subject tokens (X4).** `token_exchange` (and its async twin) can now
   exchange a token minted by a trusted external IdP — a partner's Entra, Okta or Keycloak — for
   an AXIAM token scoped to what the resolved AXIAM user may actually do. No new operation: the
@@ -378,14 +281,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staleness bound is 60 seconds, and it is five. Nothing is emitted for a value already
   within its limit, or for the disabled default.
 
-### Changed
-
-- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` with the UMA paths.
-
-## [Unreleased]
-
-### Added
-
 - **§16 bounded read-only retry policy** (`_retry.py`), wired into `check_access`/`can`/
   `batch_check` on **both** the sync and async clients: 3 attempts, 200 ms base, 5 s cap,
   **full jitter** over `[0, backoff]`, `Retry-After` honored as a floor. This SDK had no §16
@@ -412,6 +307,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor CONTRACT.md 1.19, openapi.json and proto/ from main (R5.8) (#45)
+- Contract 1.15 — §10.1 rule 9, sender-constrained access tokens (#42)
+- Add the §20.7 required timeout assertion
+- Retire the "measured residual" justification (contract 1.14)
+- Re-sync to contract 1.14 (#302 closed)
+- Format PERFORMANCE.md's example to ruff's blank-line rules
+- Close the async residual — it is CPython, not the SDK (D1/J5)
+- Re-vendor `openapi.json` at 1.0.0-alpha27 — the copy was pinned at alpha26 and
+  failing the cross-repo artifact-drift gate
+- **Re-sync vendored `CONTRACT.md`, `openapi.json` and `proto/` to contract 1.19**
+  (upstream **R5.8**). The vendored copies had been pinned at the 1.15-era artifacts and
+  drifted three contract revisions behind `ilpanich/axiam@main`. All five files are now
+  byte-identical to upstream, and `proto/axiam/v1/reactor.proto` (contract 1.18 §22, the
+  AMQP reactor protocol) is vendored here for the first time.
+
+- **Regenerated the committed gRPC stubs** (`src/axiam_sdk/grpc/gen`) from the new protos
+  with the pinned `grpcio-tools==1.78.*`, per D-04. The diff is exactly the SDK-Q10 field
+  additions — no toolchain-version churn — and `bash scripts/gen_grpc.sh` is reproducible
+  against it, so CI's drift gate stays clean.
+
+- **CONTRACT.md §11.2 rule 9 — the gRPC decision reads `reason`, not `deny_reason`**
+  (**SDK-Q10**, contract 1.19). `CheckAccessResponse` gains `reason` (proto field 4,
+  explicit presence) carrying the same string the REST decision body has always called
+  `reason`; `deny_reason` (field 2) is now `[deprecated = true]` and is removed at AXIAM
+  2.0. The four duplicated decision-mapping sites (sync/async × single/batch) collapse
+  into one `_to_decision` helper that reads `reason`, falling back to `deny_reason` only
+  when `HasField("reason")` is false — that absence is precisely a pre-SDK-Q10 server, and
+  is why the guard is presence rather than truthiness. `AccessResult` still exposes one
+  `reason`, so this is not a breaking change for callers and nothing changes on the wire
+  today.
+
+  **Known residual, deliberately not taken here:** contract 1.19 also relaxes gRPC
+  `subject_id` to optional (an *empty* value meaning "the subject in the verified token").
+  `check_access`/`batch_check` still take `subject_id` as a required argument — relaxing it
+  is a signature change and belongs in its own change, not in an artifact re-sync.
+- **Re-sync vendored `CONTRACT.md` to contract 1.14** — documentation only, no code change.
+  §20.2 rule 6 (a permission ticket MUST NOT be retried) cited a "measured residual
+  (ilpanich/axiam#302) … roughly 1 in 640" as its second reason. That residual is closed: the
+  server now decides the ticket race with a transaction its storage engine arbitrates plus a
+  redemption nonce read back after the commit. **The rule is unchanged, and this SDK's
+  behaviour is unchanged** — `uma_exchange_ticket` stays excluded from every automatic retry
+  path. What changed is the reasoning: the first reason (a spent ticket makes the retry
+  useless) always stood alone, and the second now rests on what an SDK can actually know —
+  it is talking to a server whose storage engine it cannot attest, and the guarantee is
+  conditional on that engine being persistent.
+- **BREAKING (contract 1.13): `token_exchange`'s `subject_token_type` is now required.** It
+  shipped optional, defaulting to `…:access_token` when `None` — which satisfied §15.7's "never
+  inspect the subject token" while leaving the rule it serves unenforced: an optional argument
+  with a default *is* a default the SDK applies whenever the caller says nothing. §15.1 now
+  makes it required, on both `AxiamClient` and `AsyncAxiamClient`.
+
+  Python refuses the call before any SDK code runs — a `TypeError`, with no wire call. A test
+  asserts that, including zero requests.
+
+  **`ACCESS_TOKEN_TYPE` and `JWT_TOKEN_TYPE` are now exported from `axiam_sdk`**, not just from
+  the private `axiam_sdk._oidc`. They were reachable only through a private module — survivable
+  while the type was optional and defaulted, and not once naming it is mandatory: every caller
+  would have had to import a private module (or retype the URN) to make a call that now requires
+  one.
+
+  **Migration** — one line, naming what you were previously getting by silence:
+
+  ```python
+  exchanged = client.token_exchange(
+      subject_token=user_token,
+      subject_token_type=ACCESS_TOKEN_TYPE,  # <- add this
+      scopes=["orders:read"],
+  )
+  ```
+
+  This closes a gap rather than opening one: `subject_token_type` has always been required *on
+  the wire*, and the SDK was covering for that with a constant which stopped being the only
+  legal value when X4 landed. For a caller who actually held a refresh token, the old default
+  traded the `invalid_request` that names the type for a generic `invalid_grant`.
+- Re-vendored `CONTRACT.md` at **1.10** and `openapi.json` with the UMA paths.
+
 - Re-vendored `CONTRACT.md` at **1.8.1**. `openapi.json` unchanged — docs-only contract revs.
 - `login`, `verify_mfa`, `refresh` and `logout` now clear the decision memo (§17.1 rule 9)
   and reject after close (§18.1 rule 4), on both clients.
@@ -430,28 +401,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself. `PERFORMANCE.md` carries the numbers, the method, and the guidance
   (scale with processes, not with in-flight calls per process).
 
+### Fixed
+
+- Close the coverage fail_under rounding loophole (precision=2)
+- R5.7 — F-11/F-14 conformance follow-ups (F-08 already fixed) (#44)
+- Export the token-type constants from axiam_sdk
+
 ## [1.0.0-alpha24] - 2026-08-04
 
 ### Added
 
 - Apply the full CONTRACT §10.1 local-verification set
 - Add verify_webhook signature verification helper (CONTRACT.md §13, T-145)
-
-### Changed
-
-- Device (mTLS) tokens now carry aud=axiam:m2m (#31)
-- Service accounts can use login_client_credentials (#30)
-- Pin CONTRACT §10.1 rule 8 against regression (§15.3.1) (#29)
-- Bump pypa/gh-action-pypi-publish from 1.14.1 to 1.14.2
-
-### Fixed
-
-- Tighten the skew ceiling and diagnose the slug/UUID comparand (#27)
-
-## [Unreleased]
-
-### Added
-
 - **CONTRACT §10.1 rule-8 regression tests (§15.3.1).** Rule 8 — "the decision is
   about the caller's credential and no other" — was enforced only by inspection
   here. SEC-085 satisfied rules 1–7 and was still an authentication bypass, so
@@ -466,6 +427,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client or session parameter were threaded in, which is how the PHP bug became
   reachable.
 
+### Changed
+
+- Device (mTLS) tokens now carry aud=axiam:m2m (#31)
+- Service accounts can use login_client_credentials (#30)
+- Pin CONTRACT §10.1 rule 8 against regression (§15.3.1) (#29)
+- Bump pypa/gh-action-pypi-publish from 1.14.1 to 1.14.2
+
 ### Changed — BREAKING (configuration)
 
 - **`MAX_CLOCK_SKEW_SECONDS` lowered 300 → 60 (§13.4 observation 5).** The old
@@ -479,8 +447,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at construction instead of being accepted. The default (60) is unchanged, so
   this affects only deployments that explicitly widened the leeway.
 
+
 ### Fixed
 
+- Tighten the skew ceiling and diagnose the slug/UUID comparand (#27)
 - **Slug-vs-UUID tenant comparand now diagnoses itself (§13.4 observation 6).**
   AXIAM access tokens carry the tenant **UUID** in `tenant_id`, but this SDK's
   client is commonly configured with a tenant **slug**. A guard handed that slug
@@ -491,6 +461,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *after* the rejection is decided — so it cannot be used as a log-flood lever
   and does not alter the verification outcome. A genuine cross-tenant rejection
   (UUID vs UUID) stays silent.
+
 
 ## [1.0.0-alpha23] - 2026-08-02
 
@@ -503,6 +474,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Implement OIDC/SSO relying-party helpers (CONTRACT.md §12)
+- Webhook signature verification (CONTRACT.md §13, T-145, contract 1.7):
+  `axiam_sdk.webhook.verify_webhook(secret, signature_header, body, ...)`
+  verifies the `X-Axiam-Signature: t=<unix_seconds>,v1=<hex>` header AXIAM
+  sends on every webhook delivery — HMAC-SHA256 over
+  `"<timestamp>.<raw_body>"`, keyed by the webhook secret's raw UTF-8 bytes.
+  `body` MUST be the exact raw bytes off the wire (re-serializing parsed
+  JSON breaks the MAC — documented in the README with a Flask/FastAPI
+  example). Verification is constant-time (`hmac.compare_digest` over the
+  *decoded* MAC bytes, never a hex-string `==`) with a two-sided freshness
+  window (`abs(now - t) > tolerance` rejects both stale AND future-dated
+  timestamps, default 300s) and a `now` injection seam for tests. `secret`
+  accepts this SDK's §7 `Sensitive<T>` equivalent (`pydantic.SecretStr`) or
+  a plain `str`. A signature header with no `v1` field is always a
+  failure — never treated as "nothing to verify". On success returns a
+  frozen `WebhookEvent` (`event_type`/`delivery_id` passed through from the
+  caller-supplied `X-Axiam-Event`/`X-Axiam-Delivery` headers, since neither
+  is covered by the MAC); on any failure raises the typed
+  `WebhookVerifyError`, whose message never includes the expected/computed
+  signature or the secret. New public module `axiam_sdk.webhook`
+  (`verify_webhook`, `WebhookEvent`, `WebhookVerifyError`,
+  `DEFAULT_TOLERANCE_SECONDS`); no new runtime dependency. Vendored
+  CONTRACT.md re-synced to contract 1.7 (§13 added).
+- OIDC / SSO relying-party helpers (CONTRACT.md §12, contract 1.4): the nine
+  canonical operations — `oidc_discover`, `oidc_begin`, `oidc_exchange`,
+  `oidc_refresh`, `login_client_credentials`, `introspect`, `revoke`,
+  `sso_start`, `sso_complete` — added directly to both `AxiamClient` (sync)
+  and `AsyncAxiamClient` (`async def` twins under the same names, SDK-Q08).
+  Shared pure logic (PKCE via `secrets`/`hashlib`/`base64`, ID-token
+  validation, discovery cache, tenant/client-credential resolution) lives in
+  new `_oidc.py`/`_oidc_pkce.py`/`_oidc_idtoken.py`/`_oidc_state.py` modules;
+  no new runtime dependency was added. New public types: `OidcConfiguration`,
+  `IdTokenClaims`, `AuthorizationRequest`, `OidcTokenSet`,
+  `IntrospectionResult`, `SsoStartResult`, `SsoCompleteResult`,
+  `OidcStateStore`/`OidcStateEntry`/`MemoryOidcStateStore`, and
+  `OAuthProtocolError` — a language-idiomatic sub-type of the existing
+  `AuthError`, so existing `except AuthError:` code keeps matching it
+  unchanged. `access_token`/`refresh_token`/`id_token`/`client_secret`/
+  `code_verifier` are `pydantic.SecretStr`; `state`/`nonce` remain plain
+  strings (not secrets, per §12.3 rule 2). ID-token validation (§12.4)
+  reuses the existing `JwksVerifier` (extended, not forked) and raises
+  `AuthError` with a stable `reason` — `invalid_alg`, `unknown_kid`,
+  `invalid_signature`, `invalid_issuer`, `invalid_audience`,
+  `token_expired`, or `nonce_mismatch`. `oidc_refresh` runs under the
+  existing §9 single-flight refresh guard (extended with
+  `run_exclusive_sync`/`run_exclusive_async`), so it can never interleave
+  with a concurrent cookie-session `refresh()`, and de-duplicates its own
+  concurrent callers. New framework glue: `axiam_sdk.fastapi.oidc_login_router`
+  (a two-route `APIRouter`) and `axiam_sdk.django.oidc.oidc_login_views` (a
+  `(login_view, callback_view)` pair). Conformance statement updated to
+  "§1–§12 (including §6.1 mTLS)".
 
 ### Changed
 
@@ -511,13 +532,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update grpcio-tools requirement
 - Bump coverallsapp/github-action from 2.3.7 to 2.3.8
 - Re-sync vendored CONTRACT.md to contract 1.5
-
-### Fixed
-
-- Enforce §9 rule 6 invariants in the oidc_refresh coalescer
-- Accept any 2xx as success in revoke()
-
-## [Unreleased]
 
 ### Changed — BREAKING
 
@@ -577,33 +591,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name; callers who expected `verify()` to be a guard were relying on a
   behaviour it never had and should switch to `verify_access_token`.
 
-### Added
-
-- Webhook signature verification (CONTRACT.md §13, T-145, contract 1.7):
-  `axiam_sdk.webhook.verify_webhook(secret, signature_header, body, ...)`
-  verifies the `X-Axiam-Signature: t=<unix_seconds>,v1=<hex>` header AXIAM
-  sends on every webhook delivery — HMAC-SHA256 over
-  `"<timestamp>.<raw_body>"`, keyed by the webhook secret's raw UTF-8 bytes.
-  `body` MUST be the exact raw bytes off the wire (re-serializing parsed
-  JSON breaks the MAC — documented in the README with a Flask/FastAPI
-  example). Verification is constant-time (`hmac.compare_digest` over the
-  *decoded* MAC bytes, never a hex-string `==`) with a two-sided freshness
-  window (`abs(now - t) > tolerance` rejects both stale AND future-dated
-  timestamps, default 300s) and a `now` injection seam for tests. `secret`
-  accepts this SDK's §7 `Sensitive<T>` equivalent (`pydantic.SecretStr`) or
-  a plain `str`. A signature header with no `v1` field is always a
-  failure — never treated as "nothing to verify". On success returns a
-  frozen `WebhookEvent` (`event_type`/`delivery_id` passed through from the
-  caller-supplied `X-Axiam-Event`/`X-Axiam-Delivery` headers, since neither
-  is covered by the MAC); on any failure raises the typed
-  `WebhookVerifyError`, whose message never includes the expected/computed
-  signature or the secret. New public module `axiam_sdk.webhook`
-  (`verify_webhook`, `WebhookEvent`, `WebhookVerifyError`,
-  `DEFAULT_TOLERANCE_SECONDS`); no new runtime dependency. Vendored
-  CONTRACT.md re-synced to contract 1.7 (§13 added).
 
 ### Fixed
 
+- Enforce §9 rule 6 invariants in the oidc_refresh coalescer
+- Accept any 2xx as success in revoke()
 - `oidc_refresh` single-flight coalescer (CONTRACT.md §9 rule 6, contract
   1.6): the async coalescer vacated its in-flight slot **before** publishing
   the outcome (rule 6a, the same shape as the Go SDK bug) and its joiners
@@ -640,36 +632,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a `401` carrying an `OAuth2ErrorResponse` body still raises
   `OAuthProtocolError` without entering the §9 refresh guard, both unchanged.
 
-### Added
-
-- OIDC / SSO relying-party helpers (CONTRACT.md §12, contract 1.4): the nine
-  canonical operations — `oidc_discover`, `oidc_begin`, `oidc_exchange`,
-  `oidc_refresh`, `login_client_credentials`, `introspect`, `revoke`,
-  `sso_start`, `sso_complete` — added directly to both `AxiamClient` (sync)
-  and `AsyncAxiamClient` (`async def` twins under the same names, SDK-Q08).
-  Shared pure logic (PKCE via `secrets`/`hashlib`/`base64`, ID-token
-  validation, discovery cache, tenant/client-credential resolution) lives in
-  new `_oidc.py`/`_oidc_pkce.py`/`_oidc_idtoken.py`/`_oidc_state.py` modules;
-  no new runtime dependency was added. New public types: `OidcConfiguration`,
-  `IdTokenClaims`, `AuthorizationRequest`, `OidcTokenSet`,
-  `IntrospectionResult`, `SsoStartResult`, `SsoCompleteResult`,
-  `OidcStateStore`/`OidcStateEntry`/`MemoryOidcStateStore`, and
-  `OAuthProtocolError` — a language-idiomatic sub-type of the existing
-  `AuthError`, so existing `except AuthError:` code keeps matching it
-  unchanged. `access_token`/`refresh_token`/`id_token`/`client_secret`/
-  `code_verifier` are `pydantic.SecretStr`; `state`/`nonce` remain plain
-  strings (not secrets, per §12.3 rule 2). ID-token validation (§12.4)
-  reuses the existing `JwksVerifier` (extended, not forked) and raises
-  `AuthError` with a stable `reason` — `invalid_alg`, `unknown_kid`,
-  `invalid_signature`, `invalid_issuer`, `invalid_audience`,
-  `token_expired`, or `nonce_mismatch`. `oidc_refresh` runs under the
-  existing §9 single-flight refresh guard (extended with
-  `run_exclusive_sync`/`run_exclusive_async`), so it can never interleave
-  with a concurrent cookie-session `refresh()`, and de-duplicates its own
-  concurrent callers. New framework glue: `axiam_sdk.fastapi.oidc_login_router`
-  (a two-route `APIRouter`) and `axiam_sdk.django.oidc.oidc_login_views` (a
-  `(login_view, callback_view)` pair). Conformance statement updated to
-  "§1–§12 (including §6.1 mTLS)".
 
 ## [1.0.0-alpha18] - 2026-07-24
 
@@ -717,8 +679,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Maintenance release — no notable changes since v1.0.0-alpha9.
-
-## [Unreleased]
 
 ### Added
 
