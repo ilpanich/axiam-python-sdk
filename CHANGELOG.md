@@ -5,40 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [1.0.0-alpha33] - 2026-08-21
 
 ### Added
 
 - Replace SRP-6a with OPAQUE (RFC 9807), CONTRACT §23
+- OPAQUE (RFC 9807) login and enrolment (CONTRACT §23): `login_opaque` and
+  `opaque_enrollment` on both `AxiamClient` and `AsyncAxiamClient`, plus
+  `opaque_available()` for choosing the password path up front.
+- `examples/opaque_login.py`.
 
 ### Changed
 
 - CHANGELOG.md multiple "unreleased entries"
 - Link to the AXIAM platform documentation site
 - Re-vendor openapi.json at alpha32, and collapse a duplicated changelog heading (#54)
-
-### Fixed
-
-- Build the KSF before spending the exchange's state handle
-
-## [Unreleased]
-
-### Added
-
-- OPAQUE (RFC 9807) login and enrolment (CONTRACT §23): `login_opaque` and
-  `opaque_enrollment` on both `AxiamClient` and `AsyncAxiamClient`, plus
-  `opaque_available()` for choosing the password path up front.
-- `examples/opaque_login.py`.
-
-### Removed
-
-- **BREAKING** — SRP-6a. `login_srp`, `srp_enrollment`, the `axiam_sdk._srp`
-  module, `srp-test-vectors.json` and the `[srp]` extra (`argon2-cffi`) are all
-  gone. AXIAM's server-side SRP endpoints are removed in the same release, so
-  keeping the client would leave a method that only ever returns 404.
-
-### Changed
-
 - **BREAKING** — the OPAQUE protocol is NOT implemented in this SDK. CONTRACT
   §23.1 forbids it, so the client half is a `ctypes` binding to
   `libaxiam_opaque_ffi` — the same implementation the AXIAM server links,
@@ -57,8 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `info.version` differed, which is what the cross-repo artifact-drift gate
   reports as `STALE`.
 
+### Removed
+
+- **BREAKING** — SRP-6a. `login_srp`, `srp_enrollment`, the `axiam_sdk._srp`
+  module, `srp-test-vectors.json` and the `[srp]` extra (`argon2-cffi`) are all
+  gone. AXIAM's server-side SRP endpoints are removed in the same release, so
+  keeping the client would leave a method that only ever returns 404.
+
 ### Fixed
 
+- Build the KSF before spending the exchange's state handle
 - OPAQUE: a refused key-stretching function no longer strands the exchange's
   native state handle. `finish()` spent the handle before building the KSF, so
   an unrecognised function or an out-of-range cost left it out of its one-shot
@@ -463,7 +454,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at construction instead of being accepted. The default (60) is unchanged, so
   this affects only deployments that explicitly widened the leeway.
 
-
 ### Fixed
 
 - Tighten the skew ceiling and diagnose the slug/UUID comparand (#27)
@@ -477,7 +467,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *after* the rejection is decided — so it cannot be used as a log-flood lever
   and does not alter the verification outcome. A genuine cross-tenant rejection
   (UUID vs UUID) stays silent.
-
 
 ## [1.0.0-alpha23] - 2026-08-02
 
@@ -607,7 +596,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name; callers who expected `verify()` to be a guard were relying on a
   behaviour it never had and should switch to `verify_access_token`.
 
-
 ### Fixed
 
 - Enforce §9 rule 6 invariants in the oidc_refresh coalescer
@@ -647,7 +635,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cross-SDK conformance review F-08). A `5xx` still raises `NetworkError`
   and a `401` carrying an `OAuth2ErrorResponse` body still raises
   `OAuthProtocolError` without entering the §9 refresh guard, both unchanged.
-
 
 ## [1.0.0-alpha18] - 2026-07-24
 
