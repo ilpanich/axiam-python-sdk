@@ -71,6 +71,9 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+# Sphinx autosummary stubs are generated at build time from the source
+# docstrings; committing them means every docstring edit shows up twice.
+docs/_autosummary/
 
 # pdoc output (docs-publish.yml builds this before deploying to gh-pages)
 _docs_out/
