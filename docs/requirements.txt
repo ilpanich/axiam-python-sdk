@@ -1,0 +1,8 @@
+# Documentation build dependencies (Read the Docs).
+#
+# Pinned to compatible-release ranges rather than left open: a docs build that
+# silently changes renderer version between two releases of the SDK produces a
+# diff nobody asked for, and an unpinned theme is the usual way a site's
+# navigation changes shape overnight.
+sphinx~=8.1
+furo~=2024.8

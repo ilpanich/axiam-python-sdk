@@ -10,14 +10,31 @@ build:
   tools:
     python: "3.13"
 
-# Build documentation in the "docs/" directory with Sphinx
+# Build documentation in the "docs/" directory with Sphinx.
+#
+# `fail_on_warning` is NOT set, and that is deliberate rather than lax.
+# autodoc's characteristic failure is silence, not an error — a module it
+# cannot import becomes an empty page while the build stays green — but making
+# every warning fatal is a blunt way to catch it, and it fails on cosmetic
+# duplicate-description warnings that have no supported suppression key.
+# `docs/conf.py` asserts every public module imports before the build starts,
+# which targets that failure directly and reports the real ImportError.
 sphinx:
-   configuration: docs/conf.py
+  configuration: docs/conf.py
 
-# Optionally, but recommended,
-# declare the Python requirements required to build your documentation
-# See https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
-# python:
-#    install:
-#    - requirements: docs/requirements.txt
-        
+# Declare the requirements for the docs build.
+#
+# Installing the SDK itself (the second entry) is REQUIRED, not a nicety:
+# autodoc documents by importing, so without `axiam_sdk` and its runtime
+# dependencies present, every `automodule` silently renders nothing.
+python:
+  install:
+    - requirements: docs/requirements.txt
+    - method: pip
+      path: .
+      extra_requirements:
+        # The framework integrations are separate modules in the public API
+        # surface, so they need their optional dependencies importable or
+        # their pages come out empty.
+        - fastapi
+        - django

@@ -369,6 +369,7 @@ def require_access(
     at factory-construction time, not per-request.
 
     The returned dependency:
+
     1. Authenticates the request via :func:`_authenticate` (401 on failure).
     2. Resolves and validates the resource UUID (400 on a missing/unparseable
        value, §11.2.3).
