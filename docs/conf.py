@@ -89,6 +89,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # package's public surface to suit its documentation tooling.
 suppress_warnings = ["ref.python", "autodoc"]
 
+
 # ---------------------------------------------------------------------------
 # Import guard
 # ---------------------------------------------------------------------------
@@ -125,8 +126,7 @@ def _assert_public_modules_importable() -> None:
     if broken:
         raise RuntimeError(
             "documentation build aborted — these public modules could not be "
-            "imported, so autodoc would emit empty pages for them:\n"
-            + "\n".join(broken)
+            "imported, so autodoc would emit empty pages for them:\n" + "\n".join(broken)
         )
 
 
