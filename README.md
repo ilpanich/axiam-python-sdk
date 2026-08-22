@@ -23,13 +23,13 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21, §22, §23 (including
-§6.1 mTLS and the §10.1 minimum local-verification set).
+This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §21, §22, §23,
+§24, §25, §26 (including §6.1 mTLS and the §10.1 minimum local-verification set).
 
-§12.7, §14, §15 and §22 are named rather than folded into the range because they
-landed after this SDK already claimed §1–§13: widening the range silently would
-turn a statement that was true when written into a different claim without
-anyone editing it.
+§12.7, §14, §15, §22, §24, §25 and §26 are named rather than folded into the
+range because they landed after this SDK already claimed §1–§13: widening the
+range silently would turn a statement that was true when written into a
+different claim without anyone editing it.
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -760,6 +760,211 @@ which is the pre-computation resistance SRP could not offer. It does **not**
 protect against a compromised AXIAM server.
 
 See [`examples/opaque_login.py`](./examples/opaque_login.py).
+
+## WebAuthn and passkeys (§24)
+
+A passkey ceremony is **two exchanges stacked**: one with an *authenticator*,
+which needs a platform API, and one with *AXIAM*, which is four ordinary JSON
+round trips. Python has no authenticator, so this SDK ships the second half.
+
+That is not a consolation prize. A Python service completing a ceremony that ran
+on an Android or iOS handset is the relying party exactly as a browser is — and
+§24.6b rule 2 forbids the alternative outright: an SDK must not emulate an
+authenticator in software, because a "credential" held in process memory is not
+a second factor.
+
+### The three-step shape
+
+```python
+from axiam_sdk import AxiamClient, webauthn_request_json
+
+client = AxiamClient(base_url=..., tenant_slug="acme", org_slug="globex")
+
+challenge = client.webauthn_discoverable_start()
+
+# The JSON form every platform authenticator API takes (§24.6a) — the exact
+# string Android's CreatePublicKeyCredentialRequest and a browser's
+# parseCreationOptionsFromJSON() both want.
+response_json = your_device_channel(webauthn_request_json(challenge))
+
+session = client.webauthn_discoverable_finish(
+    state_token=challenge.state_token,
+    response=response_json,          # the platform's string, verbatim
+)
+```
+
+The client is authenticated when that returns — §24.3 rule 1 is not a "MAY
+adopt". `webauthn_register_start`/`_finish` and
+`webauthn_authenticate_start`/`_finish` follow the same shape, for enrolling a
+credential and for a passkey used as a second factor after `login()` answered
+`mfa_required`.
+
+Both `*_finish` operations take either a parsed mapping or the platform's own
+JSON string. Requiring a caller to destructure one into a dict this SDK
+immediately re-serializes is three chances to corrupt a signed buffer in service
+of nothing.
+
+### What the SDK will not do
+
+**It never adjusts an option.** The server generates the challenge and chooses
+`residentKey`, `userVerification`, the attestation conveyance, the exclusion list
+and the timeout; this SDK carries all of it through unchanged and posts the
+answer back unchanged. Not because those fields are hard — because they are not,
+and relaxing `userVerification` to `"preferred"` because a test authenticator
+kept prompting weakens a ceremony the server believes it configured. The server
+cannot catch it: an assertion produced under weaker options is a valid assertion.
+
+**It never parses `state_token`.** It is opaque, it is a `SecretStr`, and it goes
+straight back to the matching `*_finish`.
+
+### Classifying a device's failure
+
+Every platform reports a ceremony failure as one opaque type whose only
+machine-readable part is a name — so a handset can relay just that name, and a
+Python service can turn it into the same five outcomes a browser would see:
+
+```python
+from axiam_sdk import WebauthnFailure, classify_webauthn_error, webauthn_error_message
+
+failure = classify_webauthn_error(name_relayed_by_the_device)
+if failure is WebauthnFailure.ALREADY_REGISTERED:
+    ...   # the only outcome whose remedy is "use a different device"
+show(webauthn_error_message(failure))
+```
+
+`CANCELLED` covers **both** an explicit refusal and a silent timeout. The
+WebAuthn spec deliberately refuses to distinguish them, because telling a website
+which one happened leaks whether an authenticator was present — so the copy does
+not accuse anyone of cancelling, and the distinction must not be recovered by
+timing the call.
+
+### Two error rows that are not the generic mapping
+
+- A **`403` on `webauthn_register_finish`** is the tenant's attestation policy
+  refusing *this authenticator* — an AAGUID that is not allow-listed, a missing
+  FIDO certification, a revoked status — not a permission problem with the user.
+  The server's message is surfaced verbatim, because it is the only way the
+  person holding the key learns a different one would work.
+- A **`503` on `webauthn_register_start`** means attestation is required and the
+  FIDO metadata service has no usable snapshot. A server configuration state,
+  not a transient failure, and deliberately **not** retried.
+
+Worked example: [`examples/webauthn_relying_party.py`](examples/webauthn_relying_party.py).
+
+## Account lifecycle and MFA enrolment (§25)
+
+§1 locks the *middle* of an account's life — `login`, `verify_mfa`, `refresh`,
+`logout` all assume an account that already exists, is verified, and already has
+its second factor. These nine operations are how it gets there.
+
+```python
+enrolment = client.mfa_enroll()
+render_qr(enrolment.totp_uri.get_secret_value())
+client.mfa_confirm(totp_code=code_typed_by_user)     # → True once it is live
+```
+
+`secret_base32` and `totp_uri` are both `SecretStr`, and the URI is the one that
+matters: it *is* `otpauth://…?secret=…`, so it contains the secret it sits beside.
+Wrapping only the secret would have wrapped nothing — the URI is the field that
+actually reaches a log, because it is the field you hand to a QR renderer.
+
+### `login()` has a third outcome
+
+`LoginResult` gains `mfa_setup_required` and `setup_token`. The server has always
+been able to answer `403 mfa_setup_required` for an account in a tenant that
+requires MFA; it used to reach you as an `AuthzError`, saying you lacked
+permission to log in when what the server said was recoverable.
+
+```python
+result = client.login(email, password)
+if result.mfa_setup_required:
+    enrolment = client.mfa_setup_enroll(setup_token=result.setup_token)
+    render_qr(enrolment.totp_uri.get_secret_value())
+    client.mfa_setup_confirm(setup_token=result.setup_token, totp_code=code)
+```
+
+Additive here rather than a new variant, because this model has always been one
+type with flags rather than a discriminated union — so nothing that reads
+`mfa_required` today has to change. A genuine authorization refusal is still an
+`AuthzError`: the SDK matches on the body's discriminant, not on the `403` alone.
+
+### Email verification and password reset
+
+```python
+client.verify_email(token=token_from_link, tenant_id=tenant_id)
+client.resend_verification(email=email, tenant_id=tenant_id)
+client.request_password_reset(email=email)
+```
+
+`request_password_reset` returns normally **whether or not the address exists**,
+and this SDK exposes no way to tell them apart. Any signal distinguishing them —
+including one inferred from timing — turns the endpoint into the account
+enumeration oracle its uniform response exists to prevent.
+
+Setting the new password takes one extra call on any tenant that might have
+OPAQUE enabled, because the client has to build a registration record and cannot
+know the parameters before it has a token to ask with:
+
+```python
+context = client.password_reset_context(token=token)
+client.confirm_password_reset(
+    token=token,
+    new_password=new_password,
+    tenant_id=tenant_id,
+    opaque=client.opaque_enrollment(new_password) if context.opaque else None,
+)
+```
+
+The context discloses no identity, and a `404` covers unknown, expired and
+already-consumed without distinguishing them.
+
+Worked example: [`examples/account_lifecycle.py`](examples/account_lifecycle.py).
+
+## Pushed authorization requests (§26)
+
+PAR (RFC 9126) moves the authorization request off the browser: the client POSTs
+`scope`, `redirect_uri`, `state` and the PKCE challenge straight to AXIAM over an
+authenticated back channel and puts an opaque `request_uri` in the redirect, so
+what travels through the user agent is a random string that cannot be edited into
+meaning something else.
+
+Required for a FAPI 2.0 client — `profile: "fapi2"` refuses a registration that
+does not set `require_par`.
+
+```python
+configuration = client.oidc_discover()
+request = client.oidc_begin(configuration=configuration, redirect_uri=uri, scope="openid profile")
+
+pushed = client.oidc_par(
+    request=request, redirect_uri=uri, scope="openid profile",
+    configuration=configuration, tenant_id=tenant_id,
+)
+redirect(pushed.authorization_url)
+
+# …on the callback, unchanged by PAR:
+tokens = client.oidc_exchange(
+    code=code, redirect_uri=uri, nonce=pushed.nonce,
+    code_verifier=pushed.code_verifier, tenant_id=tenant_id,
+)
+```
+
+`oidc_begin` still does the computing — there is no second generator for `state`,
+`nonce` and PKCE — and `pushed.code_verifier` is the one it produced, so there is
+exactly one value to keep.
+
+Three things that are easy to get wrong:
+
+1. **The endpoint answers `201`, not `200`.** RFC 9126 §2.2 specifies Created, and
+   a success predicate written `== 200` treats every successful push as a failure.
+2. **The authorization URL carries exactly `client_id` and `request_uri`.** The
+   server *refuses* a request mixing a `request_uri` with inline authorization
+   parameters rather than merging them, and re-adding them "for compatibility"
+   restores the parameter-confusion attack the refusal prevents.
+3. **`request_uri` is single-use and short-lived.** There is nothing to retry with
+   it; the safe recovery is a fresh push. `oidc_par` is correspondingly never
+   retried on a `5xx` or a transport failure — it is a POST that creates state.
+
+Worked example: [`examples/par_login.py`](examples/par_login.py).
 
 ## Device authorization grant (§14)
 

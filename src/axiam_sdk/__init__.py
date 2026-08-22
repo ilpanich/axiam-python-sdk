@@ -15,6 +15,7 @@ PyJWT) — the optional web-framework integrations (``axiam_sdk.fastapi``,
 imported from here.
 """
 
+from axiam_sdk._account import MfaEnrollment, PasswordResetContext
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError, OAuthProtocolError
@@ -30,6 +31,7 @@ from axiam_sdk._models import (
     LoginResult,
     OidcConfiguration,
     OidcTokenSet,
+    PushedAuthorizationRequest,
     ReasonCode,
     RequestedPermission,
     RequestingPartyToken,
@@ -53,6 +55,16 @@ from axiam_sdk._oidc import (
     uma_parse_challenge,
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
+from axiam_sdk._webauthn import (
+    WebauthnChallenge,
+    WebauthnCredential,
+    WebauthnFailure,
+    WebauthnLoginResult,
+    WebauthnWorkspace,
+    classify_webauthn_error,
+    webauthn_error_message,
+    webauthn_request_json,
+)
 
 __version__ = "1.0.0a37"
 
@@ -115,4 +127,20 @@ __all__ = [
     "OidcStateStore",
     "OidcStateEntry",
     "MemoryOidcStateStore",
+    # §24 WebAuthn / passkeys. The relying-party layer is on both clients; the
+    # helpers below are §24.6a's JSON bridge and §24.6b rule 5's error
+    # classification, both of which work with no authenticator present.
+    "WebauthnChallenge",
+    "WebauthnCredential",
+    "WebauthnFailure",
+    "WebauthnLoginResult",
+    "WebauthnWorkspace",
+    "classify_webauthn_error",
+    "webauthn_error_message",
+    "webauthn_request_json",
+    # §25 account lifecycle and MFA enrolment.
+    "MfaEnrollment",
+    "PasswordResetContext",
+    # §26 pushed authorization requests (RFC 9126).
+    "PushedAuthorizationRequest",
 ]

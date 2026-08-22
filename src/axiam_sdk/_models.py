@@ -30,6 +30,19 @@ class LoginResult(BaseModel):
 
     mfa_required: bool
     mfa_token: SecretStr | None = None
+    #: CONTRACT.md §25.2 rule 1 — the tenant requires MFA and this account has
+    #: none. An outcome, not an error: the server answers ``403`` with a setup
+    #: token, and before contract 1.28 that reached the caller as an
+    #: ``AuthzError``, saying they lacked permission to log in when what the
+    #: server said was recoverable. Pass :attr:`setup_token` to
+    #: ``mfa_setup_enroll``, show the user the URI, then ``mfa_setup_confirm``,
+    #: which completes this login.
+    #:
+    #: Additive here rather than a new variant, because this model has always
+    #: been one type with flags rather than a discriminated union — so nothing
+    #: that reads ``mfa_required`` today has to change.
+    mfa_setup_required: bool = False
+    setup_token: SecretStr | None = None
     user_id: str | None = None
     tenant_id: str | None = None
     session_id: str | None = None
@@ -163,6 +176,14 @@ class OidcConfiguration(BaseModel):
     concatenation.
     """
 
+    pushed_authorization_request_endpoint: str | None = None
+    """RFC 9126 pushed authorization request endpoint (§26.1).
+
+    Optional for the same reason as the two around it, and with the same rule:
+    its absence is an error at call time, never a cue to build
+    ``<issuer>/oauth2/par`` by concatenation.
+    """
+
     end_session_endpoint: str | None = None
     """OIDC RP-Initiated Logout 1.0 endpoint (§12.7.2 rule 1).
 
@@ -218,6 +239,46 @@ class AuthorizationRequest(BaseModel):
     """
 
     url: str
+    state: str
+    nonce: str
+    code_verifier: SecretStr
+
+    model_config = {"frozen": True}
+
+
+class PushedAuthorizationRequest(BaseModel):
+    """The result of ``oidc_par`` (CONTRACT.md §26.1).
+
+    The server answered **201** — RFC 9126 §2.2 specifies Created, and a
+    success predicate written ``== 200`` would treat every successful push as
+    a failure.
+
+    ``state``, ``nonce`` and ``code_verifier`` are carried straight through
+    from the ``AuthorizationRequest`` that was pushed: §26.2 rule 1 forbids a
+    second generator, and rule 6 wants exactly one ``code_verifier`` so there
+    is no second place for the two to disagree.
+    """
+
+    authorization_url: str
+    """Where to redirect the browser.
+
+    Carries **exactly** ``client_id`` and ``request_uri``. Not
+    ``response_type``, not ``redirect_uri``, not ``scope``, not ``state`` — the
+    server refuses a request that mixes a ``request_uri`` with inline
+    authorization parameters rather than merging them, because merging is
+    where parameter confusion lives (§26.2 rule 2).
+    """
+
+    request_uri: SecretStr
+    """The opaque, single-use handle.
+
+    Secret per §26.5: short-lived and single-use are both reasons it gets
+    treated as harmless, but between the push and the redirect it is a bearer
+    handle to a fully-formed authorization request, and a log line is the wrong
+    place for it to sit for the length of that window.
+    """
+
+    expires_in: int
     state: str
     nonce: str
     code_verifier: SecretStr

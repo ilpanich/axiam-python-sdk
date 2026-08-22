@@ -53,6 +53,7 @@ from axiam_sdk._models import (
     IntrospectionResult,
     OidcConfiguration,
     OidcTokenSet,
+    PushedAuthorizationRequest,
     RequestingPartyToken,
     ResourceSet,
     SsoCompleteResult,
@@ -841,6 +842,95 @@ class _OidcMixin:
         if token_type_hint is not None:
             form["token_type_hint"] = token_type_hint
         return form
+
+    # ------------------------------------------------------------------
+    # §26 Pushed Authorization Requests (RFC 9126)
+    # ------------------------------------------------------------------
+
+    def _par_form(
+        self,
+        *,
+        request: AuthorizationRequest,
+        redirect_uri: str,
+        scope: str | Sequence[str] | None,
+    ) -> dict[str, str]:
+        """Build the ``POST /oauth2/par`` form body (§26.1).
+
+        Every value here was computed by ``oidc_begin``. §26.2 rule 1 forbids a
+        second generator: two sources for ``state`` or the PKCE pair are two
+        things that can disagree, and the ``code_verifier`` the caller must
+        keep for ``oidc_exchange`` is the one they already hold.
+        """
+        form = {
+            "client_id": self._require_oidc_client_id(),
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": _normalize_scope(scope),
+            "state": request.state,
+            "nonce": request.nonce,
+            "code_challenge": compute_code_challenge(_expose_secret(request.code_verifier)),
+            "code_challenge_method": CODE_CHALLENGE_METHOD_S256,
+        }
+        self._append_client_secret(form)
+        return form
+
+    def _par_url(self, configuration: OidcConfiguration, tenant_id: str | None) -> str:
+        """The PAR endpoint URL with the mandatory ``?tenant_id=<uuid>``.
+
+        Raises:
+            AuthError: when the discovery document advertises no
+                ``pushed_authorization_request_endpoint``. Never built by
+                concatenation onto the issuer — that works against AXIAM and
+                breaks against every other OP the same code is pointed at.
+        """
+        endpoint = configuration.pushed_authorization_request_endpoint
+        if not endpoint:
+            raise AuthError(
+                "the authorization server's discovery document advertises no "
+                "pushed_authorization_request_endpoint: this server does not support "
+                "RFC 9126 (CONTRACT.md §26.1)."
+            )
+        return self._endpoint_url(endpoint, tenant_id)
+
+    def _build_pushed_request(
+        self,
+        response: httpx.Response,
+        *,
+        configuration: OidcConfiguration,
+        request: AuthorizationRequest,
+    ) -> PushedAuthorizationRequest:
+        """Parse the ``201`` and build the redirect URL (§26.1, §26.2 rule 2).
+
+        **201, not 200.** RFC 9126 §2.2 specifies Created, and this is the one
+        thing an implementation of this section gets wrong: a success
+        predicate written ``== 200`` treats every successful push as a
+        failure while passing every other assertion.
+        """
+        if response.status_code != httpx.codes.CREATED:
+            raise error_from_oauth2_response(
+                response.status_code, response, "pushed authorization request failed"
+            )
+        wire = response.json()
+        request_uri = wire["request_uri"]
+
+        # Exactly two query parameters. The server REFUSES a request carrying
+        # both a `request_uri` and any inline authorization parameter rather
+        # than merging them: merging is where parameter confusion lives — an
+        # attacker supplies the inline value they want and lets the pushed copy
+        # satisfy whichever check reads the other one. Re-adding them "for
+        # compatibility" restores the attack.
+        url = _append_query(
+            configuration.authorization_endpoint,
+            {"client_id": self._require_oidc_client_id(), "request_uri": request_uri},
+        )
+        return PushedAuthorizationRequest(
+            authorization_url=url,
+            request_uri=SecretStr(request_uri),
+            expires_in=wire["expires_in"],
+            state=request.state,
+            nonce=request.nonce,
+            code_verifier=request.code_verifier,
+        )
 
     def _token_endpoint_url(self, configuration: OidcConfiguration, tenant_id: str | None) -> str:
         """The token endpoint URL with the mandatory ``?tenant_id=<uuid>``
