@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 import httpx
 from pydantic import SecretStr
 
+from axiam_sdk._account import MfaEnrollment, PasswordResetContext, _AccountMixin
 from axiam_sdk._decision_memo import DecisionMemo, memo_key
 from axiam_sdk._errors import (
     AuthError,
@@ -41,6 +42,7 @@ from axiam_sdk._models import (
     LoginResult,
     OidcConfiguration,
     OidcTokenSet,
+    PushedAuthorizationRequest,
     RequestedPermission,
     RequestingPartyToken,
     ResourceSet,
@@ -58,6 +60,13 @@ from axiam_sdk._oidc import (
 from axiam_sdk._retry import retry_sync
 from axiam_sdk._session import _Session
 from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
+from axiam_sdk._webauthn import (
+    WebauthnChallenge,
+    WebauthnCredential,
+    WebauthnLoginResult,
+    WebauthnWorkspace,
+    _WebauthnMixin,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Imported for types only. At runtime `_opaque` is imported inside the two
@@ -110,7 +119,7 @@ def _decode_unverified_claims(token: str) -> dict[str, Any]:
     return claims
 
 
-class _AxiamClientBase(_OidcMixin):
+class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
     """Shared construction + body-building/response-parsing logic for both
     :class:`AxiamClient` (sync) and :class:`~axiam_sdk._async_client.AsyncAxiamClient`
     (async, SDK-Q08). Not part of the public API (leading underscore) — holds
@@ -408,11 +417,47 @@ class _AxiamClientBase(_OidcMixin):
                 mfa_required=True,
                 mfa_token=wire.get("challenge_token"),
             )
+        # CONTRACT.md §25.2 rule 1: a `403` carrying `mfa_setup_required` is an
+        # OUTCOME, not a refusal. The tenant requires MFA, this account has
+        # none, and the server handed back the token to finish. Mapping it
+        # through §2 to AuthzError told the caller they lacked permission to
+        # log in, when what the server said was recoverable and came with the
+        # means to recover.
+        #
+        # Matched on the body's own discriminant rather than on the status
+        # alone: a genuine authorization refusal is also a `403`, and only one
+        # of the two carries a `setup_token`.
+        if response.status_code == httpx.codes.FORBIDDEN:
+            setup = self._mfa_setup_required(response)
+            if setup is not None:
+                return setup
         # D-15: log the failure with status code only — never the request
         # body, response body, or any token/credential value.
         self._logger.warning("axiam_sdk: login/verify_mfa failed: status=%s", response.status_code)
         raise error_from_http_status(
             response.status_code, "login/verify_mfa failed", response=response
+        )
+
+    @staticmethod
+    def _mfa_setup_required(response: httpx.Response) -> LoginResult | None:
+        """The ``403 mfa_setup_required`` branch of ``login`` (§25.2 rule 1).
+
+        Returns ``None`` for any other ``403`` — including a genuine
+        authorization refusal, which must keep raising.
+        """
+        try:
+            wire = response.json()
+        except ValueError:
+            return None
+        if not isinstance(wire, dict):
+            return None
+        if wire.get("mfa_setup_required") is not True:
+            return None
+        token = wire.get("setup_token")
+        if not isinstance(token, str) or not token:
+            return None
+        return LoginResult(
+            mfa_required=False, mfa_setup_required=True, setup_token=SecretStr(token)
         )
 
     def _absorb_session_cookies(self) -> None:
@@ -967,6 +1012,50 @@ class AxiamClient(_AxiamClientBase):
             scope=scope,
             extra_params=extra_params,
         )
+
+    def oidc_par(
+        self,
+        *,
+        request: AuthorizationRequest,
+        redirect_uri: str,
+        scope: str | list[str] | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> PushedAuthorizationRequest:
+        """``POST /oauth2/par`` (CONTRACT.md §26.1) — push the authorization
+        request over the back channel and get an opaque handle to redirect
+        with.
+
+        PAR moves the authorization request off the browser. Instead of putting
+        ``scope``, ``redirect_uri``, ``state`` and the PKCE challenge into a
+        URL the user agent carries, the client POSTs them straight to AXIAM
+        over an authenticated channel and puts an opaque ``request_uri`` in the
+        redirect. What travels through the browser is then a random string that
+        cannot be edited into meaning something else.
+
+        **Required for a FAPI 2.0 client** — ``profile: "fapi2"`` refuses a
+        registration that does not set ``require_par``, so such a client cannot
+        authorize any other way (§21.1).
+
+        A §12 extension, not a replacement: ``oidc_exchange`` afterwards is
+        unchanged, and takes the ``code_verifier`` carried on the result.
+
+        Not retried on a ``5xx`` or a transport failure — it is a POST that
+        creates server state, so it falls outside §16.2's read-only
+        eligibility exactly as ``oidc_exchange`` does. The safe recovery is a
+        fresh push (§26.2 rule 4).
+
+        Raises:
+            AuthError: when the discovery document advertises no
+                ``pushed_authorization_request_endpoint``.
+            OAuthProtocolError: on any ``error`` the server returns.
+        """
+        config = configuration or self.oidc_discover()
+        form = self._par_form(request=request, redirect_uri=redirect_uri, scope=scope)
+        url = self._par_url(config, tenant_id)
+        http_request = self._session.sync_client.build_request("POST", url, data=form)
+        response = self._session._send_sync(http_request)
+        return self._build_pushed_request(response, configuration=config, request=request)
 
     def oidc_exchange(
         self,
@@ -1534,6 +1623,285 @@ class AxiamClient(_AxiamClientBase):
         )
         response = self._session._send_sync(request)
         return self._handle_sso_complete_response(response)
+
+    # ------------------------------------------------------------------
+    # §24 WebAuthn / passkeys — the relying-party layer
+    #
+    # Python has no authenticator, so §24.6b's linked-API helper is
+    # deliberately absent: §24.6b rule 2 forbids emulating one in software,
+    # and a "credential" held in process memory is not a second factor. What
+    # is here is the half that talks to AXIAM, plus §24.6a's JSON bridge —
+    # which is what lets a Python service be the relying party for a ceremony
+    # a handset ran.
+    # ------------------------------------------------------------------
+
+    def webauthn_register_start(self) -> WebauthnChallenge:
+        """``POST /api/v1/auth/webauthn/register/start`` (CONTRACT.md §24.1).
+
+        Requires a session — enrolling a passkey is something a signed-in user
+        does to their own account — and refuses **client-side with no wire
+        call** when there is none.
+
+        A ``503`` means the tenant's attestation policy requires attestation
+        and the FIDO metadata service has no usable snapshot. That is a server
+        configuration state, not a transient failure, so §24.4 rule 2
+        deliberately does **not** retry it.
+        """
+        self._ensure_open()
+        self._require_webauthn_session("webauthn_register_start")
+        request = self._session.sync_client.build_request("POST", self._WA_REGISTER_START, json={})
+        response = self._session._send_sync(request)
+        return self._webauthn_challenge(response, "webauthn_register_start")
+
+    def webauthn_register_finish(
+        self,
+        *,
+        state_token: SecretStr | str,
+        credential_name: str,
+        response: dict[str, Any] | str,
+    ) -> WebauthnCredential:
+        """``POST /api/v1/auth/webauthn/register/finish`` (CONTRACT.md §24.1).
+
+        ``response`` is either the parsed authenticator answer or the
+        platform's own JSON string (§24.6a rule 2) — Android's
+        ``registrationResponseJson``, a browser's ``credential.toJSON()``. It
+        reaches the server unchanged either way: it is the input to a
+        signature check over bytes this SDK did not produce.
+        """
+        self._ensure_open()
+        self._require_webauthn_session("webauthn_register_finish")
+        body = self._webauthn_register_finish_body(state_token, credential_name, response)
+        request = self._session.sync_client.build_request(
+            "POST", self._WA_REGISTER_FINISH, json=body
+        )
+        return self._webauthn_credential(self._session._send_sync(request))
+
+    def webauthn_authenticate_start(self, *, challenge_token: SecretStr | str) -> WebauthnChallenge:
+        """``POST /api/v1/auth/webauthn/authenticate/start`` (CONTRACT.md §24.1).
+
+        The **second-factor** ceremony: it continues a ``login()`` that
+        answered ``mfa_required`` with ``"webauthn"`` among its methods, and
+        ``challenge_token`` is that result's ``mfa_token``.
+
+        A different flow from :meth:`webauthn_discoverable_start`, not the same
+        one with an optional argument — see §24.2 for why they cannot be
+        merged.
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST", self._WA_AUTH_START, json={"challenge_token": _expose_token(challenge_token)}
+        )
+        response = self._session._send_sync(request)
+        return self._webauthn_challenge(response, "webauthn_authenticate_start")
+
+    def webauthn_authenticate_finish(
+        self, *, state_token: SecretStr | str, response: dict[str, Any] | str
+    ) -> WebauthnLoginResult:
+        """``POST /api/v1/auth/webauthn/authenticate/finish`` (CONTRACT.md §24.1).
+
+        Leaves this client authenticated (§24.3 rule 1). That is not §14.3's
+        "MAY adopt" posture: ``device_login`` mints tokens a caller may want to
+        route elsewhere, and this is the SDK's own primary authentication —
+        returning a token set without adopting it would make a passkey sign-in
+        the one way to log in that does not log you in.
+        """
+        return self._webauthn_finish_sync(
+            self._WA_AUTH_FINISH, state_token, response, "webauthn_authenticate_finish"
+        )
+
+    def webauthn_discoverable_start(
+        self, *, workspace: WebauthnWorkspace | None = None
+    ) -> WebauthnChallenge:
+        """``POST .../authenticate/discoverable/start`` (CONTRACT.md §24.1).
+
+        The **primary-factor** ceremony: nothing precedes it, the server sends
+        an empty ``allowCredentials``, and the assertion itself identifies the
+        user. The workspace still has to be named — a discoverable credential
+        is resolved inside one tenant — but it comes from this client's own
+        configuration unless overridden, and slugs are accepted.
+        """
+        self._ensure_open()
+        body = self._webauthn_discoverable_body(workspace)
+        request = self._session.sync_client.build_request(
+            "POST", self._WA_DISCOVERABLE_START, json=body
+        )
+        response = self._session._send_sync(request)
+        return self._webauthn_challenge(response, "webauthn_discoverable_start")
+
+    def webauthn_discoverable_finish(
+        self, *, state_token: SecretStr | str, response: dict[str, Any] | str
+    ) -> WebauthnLoginResult:
+        """``POST .../authenticate/discoverable/finish`` (CONTRACT.md §24.1).
+
+        Leaves this client authenticated (§24.3). Unlike its username-bound
+        twin, this fires the server's ``login.post_auth`` reactor hook (§22.5):
+        there was no password step for the event to have been fired at.
+        """
+        return self._webauthn_finish_sync(
+            self._WA_DISCOVERABLE_FINISH, state_token, response, "webauthn_discoverable_finish"
+        )
+
+    def _webauthn_finish_sync(
+        self,
+        path: str,
+        state_token: SecretStr | str,
+        response: dict[str, Any] | str,
+        operation: str,
+    ) -> WebauthnLoginResult:
+        """The shared tail of both authentication ceremonies."""
+        self._ensure_open()
+        # §17.1 rule 9 / §24.3 rule 4: memo entries are keyed by subject, and
+        # this call changes the subject.
+        self._on_credential_change()
+        body = self._webauthn_finish_body(state_token, response, operation)
+        request = self._session.sync_client.build_request("POST", path, json=body)
+        http_response = self._session._send_sync(request)
+        result = self._webauthn_login_result(http_response, operation)
+        # The server sets the same axiam_access/axiam_refresh/axiam_csrf triple
+        # here as it does on a password login, so adoption is the same call.
+        self._absorb_session_cookies()
+        return result
+
+    # ------------------------------------------------------------------
+    # §25 Account lifecycle and MFA enrolment
+    # ------------------------------------------------------------------
+
+    def mfa_enroll(self) -> MfaEnrollment:
+        """``POST /api/v1/auth/mfa/enroll`` (CONTRACT.md §25.1) — start
+        voluntary TOTP enrolment for the signed-in user.
+
+        Changes nothing about the current session. In particular it does
+        **not** clear the §17 decision memo: the subject has not changed, and
+        discarding a warm memo on an unrelated profile action costs a round
+        trip on every check that follows (§25.2 rule 3).
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request("POST", self._AC_MFA_ENROLL, json={})
+        return self._mfa_enrollment(self._session._send_sync(request), "mfa_enroll")
+
+    def mfa_confirm(self, *, totp_code: str) -> bool:
+        """``POST /api/v1/auth/mfa/confirm`` (CONTRACT.md §25.1) — activate the
+        factor :meth:`mfa_enroll` offered."""
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST", self._AC_MFA_CONFIRM, json={"totp_code": totp_code}
+        )
+        return self._mfa_confirmed(self._session._send_sync(request))
+
+    def mfa_setup_enroll(self, *, setup_token: SecretStr | str) -> MfaEnrollment:
+        """``POST /api/v1/auth/mfa/setup/enroll`` (CONTRACT.md §25.1) — start
+        the enrolment a ``login()`` demanded.
+
+        Reached when ``login()`` returns ``mfa_setup_required``: the tenant
+        requires MFA and this account has none. There is no session yet — the
+        setup token *is* the credential.
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST", self._AC_MFA_SETUP_ENROLL, json={"setup_token": _expose_token(setup_token)}
+        )
+        return self._mfa_enrollment(self._session._send_sync(request), "mfa_setup_enroll")
+
+    def mfa_setup_confirm(self, *, setup_token: SecretStr | str, totp_code: str) -> LoginResult:
+        """``POST /api/v1/auth/mfa/setup/confirm`` (CONTRACT.md §25.1) — finish
+        forced enrolment and, with it, the login that was interrupted.
+
+        Adopts credentials exactly as ``login()`` does, because it *is* the
+        completion of a login (§25.2 rule 2).
+        """
+        self._ensure_open()
+        self._on_credential_change()
+        request = self._session.sync_client.build_request(
+            "POST",
+            self._AC_MFA_SETUP_CONFIRM,
+            json={"setup_token": _expose_token(setup_token), "totp_code": totp_code},
+        )
+        return self._handle_login_response(self._session._send_sync(request))
+
+    def verify_email(self, *, token: SecretStr | str, tenant_id: str) -> None:
+        """``POST /api/v1/auth/verify-email`` (CONTRACT.md §25.1).
+
+        Unauthenticated: a user whose address is unverified may have no session
+        at all. ``tenant_id`` is a **body** field here — this is not an
+        ``/oauth2/*`` endpoint, so §12.1 rule 2's query-parameter convention
+        does not reach it.
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST",
+            self._AC_VERIFY_EMAIL,
+            json={"token": _expose_token(token), "tenant_id": tenant_id},
+        )
+        self._expect_no_content(self._session._send_sync(request), "verify_email")
+
+    def resend_verification(self, *, email: str, tenant_id: str) -> None:
+        """``POST /api/v1/auth/resend-verification`` (CONTRACT.md §25.1)."""
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST", self._AC_RESEND_VERIFICATION, json={"email": email, "tenant_id": tenant_id}
+        )
+        self._expect_no_content(self._session._send_sync(request), "resend_verification")
+
+    def request_password_reset(
+        self,
+        *,
+        email: str,
+        org_slug: str | None = None,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+    ) -> None:
+        """``POST /api/v1/auth/reset`` (CONTRACT.md §25.1) — ask for a reset
+        mail.
+
+        **Returns normally whether or not the address exists**, and this SDK
+        exposes no way to tell the two apart. That is not an omission to
+        improve on: a client that surfaced a "no such user" state — even one
+        inferred from timing — would turn the endpoint into the account
+        enumeration oracle its uniform response exists to prevent (§25.4).
+        """
+        self._ensure_open()
+        body = self._password_reset_body(
+            email=email, org_slug=org_slug, tenant_id=tenant_id, tenant_slug=tenant_slug
+        )
+        request = self._session.sync_client.build_request("POST", self._AC_RESET, json=body)
+        self._expect_no_content(self._session._send_sync(request), "request_password_reset")
+
+    def password_reset_context(self, *, token: SecretStr | str) -> PasswordResetContext:
+        """``GET /api/v1/auth/reset/context`` (CONTRACT.md §25.1) — the OPAQUE
+        policy for the account a reset token belongs to.
+
+        Call this before :meth:`confirm_password_reset` on any tenant that
+        might have §23 enabled: the client has to build a registration record,
+        and building one needs parameters it cannot know before it has a token
+        to ask with. Sending a plaintext password to a tenant in
+        ``opaque_mode: required`` is refused, and refused late (§25.4 rule 1).
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "GET", self._AC_RESET_CONTEXT, params={"token": _expose_token(token)}
+        )
+        return self._reset_context(self._session._send_sync(request))
+
+    def confirm_password_reset(
+        self,
+        *,
+        token: SecretStr | str,
+        new_password: SecretStr | str,
+        tenant_id: str,
+        opaque: dict[str, Any] | None = None,
+    ) -> None:
+        """``POST /api/v1/auth/reset/confirm`` (CONTRACT.md §25.1)."""
+        self._ensure_open()
+        body = self._password_reset_confirm_body(
+            token=token, new_password=new_password, tenant_id=tenant_id, opaque=opaque
+        )
+        request = self._session.sync_client.build_request("POST", self._AC_RESET_CONFIRM, json=body)
+        self._expect_no_content(self._session._send_sync(request), "confirm_password_reset")
+
+
+def _expose_token(value: SecretStr | str) -> str:
+    """Unwrap a ``SecretStr`` at the point of handing it to the transport."""
+    return value.get_secret_value() if isinstance(value, SecretStr) else value
 
 
 def _null_logger() -> logging.Logger:

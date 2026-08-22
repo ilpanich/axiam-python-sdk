@@ -25,6 +25,7 @@ CLIENT_SECRET = "rp-client-secret-1"
 JWKS_URI = f"{BASE_URL}/oauth2/jwks"
 DEVICE_AUTHORIZATION_ENDPOINT = f"{BASE_URL}/oauth2/device_authorization"
 END_SESSION_ENDPOINT = f"{BASE_URL}/oauth2/end_session"
+PAR_ENDPOINT = f"{BASE_URL}/oauth2/par"
 DEVICE_CODE = "device-code-value"
 USER_CODE = "WDJB-MJHT"
 LOGOUT_SID = "session-abc"
@@ -59,6 +60,7 @@ def discovery_document(**overrides: Any) -> dict[str, Any]:
         ],
         "device_authorization_endpoint": DEVICE_AUTHORIZATION_ENDPOINT,
         "end_session_endpoint": END_SESSION_ENDPOINT,
+        "pushed_authorization_request_endpoint": PAR_ENDPOINT,
         "backchannel_logout_supported": True,
         "backchannel_logout_session_supported": True,
     }
@@ -74,6 +76,7 @@ def discovery_document_without_optional_endpoints(**overrides: Any) -> dict[str,
     doc = discovery_document(**overrides)
     doc.pop("device_authorization_endpoint", None)
     doc.pop("end_session_endpoint", None)
+    doc.pop("pushed_authorization_request_endpoint", None)
     return doc
 
 
