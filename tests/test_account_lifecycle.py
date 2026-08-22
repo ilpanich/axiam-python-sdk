@@ -337,3 +337,86 @@ async def test_async_login_surfaces_the_setup_branch() -> None:
     )
     result = await client.login("alice@example.com", "pw")
     assert result.mfa_setup_required is True
+
+
+def _async_client(**kwargs: Any) -> AsyncAxiamClient:
+    return AsyncAxiamClient(  # type: ignore[arg-type]
+        base_url=BASE_URL, tenant_slug="acme", org_slug="globex", **kwargs
+    )
+
+
+@respx.mock
+async def test_async_forced_enrolment_runs_end_to_end() -> None:
+    respx.post(f"{A}/login").mock(
+        return_value=httpx.Response(
+            403, json={"mfa_setup_required": True, "setup_token": SETUP_TOKEN}
+        )
+    )
+    enroll = respx.post(f"{A}/mfa/setup/enroll").mock(
+        return_value=httpx.Response(200, json=ENROLL_BODY)
+    )
+    respx.post(f"{A}/mfa/setup/confirm").mock(return_value=_session_response(LOGIN_SUCCESS))
+    client = _async_client()
+
+    outcome = await client.login("alice@example.com", "pw")
+    assert outcome.mfa_setup_required is True
+    assert outcome.setup_token is not None
+
+    enrolment = await client.mfa_setup_enroll(setup_token=outcome.setup_token)
+    assert enrolment.secret_base32.get_secret_value() == SECRET
+    assert json.loads(enroll.calls[0].request.content)["setup_token"] == SETUP_TOKEN
+
+    # §25.2 rule 2: this IS the completion of the interrupted login, so it
+    # adopts credentials the same way login does.
+    result = await client.mfa_setup_confirm(setup_token=SETUP_TOKEN, totp_code="123456")
+    assert result.mfa_required is False
+    assert client._session.cookie_value("axiam_access")
+
+
+@respx.mock
+async def test_async_verify_email_and_resend() -> None:
+    verify = respx.post(f"{A}/verify-email").mock(return_value=httpx.Response(200))
+    resend = respx.post(f"{A}/resend-verification").mock(return_value=httpx.Response(204))
+    client = _async_client()
+
+    await client.verify_email(token=RESET_TOKEN, tenant_id=TENANT_ID)
+    await client.resend_verification(email="alice@example.com", tenant_id=TENANT_ID)
+
+    # The token is a body field, not a query parameter: a URL reaches proxy
+    # logs and browser history, and this one is a bearer credential.
+    assert "token" not in dict(verify.calls[0].request.url.params)
+    assert json.loads(verify.calls[0].request.content)["token"] == RESET_TOKEN
+    assert json.loads(resend.calls[0].request.content) == {
+        "email": "alice@example.com",
+        "tenant_id": TENANT_ID,
+    }
+
+
+@respx.mock
+async def test_async_password_reset_round_trip() -> None:
+    request_route = respx.post(f"{A}/reset").mock(return_value=httpx.Response(200))
+    respx.get(f"{A}/reset/context").mock(
+        return_value=httpx.Response(200, json={"opaque": {"mode": "required"}})
+    )
+    confirm = respx.post(f"{A}/reset/confirm").mock(return_value=httpx.Response(200))
+    client = _async_client()
+
+    await client.request_password_reset(email="alice@example.com")
+    # The workspace is filled from the client when the caller omits it.
+    assert json.loads(request_route.calls[0].request.content) == {
+        "email": "alice@example.com",
+        "org_slug": "globex",
+        "tenant_slug": "acme",
+    }
+
+    context = await client.password_reset_context(token=RESET_TOKEN)
+    assert context.opaque == {"mode": "required"}
+    assert set(context.model_dump().keys()) == {"opaque"}
+
+    await client.confirm_password_reset(
+        token=RESET_TOKEN,
+        new_password="new-password",
+        tenant_id=TENANT_ID,
+        opaque={"registration_record": "abc"},
+    )
+    assert json.loads(confirm.calls[0].request.content)["opaque"] == {"registration_record": "abc"}

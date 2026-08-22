@@ -603,3 +603,78 @@ async def test_async_register_requires_a_session() -> None:
     with pytest.raises(AuthError):
         await client.webauthn_register_start()
     assert route.call_count == 0
+
+
+def _async_signed_in(client: AsyncAxiamClient) -> AsyncAxiamClient:
+    client._session._cookies.set("axiam_access", "seeded-access", domain="axiam.test")
+    return client
+
+
+@respx.mock
+async def test_async_register_round_trip_passes_the_response_through() -> None:
+    respx.post(f"{W}/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    finish = respx.post(f"{W}/register/finish").mock(
+        return_value=httpx.Response(200, json=CREDENTIAL_WIRE)
+    )
+    client = _async_signed_in(
+        AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme")  # type: ignore[arg-type]
+    )
+
+    challenge = await client.webauthn_register_start()
+    # §24.0: the options are the server's, byte for byte — the SDK neither
+    # defaults nor re-encodes them.
+    assert challenge.challenge == CREATION_CHALLENGE
+    # §24.6a rule 1: the bridge hands back the INNER options object — the
+    # `publicKey` wrapper is the browser API's, not the platform's.
+    assert json.loads(webauthn_request_json(challenge)) == CREATION_CHALLENGE["publicKey"]
+
+    credential = await client.webauthn_register_finish(
+        state_token=challenge.state_token,
+        credential_name="Alice's laptop",
+        response=REGISTRATION_RESPONSE,
+    )
+    assert credential.credential_id == CREDENTIAL_WIRE["credential_id"]
+    sent = json.loads(finish.calls[0].request.content)
+    assert sent["response"] == REGISTRATION_RESPONSE
+    assert sent["state_token"] == STATE_TOKEN
+
+
+@respx.mock
+async def test_async_second_factor_ceremony_adopts_the_session() -> None:
+    respx.post(f"{W}/authenticate/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": DISCOVERABLE_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    respx.post(f"{W}/authenticate/finish").mock(return_value=_with_session_cookies(_login_wire()))
+    client = AsyncAxiamClient(  # type: ignore[arg-type]
+        base_url=BASE_URL, tenant_slug="acme", org_slug="globex"
+    )
+
+    challenge = await client.webauthn_authenticate_start(challenge_token=CHALLENGE_TOKEN)
+    assert challenge.state_token.get_secret_value() == STATE_TOKEN
+
+    result = await client.webauthn_authenticate_finish(
+        state_token=challenge.state_token, response=AUTHENTICATION_RESPONSE
+    )
+    # §24.3 rule 1: the SDK's own primary authentication leaves the client
+    # signed in, rather than handing back a token set and no session.
+    assert result.access_token.get_secret_value() == ACCESS_TOKEN
+    assert client._session.cookie_value("axiam_access")
+
+
+@respx.mock
+async def test_async_register_finish_also_refuses_without_a_session() -> None:
+    route = respx.post(f"{W}/register/finish")
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme")  # type: ignore[arg-type]
+    with pytest.raises(AuthError):
+        await client.webauthn_register_finish(
+            state_token=STATE_TOKEN,
+            credential_name="Alice's laptop",
+            response=REGISTRATION_RESPONSE,
+        )
+    assert route.call_count == 0

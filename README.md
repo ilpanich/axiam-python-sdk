@@ -789,7 +789,7 @@ response_json = your_device_channel(webauthn_request_json(challenge))
 
 session = client.webauthn_discoverable_finish(
     state_token=challenge.state_token,
-    response=response_json,          # the platform's string, verbatim
+    response=response_json,  # the platform's string, verbatim
 )
 ```
 
@@ -828,7 +828,7 @@ from axiam_sdk import WebauthnFailure, classify_webauthn_error, webauthn_error_m
 
 failure = classify_webauthn_error(name_relayed_by_the_device)
 if failure is WebauthnFailure.ALREADY_REGISTERED:
-    ...   # the only outcome whose remedy is "use a different device"
+    ...  # the only outcome whose remedy is "use a different device"
 show(webauthn_error_message(failure))
 ```
 
@@ -860,7 +860,7 @@ its second factor. These nine operations are how it gets there.
 ```python
 enrolment = client.mfa_enroll()
 render_qr(enrolment.totp_uri.get_secret_value())
-client.mfa_confirm(totp_code=code_typed_by_user)     # → True once it is live
+client.mfa_confirm(totp_code=code_typed_by_user)  # → True once it is live
 ```
 
 `secret_base32` and `totp_uri` are both `SecretStr`, and the URI is the one that
@@ -936,15 +936,21 @@ configuration = client.oidc_discover()
 request = client.oidc_begin(configuration=configuration, redirect_uri=uri, scope="openid profile")
 
 pushed = client.oidc_par(
-    request=request, redirect_uri=uri, scope="openid profile",
-    configuration=configuration, tenant_id=tenant_id,
+    request=request,
+    redirect_uri=uri,
+    scope="openid profile",
+    configuration=configuration,
+    tenant_id=tenant_id,
 )
 redirect(pushed.authorization_url)
 
 # …on the callback, unchanged by PAR:
 tokens = client.oidc_exchange(
-    code=code, redirect_uri=uri, nonce=pushed.nonce,
-    code_verifier=pushed.code_verifier, tenant_id=tenant_id,
+    code=code,
+    redirect_uri=uri,
+    nonce=pushed.nonce,
+    code_verifier=pushed.code_verifier,
+    tenant_id=tenant_id,
 )
 ```
 
