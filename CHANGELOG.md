@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor `openapi.json` at **1.0.0-alpha38**. The server registered the four
+  GDPR data-subject endpoints (`POST /api/v1/account/export`,
+  `GET /api/v1/account/export/{token}`, `POST /api/v1/account/delete`,
+  `GET /api/v1/auth/account/delete/cancel`), taking the document to 181
+  operations across 121 paths. Purely additive, and no SDK surface changes with
+  it: nothing in this repo is generated from the spec, so the cross-repo
+  artifact-drift gate was the only thing reporting `STALE`.
+
 - **`LoginResult` gains `mfa_setup_required` and `setup_token`** (§25.2 rule 1).
   A tenant that requires MFA answers `403 mfa_setup_required` with a setup token
   for an account that has none; that used to arrive as an `AuthzError`, telling
