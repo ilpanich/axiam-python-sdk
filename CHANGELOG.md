@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor `CONTRACT.md`. Repairs §14.1's link to the `device_login` heading,
+  which dropped a hyphen the em dash leaves behind and so rendered as a link
+  that went nowhere; the same heading's other two links were already correct.
+  Link target only — no normative change and no contract-version bump.
+- **Document §20 in the README body.** The statement claimed UMA 2.0 from the
+  previous release, and the README still described none of it — all seven
+  §20.1 operations, the §20.3 challenger and two runnable examples shipped
+  with no prose pointing at them. Adds the Protection API, the ticket dance,
+  and the three behaviours that cost the most to discover the hard way: the
+  ticket exchange never retries (a ticket is spent before the request is
+  evaluated), an undeclared scope is a `400` rather than a denial, and a
+  partial grant is refused whole with no auto-narrowing.
+
 - **Conformance statement now names §20.** The UMA 2.0 Protection API and ticket
   grant landed at 1.0.0-alpha25 — all seven §20.1 canonical operations on both
   `AxiamClient` and `AsyncAxiamClient`, plus the §20.3 `UmaChallenger`, covered by
