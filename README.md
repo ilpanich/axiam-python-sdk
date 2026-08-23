@@ -1079,6 +1079,89 @@ exchanged = client.token_exchange(
 
 The operator guide is `docs/api/federated-token-exchange.md`.
 
+## UMA 2.0 — Protection API and ticket grant (§20)
+
+For the **resource-server** side of a User-Managed Access deployment: a service
+that guards resources on someone else's behalf registers them, asks AXIAM what
+a caller would need, and exchanges the resulting ticket for a Requesting Party
+Token. All seven §20.1 operations are on both `AxiamClient` and
+`AsyncAxiamClient`, under the same names.
+
+### The Protection API
+
+The five resource-set operations and `uma_request_ticket` carry a **PAT** — an
+ordinary access token obtained through `login_client_credentials` with the
+`uma_protection` scope, not a user token.
+
+```python
+from axiam_sdk import RequestedPermission, ResourceSet
+
+# §20.2 rule 1 — a client-credentials token, not a user token: a minted ticket
+# binds to the client_id that minted it, so a user token cannot stand in.
+session = client.login_client_credentials(scope="uma_protection")
+pat = session.access_token
+
+resource = client.uma_register_resource(pat, ResourceSet(
+    name="invoice-2026-04",
+    type="urn:acme:invoice",
+    resource_scopes=["read", "approve"],
+))
+
+client.uma_read_resource(pat, resource.id)
+client.uma_update_resource(pat, resource.id, resource)
+client.uma_list_resources(pat)          # -> list[str] of ids
+client.uma_delete_resource(pat, resource.id)
+```
+
+### The ticket dance
+
+```python
+ticket = client.uma_request_ticket(pat, [
+    RequestedPermission(resource_id=resource.id, resource_scopes=["read"]),
+])
+
+rpt = client.uma_exchange_ticket(ticket=ticket, claim_token=subject_token)
+```
+
+`claim_token` is a **required keyword argument**, though UMA 2.0 §3.3.1 marks
+it optional. AXIAM implements neither incremental authorization nor
+claims-gathering, so it is the only channel that names a requesting party —
+and defaulting it to the resource server's own PAT would mint an RPT for the
+resource server instead of for the user.
+
+### Three things worth knowing
+
+**`uma_exchange_ticket` never retries, and that is not an oversight.** It is
+outside the §16 retry policy entirely — not on `5xx`, not on timeout, not on
+any transport failure. A permission ticket is consumed *before* the request is
+evaluated, so a failed exchange has already spent it; a retry cannot succeed,
+and under concurrency it is exactly the double redemption to avoid. On failure,
+request a **new** ticket. This is the one refusal in the contract that is not
+re-sendable after fixing something.
+
+**An undeclared scope is a `400`, not a denial.** `uma_request_ticket`
+validates scope names against each resource's declared set, and this SDK
+surfaces the distinction the server draws rather than flattening it — "you
+asked for something that does not exist" and "you may not have it" are
+different answers to different questions.
+
+**Partial grants are refused whole.** If a ticket names three pairs and the
+requesting party may have two, the answer is `access_denied` for the ticket,
+and this SDK does not auto-narrow and re-ask. Whether two of three is useful
+is a decision for the calling application, which knows what it is for.
+
+### Emitting the challenge (§20.3)
+
+`UmaChallenger` turns a denial from the §11 guards into a
+`WWW-Authenticate: UMA` header carrying a fresh ticket for the pairs the caller
+lacked, so a UMA-aware client learns where to obtain authority instead of only
+being told no. Pass it as `uma_challenge=` to FastAPI's `require_access` or
+Django's `@require_access`. Clients parse the header with `uma_parse_challenge`.
+
+Worked examples: [`examples/uma_resource_server.py`](./examples/uma_resource_server.py)
+and [`examples/uma_client.py`](./examples/uma_client.py) — the emit and consume
+halves.
+
 ## Logout — RP-initiated and back-channel (§12.7)
 
 `logout_url` builds the redirect; `verify_logout_token` validates a token the
