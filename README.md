@@ -1101,24 +1101,30 @@ from axiam_sdk import RequestedPermission, ResourceSet
 session = client.login_client_credentials(scope="uma_protection")
 pat = session.access_token
 
-resource = client.uma_register_resource(pat, ResourceSet(
-    name="invoice-2026-04",
-    type="urn:acme:invoice",
-    resource_scopes=["read", "approve"],
-))
+resource = client.uma_register_resource(
+    pat,
+    ResourceSet(
+        name="invoice-2026-04",
+        type="urn:acme:invoice",
+        resource_scopes=["read", "approve"],
+    ),
+)
 
 client.uma_read_resource(pat, resource.id)
 client.uma_update_resource(pat, resource.id, resource)
-client.uma_list_resources(pat)          # -> list[str] of ids
+client.uma_list_resources(pat)  # -> list[str] of ids
 client.uma_delete_resource(pat, resource.id)
 ```
 
 ### The ticket dance
 
 ```python
-ticket = client.uma_request_ticket(pat, [
-    RequestedPermission(resource_id=resource.id, resource_scopes=["read"]),
-])
+ticket = client.uma_request_ticket(
+    pat,
+    [
+        RequestedPermission(resource_id=resource.id, resource_scopes=["read"]),
+    ],
+)
 
 rpt = client.uma_exchange_ticket(ticket=ticket, claim_token=subject_token)
 ```
