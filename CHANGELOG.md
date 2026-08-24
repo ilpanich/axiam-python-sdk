@@ -18,6 +18,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Re-vendor `openapi.json`** for AXIAM server PR #368, which adds a third CA
+  key custodian, `vault_pki`, having HashiCorp Vault's PKI secrets engine
+  generate the CA key inside Vault and sign on AXIAM's behalf. The spec version
+  is unchanged at **1.0.0-alpha40**; `CONTRACT.md` and `proto/` are untouched by
+  that PR and are already current.
+
+  This is a specification re-sync with **no SDK surface change**. CA-certificate
+  administration is not part of the SDK contract — `CONTRACT.md` §1 maps no
+  method onto `/api/v1/organizations/{org_id}/ca-certificates`, and this SDK
+  models none of the five schemas below — so nothing here gains, loses, or
+  changes a symbol. It is vendored so the spec this SDK is written against keeps
+  describing the server it talks to.
+
+  What moved in the spec:
+
+  - `CaCertificate` gains a nullable `chain_pem`: the issuers above
+    `public_cert_pem`, concatenated PEM, nearest issuer first and the root last.
+    Absent for a CA that is its own root, which is every CA AXIAM generated
+    before this. Present for a `vault_pki` CA, where it is the only copy of the
+    root certificate anything outside Vault will ever see.
+  - `CaCertificate.public_cert_pem` is now documented as the certificate that
+    *signs*, which under `vault_pki` custody is the intermediate rather than the
+    root beneath which it was created. The field itself is unchanged.
+  - `GeneratedCaCertificate.private_key_pem` is **no longer required**. Under
+    `vault_pki` custody the key is born inside Vault and no API exports it, so
+    there is nothing to return. The field is omitted rather than sent as `null`,
+    which keeps a client that has always read it working unchanged against every
+    custodian that does produce a key.
+  - `GeneratedCertificate` gains a nullable `chain_pem`, present only when the
+    signer returned one — the `vault_pki` case, where the root's certificate
+    exists nowhere a client could fetch it from.
+  - `CreateCaCertificate` and `CreateCaCertificateRequest` gain the optional
+    `issue_from_root`, `intermediate_subject` and `intermediate_validity_days`.
+    All three are `vault_pki`-only and ignored by every other custodian.
+    `issue_from_root` defaults to off: a root that signs only one intermediate
+    can have that intermediate revoked and replaced without redistributing the
+    trust anchor, and a root that signs leaves directly cannot.
+
 - **`login_opaque` falls back to `login()` under `opaque_mode: optional`**
   (§23.4 rule 7), on both `AxiamClient` and `AsyncAxiamClient`. When the
   envelope does not open — a wrong password, an unknown identity, an account
