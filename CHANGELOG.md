@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Python 3.14 is now a supported and CI-built interpreter.** The trove
+  classifiers gain `Programming Language :: Python :: 3.14`, so PyPI and the
+  README badge both report it, and the gating CI matrix now runs the full test
+  suite on it.
+
+- **`tests/test_language_version_policy.py`** — a conformance test for the
+  support policy itself. `requires-python`, the trove classifiers and the CI
+  `python-version` matrix are three independent declarations of the same fact
+  and nothing previously compared them, so they could drift in either
+  direction: a classifier claiming an interpreter nothing built on, or a green
+  CI leg for a version `pip` would refuse to install on. The test fails the
+  build when they disagree.
+
+- **`examples/version_compatibility.py`** — a runnable preflight that reports
+  the running interpreter against the SDK's declared range, read out of
+  installed package metadata rather than hardcoded. Intended as a
+  container-image or startup check.
+
+- **A "Supported Python versions" section in the README**, stating the two
+  distinct claims explicitly: the SDK is *built* against its floor and *runs
+  on* everything through the newest release, with a CI leg proving each.
+
 - **`login/start` now carries `mode`, and it decides what follows a failed
   exchange — CONTRACT.md §23.4 rule 7.** The response to
   `POST /api/v1/auth/opaque/login/start` gains an optional `mode` field holding
@@ -28,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which tolerates its absence.
 
 ### Changed
+
+- **The gating CI matrix is now floor + newest (3.10, 3.14) rather than every
+  release in between (3.10, 3.11, 3.12, 3.13)** — D-18. Those two legs are the
+  ones that catch breakage: the floor rejects syntax and stdlib APIs the
+  declared minimum does not have, and the newest catches removals and
+  deprecations that have become errors. A version sitting between two green
+  legs is interpolation. 3.11-3.13 remain supported and classified; 3.12
+  additionally runs the whole suite under the Coverage and docs workflows.
+
+  `requires-python` is unchanged at `>=3.10`, so no consumer loses an install
+  they had before.
 
 - **Re-vendor `openapi.json`** for AXIAM server PR #368, which adds a third CA
   key custodian, `vault_pki`, having HashiCorp Vault's PKI secrets engine
