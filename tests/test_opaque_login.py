@@ -25,6 +25,7 @@ from axiam_sdk import AsyncAxiamClient, AuthError, AxiamClient, NetworkError, _o
 from tests._opaque_fake import FakeOpaqueLibrary
 
 BASE_URL = "https://example.test"
+LOGIN = f"{BASE_URL}/api/v1/auth/login"
 LOGIN_START = f"{BASE_URL}/api/v1/auth/opaque/login/start"
 LOGIN_FINISH = f"{BASE_URL}/api/v1/auth/opaque/login/finish"
 REGISTER_START = f"{BASE_URL}/api/v1/auth/opaque/register/start"
@@ -452,3 +453,218 @@ async def test_async_5xx_at_login_finish_is_a_networkerror(lib: FakeOpaqueLibrar
     async with _async_client() as client:
         with pytest.raises(NetworkError):
             await client.login_opaque(USER, PASSWORD)
+
+
+# ---------------------------------------------------------------------
+# §23.4 rule 7 — `mode` decides what follows a failed exchange, and only
+# `mode` does
+#
+# The exchange failing is the same event in every test below: the envelope
+# did not open, which covers a wrong password, an unknown identity, an
+# account with no registration record and a hostile endpoint alike — they are
+# indistinguishable by design. What differs is only what the `login/start`
+# response said the tenant's mode was. `KE3` is never sent in any of them.
+# ---------------------------------------------------------------------
+
+
+@respx.mock
+def test_optional_retries_over_the_password_endpoint_and_returns_its_success(
+    lib: FakeOpaqueLibrary,
+) -> None:
+    # Under `optional` an account with no record is the ordinary case, not an
+    # error: every account has none the moment an operator enables OPAQUE, and
+    # they acquire one only as they next set a password. Treating the failed
+    # exchange as final would lock out every user of a tenant mid-migration.
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="optional")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(
+        return_value=httpx.Response(200, json={"mfa_required": False}, headers=_session_cookies()),
+    )
+
+    with _client() as client:
+        result = client.login_opaque(USER, PASSWORD)
+
+    assert result.mfa_required is False
+    assert result.tenant_id == "acme"
+    assert finish.call_count == 0
+    assert password_login.call_count == 1
+    # The retry carries the same credentials, over the ordinary login body.
+    body = json.loads(password_login.calls[0].request.content)
+    assert body["username_or_email"] == USER
+    assert body["password"] == PASSWORD
+
+
+@respx.mock
+def test_optional_reports_the_password_endpoints_failure(lib: FakeOpaqueLibrary) -> None:
+    # The retry's outcome is the caller's outcome, failure included — the
+    # OPAQUE half is not re-reported on top of it.
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="optional")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(401))
+
+    with _client() as client, pytest.raises(AuthError):
+        client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 1
+
+
+@respx.mock
+def test_required_is_final_and_sends_no_plaintext(lib: FakeOpaqueLibrary) -> None:
+    # `required` answers 403 opaque_required for every principal in the tenant,
+    # so the retry would be refused anyway — an SDK that tried would put a
+    # plaintext password on the wire for nothing.
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="required")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client, pytest.raises(AuthError):
+        client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 0
+
+
+@respx.mock
+def test_a_response_with_no_mode_field_is_treated_as_required(lib: FakeOpaqueLibrary) -> None:
+    # A server older than contract 1.29 sends no `mode`. Falling back there
+    # would hand the plaintext to an endpoint on nothing but its silence.
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started()))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client, pytest.raises(AuthError):
+        client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert "mode" not in _started()  # the default body carries no `mode` at all
+    assert finish.call_count == 0
+    assert password_login.call_count == 0
+
+
+@respx.mock
+def test_an_unrecognised_mode_fails_closed(lib: FakeOpaqueLibrary) -> None:
+    # Fail closed on a value this SDK does not know: the cost is one refused
+    # login, where failing open is a plaintext password the contract says must
+    # never leave the process.
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(
+        return_value=httpx.Response(200, json=_started(mode="permissive")),
+    )
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client, pytest.raises(AuthError):
+        client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 0
+
+
+@respx.mock
+def test_optional_does_not_fall_back_when_the_exchange_succeeds(lib: FakeOpaqueLibrary) -> None:
+    # `mode` only matters after a failure. A successful exchange under
+    # `optional` completes over OPAQUE and never touches /auth/login.
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="optional")))
+    finish = respx.post(LOGIN_FINISH).mock(
+        return_value=httpx.Response(200, json={"mfa_required": False}, headers=_session_cookies()),
+    )
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client:
+        result = client.login_opaque(USER, PASSWORD)
+
+    assert result.mfa_required is False
+    assert finish.call_count == 1
+    assert password_login.call_count == 0
+
+
+@respx.mock
+def test_optional_does_not_rescue_a_configuration_failure(lib: FakeOpaqueLibrary) -> None:
+    # The `optional` clause is scoped to a failed AKE. A KSF this build cannot
+    # perform is a NetworkError, and retrying it over /auth/login would hide a
+    # misconfiguration behind a password prompt that happens to work.
+    respx.post(LOGIN_START).mock(
+        return_value=httpx.Response(
+            200, json={"opaque_session": "s", "ke2": "x", "ksf": "bcrypt", "mode": "optional"}
+        ),
+    )
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client, pytest.raises(NetworkError, match="bcrypt"):
+        client.login_opaque(USER, PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_optional_retries_over_the_password_endpoint(lib: FakeOpaqueLibrary) -> None:
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="optional")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(
+        return_value=httpx.Response(200, json={"mfa_required": False}, headers=_session_cookies()),
+    )
+
+    async with _async_client() as client:
+        result = await client.login_opaque(USER, PASSWORD)
+
+    assert result.mfa_required is False
+    assert finish.call_count == 0
+    assert json.loads(password_login.calls[0].request.content)["password"] == PASSWORD
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_optional_reports_the_password_endpoints_failure(
+    lib: FakeOpaqueLibrary,
+) -> None:
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="optional")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(401))
+
+    async with _async_client() as client:
+        with pytest.raises(AuthError):
+            await client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_required_is_final_and_sends_no_plaintext(lib: FakeOpaqueLibrary) -> None:
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started(mode="required")))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    async with _async_client() as client:
+        with pytest.raises(AuthError):
+            await client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_no_mode_field_is_treated_as_required(lib: FakeOpaqueLibrary) -> None:
+    lib.fail.add("login_finish")
+    respx.post(LOGIN_START).mock(return_value=httpx.Response(200, json=_started()))
+    finish = respx.post(LOGIN_FINISH).mock(return_value=httpx.Response(200, json={}))
+    password_login = respx.post(LOGIN).mock(return_value=httpx.Response(200, json={}))
+
+    async with _async_client() as client:
+        with pytest.raises(AuthError):
+            await client.login_opaque(USER, OTHER_PASSWORD)
+
+    assert finish.call_count == 0
+    assert password_login.call_count == 0

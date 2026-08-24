@@ -139,15 +139,20 @@ class AsyncAxiamClient(_AxiamClientBase):
         """OPAQUE login (CONTRACT.md §23) — the password never leaves this process.
 
         The async twin of :meth:`AxiamClient.login_opaque`; see that method for
-        the full contract. Returns the same :class:`LoginResult` as
-        :meth:`login`, including the ``mfa_required`` case.
+        the full contract — including what the ``login/start`` response's
+        ``mode`` field decides after a failed exchange (§23.4 rule 7): under
+        ``"optional"`` this retries over :meth:`login` and returns that call's
+        outcome, and under ``"required"``, an unrecognised value or no ``mode``
+        at all it raises :class:`AuthError` and retries nothing. Returns the
+        same :class:`LoginResult` as :meth:`login`, including the
+        ``mfa_required`` case.
 
         The key-stretching function runs on the event loop thread and blocks it:
         Argon2id at 19 MiB by default is tens to hundreds of milliseconds. In a
         server handling other requests concurrently, wrap the call in
         :func:`asyncio.to_thread`.
         """
-        from ._opaque import start_login
+        from ._opaque import OpaqueLoginStart, start_login
 
         self._ensure_open()
         self._on_credential_change()
@@ -162,14 +167,21 @@ class AsyncAxiamClient(_AxiamClientBase):
         response = await self._session._send_async(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "login/start")
-        started = response.json()
+        started = OpaqueLoginStart.from_wire(response.json())
 
-        ke3 = self._opaque_finish_login(exchange, started, password)
+        try:
+            ke3 = self._opaque_finish_login(exchange, started, password)
+        except AuthError:
+            # §23.4 rule 7, decided identically to the sync client — the shared
+            # `allows_password_fallback` is what keeps the two from drifting.
+            if not started.allows_password_fallback:
+                raise
+            return await self.login(username_or_email, password)
 
         request = self._session.async_client.build_request(
             "POST",
             OPAQUE_LOGIN_FINISH_PATH,
-            json={"opaque_session": started["opaque_session"], "ke3": ke3},
+            json={"opaque_session": started.opaque_session, "ke3": ke3},
         )
         response = await self._session._send_async(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):

@@ -323,6 +323,78 @@ class KsfParams:
         return handle
 
 
+#: The one ``mode`` value that permits a password-login retry (§23.4 rule 7).
+#:
+#: Compared against rather than enumerated: an unrecognised value — including a
+#: ``mode`` a server newer than this SDK invents — must behave as ``required``,
+#: because failing closed there costs a user one refused login and failing open
+#: would put a plaintext password on the wire the contract says must stay here.
+OPAQUE_MODE_OPTIONAL = "optional"
+
+
+@dataclass(frozen=True)
+class OpaqueLoginStart:
+    """The ``POST /api/v1/auth/opaque/login/start`` response, as this SDK reads
+    it (§23.5).
+
+    Only four things in that body matter to a client: the sealed
+    ``opaque_session`` to echo back, the ``ke2`` to open, the key-stretching
+    parameters to open it with, and ``mode``. Reading them into one frozen
+    object rather than passing the raw ``dict`` around is what lets the sync and
+    async clients share the decision in :attr:`allows_password_fallback`
+    instead of each spelling it out.
+    """
+
+    opaque_session: str
+    ke2: str | None
+    ksf: KsfParams
+    mode: str | None
+
+    @classmethod
+    def from_wire(cls, wire: dict[str, Any]) -> OpaqueLoginStart:
+        """Read the response body, tolerating an absent ``mode``.
+
+        ``mode`` arrived with contract 1.29, so a server that predates it sends
+        nothing — which :attr:`allows_password_fallback` treats as ``required``.
+        ``ke2`` is read as optional here so that a response missing it becomes
+        the caller's "malformed response" :class:`NetworkError` rather than a
+        ``KeyError`` raised from a parser.
+        """
+        mode = wire.get("mode")
+        return cls(
+            opaque_session=str(wire.get("opaque_session", "")),
+            ke2=None if wire.get("ke2") is None else str(wire["ke2"]),
+            ksf=KsfParams.from_wire(wire),
+            mode=None if mode is None else str(mode),
+        )
+
+    @property
+    def allows_password_fallback(self) -> bool:
+        """Whether a failed ``KE2`` may be retried over ``POST /auth/login``
+        (§23.4 rule 7).
+
+        True for exactly one value, ``"optional"``. Under that mode an account
+        with no registration record is the ordinary case rather than an error:
+        every account has none the moment an operator enables OPAQUE, and they
+        acquire one only as they next set a password, so a client that treated
+        the failed exchange as final would lock out every user of a tenant
+        mid-migration — the state ``optional`` exists to serve.
+
+        False for ``"required"``, for an unrecognised value, and for a response
+        carrying no ``mode`` at all (a server older than the field). Under
+        ``required`` the retry would be refused anyway — ``/auth/login`` answers
+        ``403 opaque_required`` for every principal in the tenant — so trying
+        would put a plaintext password on the wire for nothing.
+
+        This field is **not** downgrade protection and must not be presented as
+        such: a hostile server that wanted the plaintext could answer ``404``
+        and get the fallback whatever it puts here. ``required`` is what closes
+        that, server-side, by refusing ``/auth/login`` before examining any
+        credential.
+        """
+        return self.mode == OPAQUE_MODE_OPTIONAL
+
+
 class _Exchange:
     """Shared handle bookkeeping for the two exchanges.
 

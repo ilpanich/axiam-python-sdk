@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`login/start` now carries `mode`, and it decides what follows a failed
+  exchange — CONTRACT.md §23.4 rule 7.** The response to
+  `POST /api/v1/auth/opaque/login/start` gains an optional `mode` field holding
+  the tenant's `opaque_mode` (`optional` or `required`; never `disabled`, which
+  still answers `404`). Read into the new `OpaqueLoginStart` response type,
+  which tolerates its absence.
+
+### Changed
+
+- **`login_opaque` falls back to `login()` under `opaque_mode: optional`**
+  (§23.4 rule 7), on both `AxiamClient` and `AsyncAxiamClient`. When the
+  envelope does not open — a wrong password, an unknown identity, an account
+  with no registration record, or a hostile endpoint, indistinguishable by
+  design — `KE3` is still never sent, and what happens next now depends only on
+  `mode`:
+
+  - `optional` — the same credentials are retried over `POST /auth/login`
+    before anything is reported, and that call's outcome is the caller's:
+    its success on success, its error on failure. Every account has no
+    registration record the moment an operator enables OPAQUE and acquires one
+    only when its password is next set, so treating the failed exchange as
+    final locked out every user of a tenant mid-migration — the state
+    `optional` exists to serve.
+  - `required`, an unrecognised value, or **no `mode` at all** (a server older
+    than contract 1.29) — `AuthError`, and nothing is retried. Under `required`
+    the retry would be refused anyway (`403 opaque_required`, for every
+    principal, before any credential is examined), so trying would put a
+    plaintext password on the wire for nothing.
+
+  **Not a behaviour change under `required`**, which is what this SDK did for
+  every mode until now, and no new error type: an OPAQUE credential failure is
+  still `AuthError`. `mode` is **not** downgrade protection and the SDK does not
+  document it as one — a hostile server that wanted the plaintext could answer
+  `404` and get the fallback whatever it puts in the field.
+
+- **README: the OPAQUE section no longer says "do not retry over `login()`"**
+  unconditionally, which contract 1.29 makes wrong for `optional`. It now
+  tabulates the three `mode` cases and says the SDK handles the retry itself.
+
+- Re-vendor `CONTRACT.md` at **1.29** and `openapi.json` at
+  **1.0.0-alpha40**, byte-identical to the server repository's `sdks/`. §23.4
+  rule 7 is the only normative change; `OpaqueLoginStartResponse` gains the
+  matching optional `mode` property.
+
 ## [1.0.0-alpha40] - 2026-08-23
 
 ### Changed
