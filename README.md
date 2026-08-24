@@ -680,10 +680,36 @@ except NetworkError as exc:
 
 `AuthError` from `login_opaque` is the whole of the authentication check, and
 covers both halves of the mutual authentication: a wrong password, an account
-that does not exist, and a server that does not hold the record are
-indistinguishable by design. **Do not retry over `login()`** — that hands the
-plaintext to an endpoint that just failed to prove it holds the record (§23.4
-rule 7).
+that does not exist, an account with no registration record, and a server that
+does not hold the record are indistinguishable by design. `KE3` is never sent
+once the envelope fails to open (§23.4 rule 7).
+
+### `mode`, and the one time falling back to `login()` is right
+
+What follows a failed exchange is decided by the `mode` the `login/start`
+response carries — the tenant's `opaque_mode` — and by nothing else. **The SDK
+handles it for you**, on both clients:
+
+| `mode` | after a failed `KE2` |
+| --- | --- |
+| `"optional"` | `login_opaque` retries over `POST /auth/login` with the same credentials and returns that call's outcome — its success, or its error |
+| `"required"` | `AuthError`; nothing is retried |
+| unrecognised, or **absent** (a server older than contract 1.29) | as `"required"` — fail closed |
+
+`optional` is the mode a tenant lives in for as long as its migration takes.
+Every account has no registration record the moment an operator enables OPAQUE,
+and acquires one only when its password is next set, so under `optional` a
+failed exchange is the ordinary case rather than an error. An SDK that treated
+it as final would lock out every user of the tenant — which would make enabling
+`optional` indistinguishable from enabling `required` with nobody enrolled.
+Under `required` the retry would be refused anyway: `/auth/login` answers
+`403 opaque_required` for every principal in the tenant, before examining any
+credential, so trying would put a plaintext password on the wire for nothing.
+
+`mode` is **not** downgrade protection, and nothing here should be read as
+though it were: a hostile server that wanted the plaintext could answer `404`
+and get the fallback whatever it puts in this field. `required` is what closes
+that, server-side.
 
 ### Enrolment
 

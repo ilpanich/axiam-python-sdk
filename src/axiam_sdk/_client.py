@@ -72,7 +72,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # Imported for types only. At runtime `_opaque` is imported inside the two
     # methods that use it, so an installation without `libaxiam_opaque_ffi`
     # neither pays for the ctypes machinery nor fails at import.
-    from axiam_sdk._opaque import LoginExchange
+    from axiam_sdk._opaque import LoginExchange, OpaqueLoginStart
 
 LOGIN_PATH = "/api/v1/auth/login"
 OPAQUE_REGISTER_START_PATH = "/api/v1/auth/opaque/register/start"
@@ -328,7 +328,7 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         return error_from_http_status(response.status_code, f"OPAQUE {what} failed")
 
     def _opaque_finish_login(
-        self, exchange: LoginExchange, started: dict[str, Any], password: str
+        self, exchange: LoginExchange, started: OpaqueLoginStart, password: str
     ) -> str:
         """Open the envelope and produce ``KE3``, or fail the login.
 
@@ -345,20 +345,18 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
           verify. A wrong password, an account that does not exist, and a server
           that does not hold the record are indistinguishable by design.
 
-        Either way nothing further may be sent (§23.4 rule 7), which is why this
-        raises rather than returning a sentinel the caller could ignore. A
-        ``KeyError`` from a ``*/start`` response missing ``ke2`` is a malformed
-        response rather than a credential failure, so it becomes a
-        ``NetworkError``.
+        Either way ``KE3`` is never sent (§23.4 rule 7), which is why this
+        raises rather than returning a sentinel the caller could ignore. What
+        the *caller* does with an ``AuthError`` then depends on
+        ``started.mode`` and on nothing else — see
+        :attr:`~axiam_sdk._opaque.OpaqueLoginStart.allows_password_fallback`.
+        A ``*/start`` response missing ``ke2`` is a malformed response rather
+        than a credential failure, so it becomes a ``NetworkError``.
         """
-        from ._opaque import KsfParams
-
+        if started.ke2 is None:
+            raise NetworkError("OPAQUE login/start returned no `ke2`")
         try:
-            ke2 = started["ke2"]
-        except KeyError as exc:
-            raise NetworkError("OPAQUE login/start returned no `ke2`") from exc
-        try:
-            return exchange.finish(password, ke2, KsfParams.from_wire(started))
+            return exchange.finish(password, started.ke2, started.ksf)
         except (NetworkError, AuthError):
             raise
         except Exception as exc:
@@ -711,17 +709,40 @@ class AxiamClient(_AxiamClientBase):
             reset a working password, and would stop a caller falling back to
             :meth:`login`.
         :raises AuthError: for a wrong password, an account that does not exist,
-            and a server that does not hold the record — indistinguishable by
-            design. **Nothing is sent to ``login/finish`` in that case** (§23.4
-            rule 7), and a caller must not retry over :meth:`login`: that would
-            hand the plaintext to a server that just failed to prove itself.
+            an account with no registration record, and a server that does not
+            hold the record — indistinguishable by design. **Nothing is sent to
+            ``login/finish`` in that case** (§23.4 rule 7).
+
+        **The ``mode`` field decides what happens after a failed exchange**, and
+        nothing else does (§23.4 rule 7). ``login/start`` carries the tenant's
+        ``opaque_mode``:
+
+        * ``"optional"`` — this method retries over :meth:`login` with the same
+          credentials before reporting anything, and returns that call's
+          outcome. Under ``optional`` an account with no record is the ordinary
+          case rather than an error: every account has none the moment an
+          operator enables OPAQUE, and they acquire one only as they next set a
+          password. Treating the failed exchange as final would lock out every
+          user of a tenant mid-migration, which is the state ``optional`` exists
+          to serve.
+        * ``"required"``, an unrecognised value, or **no ``mode`` at all** (a
+          server older than the field) — the failure is final and nothing is
+          retried over :meth:`login`. It would be refused anyway: ``required``
+          answers ``403 opaque_required`` for every principal in the tenant, so
+          trying would put a plaintext password on the wire for nothing.
+
+        ``mode`` is **not** downgrade protection and must not be read as such: a
+        hostile server that wanted the plaintext could answer ``404`` and get
+        the fallback whatever it puts here. ``required`` is what closes that,
+        server-side, by refusing ``/auth/login`` before examining any
+        credential.
 
         This runs the tenant's key-stretching function: Argon2id at 19 MiB by
         default, tens to hundreds of milliseconds of blocking work. That cost is
         the point — it is what makes a stolen record expensive to attack even by
         someone holding the OPRF seed.
         """
-        from ._opaque import start_login
+        from ._opaque import OpaqueLoginStart, start_login
 
         self._ensure_open()
         self._on_credential_change()
@@ -739,14 +760,21 @@ class AxiamClient(_AxiamClientBase):
         response = self._session._send_sync(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "login/start")
-        started = response.json()
+        started = OpaqueLoginStart.from_wire(response.json())
 
-        ke3 = self._opaque_finish_login(exchange, started, password)
+        try:
+            ke3 = self._opaque_finish_login(exchange, started, password)
+        except AuthError:
+            # §23.4 rule 7. `KE3` is not sent either way; `mode` — and only
+            # `mode` — decides whether the plaintext path may be tried.
+            if not started.allows_password_fallback:
+                raise
+            return self.login(username_or_email, password)
 
         request = self._session.sync_client.build_request(
             "POST",
             OPAQUE_LOGIN_FINISH_PATH,
-            json={"opaque_session": started["opaque_session"], "ke3": ke3},
+            json={"opaque_session": started.opaque_session, "ke3": ke3},
         )
         response = self._session._send_sync(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
