@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha43] - 2026-08-24
+
 ### Added
+
+- Support Python 3.14 and pin the floor+newest version policy (#62)
 
 - **Python 3.14 is now a supported and CI-built interpreter.** The trove
   classifiers gain `Programming Language :: Python :: 3.14`, so PyPI and the
@@ -32,7 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on* everything through the newest release, with a CI leg proving each.
 
 ### Changed
-
 
 - **The gating CI matrix is now floor + newest (3.10, 3.14) rather than every
   release in between (3.10, 3.11, 3.12, 3.13)** — D-18. Those two legs are the
