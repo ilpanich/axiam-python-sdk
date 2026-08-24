@@ -30,7 +30,7 @@ dependencies = [
     # `_runtime_version.ValidateProtobufRuntimeVersion`, which enforces the
     # gencode version at import time, so the floor is the protobuf that
     # generated them (6.31.1) rather than merely "some protobuf".
-    "protobuf>=6.31.1,<7",
+    "protobuf>=6.31.1,<8",
     "aio-pika==9.6.*",
     "pydantic>=2",
     "PyJWT>=2.13",
