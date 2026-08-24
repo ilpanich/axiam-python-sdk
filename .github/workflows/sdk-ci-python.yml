@@ -27,8 +27,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # D-18: CI test matrix = Python 3.10/3.11/3.12/3.13 on ubuntu-latest.
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        # D-18: the gating matrix is floor + newest, not every release in
+        # between. The floor is `requires-python` from pyproject.toml (3.10);
+        # the newest is the latest GA interpreter (3.14, released 2025-10-07).
+        # Those two legs are the ones that actually catch breakage: the floor
+        # rejects syntax and stdlib APIs the declared minimum does not have,
+        # and the newest catches removals and deprecation-turned-error changes.
+        # 3.11/3.12/3.13 sit between two green legs and are interpolation —
+        # 3.12 still runs in full under the Coverage and docs workflows.
+        # tests/test_language_version_policy.py fails if this list and the
+        # pyproject classifiers ever disagree.
+        python-version: ['3.10', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
