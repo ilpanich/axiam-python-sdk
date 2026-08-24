@@ -5,17 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0-alpha41] - 2026-08-24
-
-### Added
-
-- Honour `mode` after a failed exchange (§23.4 rule 7)
-
-### Changed
-
-- Re-vendor openapi.json for the vault_pki CA custodian (axiam#368)
-- Re-vendor CONTRACT.md 1.29 and openapi.json 1.0.0-alpha40
-
 ## [Unreleased]
 
 ### Added
@@ -42,14 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct claims explicitly: the SDK is *built* against its floor and *runs
   on* everything through the newest release, with a CI leg proving each.
 
-- **`login/start` now carries `mode`, and it decides what follows a failed
-  exchange — CONTRACT.md §23.4 rule 7.** The response to
-  `POST /api/v1/auth/opaque/login/start` gains an optional `mode` field holding
-  the tenant's `opaque_mode` (`optional` or `required`; never `disabled`, which
-  still answers `404`). Read into the new `OpaqueLoginStart` response type,
-  which tolerates its absence.
-
 ### Changed
+
 
 - **The gating CI matrix is now floor + newest (3.10, 3.14) rather than every
   release in between (3.10, 3.11, 3.12, 3.13)** — D-18. Those two legs are the
@@ -61,6 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `requires-python` is unchanged at `>=3.10`, so no consumer loses an install
   they had before.
+
+## [1.0.0-alpha41] - 2026-08-24
+
+### Added
+
+- Honour `mode` after a failed exchange (§23.4 rule 7)
+
+- **`login/start` now carries `mode`, and it decides what follows a failed
+  exchange — CONTRACT.md §23.4 rule 7.** The response to
+  `POST /api/v1/auth/opaque/login/start` gains an optional `mode` field holding
+  the tenant's `opaque_mode` (`optional` or `required`; never `disabled`, which
+  still answers `404`). Read into the new `OpaqueLoginStart` response type,
+  which tolerates its absence.
+
+### Changed
+
+- Re-vendor openapi.json for the vault_pki CA custodian (axiam#368)
+
+- Re-vendor CONTRACT.md 1.29 and openapi.json 1.0.0-alpha40
 
 - **Re-vendor `openapi.json`** for AXIAM server PR #368, which adds a third CA
   key custodian, `vault_pki`, having HashiCorp Vault's PKI secrets engine
@@ -157,42 +159,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add WebAuthn (§24), account lifecycle (§25) and PAR (§26)
 
-### Changed
-
-- Cover the async §24/§25 twins and reformat the README
-- Re-vendor CONTRACT.md at 1.28
-
-## [Unreleased]
-
-### Added
-
 - **WebAuthn and passkeys — CONTRACT.md §24.** Six relying-party operations on
   both `AxiamClient` and `AsyncAxiamClient`: `webauthn_register_start`/`_finish`,
   `webauthn_authenticate_start`/`_finish`,
   `webauthn_discoverable_start`/`_finish`. Python has no authenticator, so
   §24.6b's linked-API helper is deliberately absent — §24.6b rule 2 forbids
   emulating one in software.
+
 - **The §24.6a JSON bridge.** `webauthn_request_json()` produces the exact
   string a platform authenticator API takes, and every `*_finish` accepts the
   platform's response JSON string directly — so a service driving an Android or
   iOS client passes both directions through untouched. Plus
   `classify_webauthn_error()` / `webauthn_error_message()`, which give a
   server-side caller the same five outcomes a browser sees.
+
 - **Account lifecycle and MFA enrolment — CONTRACT.md §25.** Nine operations:
   `mfa_enroll`/`mfa_confirm`, `mfa_setup_enroll`/`mfa_setup_confirm`,
   `verify_email`, `resend_verification`, `request_password_reset`,
   `confirm_password_reset`, `password_reset_context`.
+
 - **Pushed authorization requests — CONTRACT.md §26 (RFC 9126).** `oidc_par` on
   both clients, plus `pushed_authorization_request_endpoint` on
   `OidcConfiguration`.
+
 - Examples: `webauthn_relying_party.py`, `account_lifecycle.py`, `par_login.py`.
 
 ### Changed
+
+- Cover the async §24/§25 twins and reformat the README
+
+- Re-vendor CONTRACT.md at 1.28
 
 - Re-vendor `CONTRACT.md`. Repairs §14.1's link to the `device_login` heading,
   which dropped a hyphen the em dash leaves behind and so rendered as a link
   that went nowhere; the same heading's other two links were already correct.
   Link target only — no normative change and no contract-version bump.
+
 - **Document §20 in the README body.** The statement claimed UMA 2.0 from the
   previous release, and the README still described none of it — all seven
   §20.1 operations, the §20.3 challenger and two runnable examples shipped
@@ -245,8 +247,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Maintenance release — no notable changes since v1.0.0-alpha33.
-
-## [Unreleased]
 
 ## [1.0.0-alpha33] - 2026-08-21
 
