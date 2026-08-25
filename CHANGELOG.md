@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Re-vendor `openapi.json` at 1.0.0-alpha43** for AXIAM server PR #379, which
+  adds **tenant signing CAs**: an intermediate CA created beneath one of the
+  organization's CAs and scoped to a single tenant, so a tenant's user, service
+  and device certificates chain through a CA that can be revoked, rotated or
+  handed to a different operator without redistributing the anchor the rest of
+  the estate trusts. `CONTRACT.md` and `proto/` were untouched by that PR and are
+  already current.
+
+  This is a specification re-sync with **no SDK surface change**. CA-certificate
+  administration is not part of the SDK contract — `CONTRACT.md` §1 maps no
+  method onto any `/api/v1/organizations/{org_id}/...` CA route — and this SDK
+  models none of the schemas below, so nothing here gains, loses, or changes a
+  symbol. The spec is vendored so what this SDK is written against keeps
+  describing the server it talks to.
+
+  What moved in the spec:
+
+  - **`POST /api/v1/organizations/{org_id}/tenants/{tenant_id}/signing-cas`**
+    (`generate_intermediate`) — create a tenant signing CA under an organization
+    CA, with AXIAM generating the key. Returns `GeneratedCaCertificate`; the
+    private key comes back exactly once, and not at all under `vault_pki`, where
+    it was born inside Vault and no API exports it.
+  - **`GET .../signing-cas`** (`list_intermediates`) — a paginated list of one
+    tenant's signing CAs.
+  - **`POST .../signing-cas/sign-csr`** (`sign_intermediate_csr`) — the BYOK
+    counterpart: sign a PKCS#10 CSR produced elsewhere, so the private key never
+    reaches AXIAM at all. The response carries no `private_key_pem` because there
+    is none to carry.
+  - **`CaCertificate` gains two nullable fields** — `tenant_id`, the tenant a CA
+    signs for, and `parent_ca_id`, the CA in the organization that signed it.
+    Both are absent for an organization-level CA, which is the trust anchor and
+    the only kind that existed before this change.
+  - **Four new schemas**: `CreateIntermediateCa`, `CreateIntermediateCaRequest`,
+    `SignIntermediateCsr` and `SignIntermediateCsrRequest`.
+
+  The spec version moves from **1.0.0-alpha40** to **1.0.0-alpha43**; the
+  intervening alpha41 and alpha42 releases changed nothing in it but that string.
+
 ## [1.0.0-alpha43] - 2026-08-24
 
 ### Added
