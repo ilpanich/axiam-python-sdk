@@ -5,4 +5,4 @@
 # diff nobody asked for, and an unpinned theme is the usual way a site's
 # navigation changes shape overnight.
 sphinx~=8.1
-furo~=2024.8
+furo~=2025.12
