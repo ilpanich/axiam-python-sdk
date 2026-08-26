@@ -6204,18 +6204,78 @@ code, never the contract's expectation of it.
 |-----|-----------|
 | Rust | reference implementation (contract 1.30) |
 | TypeScript | reference implementation (contract 1.30) |
-| Python, Java, C#, PHP, Go, Kotlin, Swift, C, C++ | registry and contract vendored; implementation follows |
+| Python, Go, Java, Kotlin, C#, PHP, Swift, C, C++ | implemented (contract 1.30) |
 
-The two reference implementations exist to prove the section is buildable as written
-before nine more repositories commit to it, and to give the remaining SDKs a generator and
-a test suite to port rather than a specification to interpret. The C and C++ ports carry
-the §27.3 flat-symbol accommodation; every other SDK carries the namespace handle.
+**All eleven now implement it.** The two reference implementations existed to prove the
+section was buildable as written before nine more repositories committed to it, and to
+give the rest a generator and a test suite to port rather than a specification to
+interpret. That is what happened: each of the nine carries its own generator over
+`management-registry.json`, its own committed output, and a CI job that regenerates and
+diffs (§27.8).
+
+**C is the only SDK with flat symbols.** §27.3's table gives C
+`axiam_service_accounts_rotate_secret(client, id, &out)` and every other language a
+namespace handle — C++ included, whose row reads
+`client.service_accounts().rotate_secret(id)`. The sentence that stood here previously
+said "the C and C++ ports carry the §27.3 flat-symbol accommodation", which contradicted
+the table two sections above it and the prose beneath that table granting the
+accommodation to C alone, on the stated ground that "C has no handle to hang operations
+on". C++ has one and uses it.
+
+**Both accessor forms are present everywhere.** §27.2 rule 4 makes the single
+`client.management()` accessor an *addition* to the per-namespace accessors §27.3's table
+specifies, and requires the two to return equivalent handles where an SDK offers both.
+Five SDKs first shipped the addition without the baseline — reading "additionally" as
+"instead" — and now ship both, with the direct accessors delegating to `management()` so
+the equivalence is structural rather than a promise two code paths have to keep.
 
 ---
 
 ### OpenAPI Export Feature Flag
 
 `openapi.json` (kept in this directory, and mirrored into every SDK repo) is generated with `--no-default-features` (SAML endpoints excluded). Both the committed spec and the CI drift gate use identical flags. SDK consumers requiring SAML endpoint documentation should build AXIAM with the `saml` feature enabled and export locally.
+
+### Telling two exports apart — `info.x-axiam-spec-digest`
+
+`info.version` is the **release** version. It tracks the server's crate version, so it
+moves when a release is cut — not when a path is added. Two builds can therefore describe
+genuinely different APIs under the same string, and they have: `main` and a release branch
+both reported `1.0.0-alpha44` while differing by two paths
+(`.../ca-certificates/{id}/migrate-custody` and `.../mtls-trust-anchor`). Nothing in the
+document let a consumer tell those exports apart.
+
+Every export now carries a second field for exactly that question:
+
+```json
+"info": {
+  "title": "AXIAM API",
+  "version": "1.0.0-beta01",
+  "x-axiam-spec-digest": "sha256:<64 hex characters>"
+}
+```
+
+It is a SHA-256 over the whole document with that field itself absent, so it is a function
+of the spec's content and re-stamping is idempotent. Two exports with the same digest are
+the same document, byte for byte, whatever their versions say; two with different digests
+differ somewhere, whatever their versions say.
+
+`info.version` keeps its meaning and consumers should keep reading it as the API's semantic
+version. The digest answers the other question — *is this the same document?* — which a
+semantic version was never able to.
+
+**The version is part of what is digested**, so a release bump changes the digest even when
+no path did. That is deliberate: "same document" is a claim that can be checked, where "same
+API" would need an argument about whether a `description`, a `tag` or an example counts as
+part of the API. A consumer who wants the narrower question can compare the members they
+care about; this field answers the wider one exactly. Both directions of the failure are now
+visible — `1.0.0-alpha44` and `1.0.0-beta01` were the same document under two versions, and
+`1.0.0-alpha44` on two branches was two documents under one.
+
+**For SDK authors.** Nothing is required of you: the field is an OpenAPI `x-` extension, so
+a validator and a code generator both ignore it, and no SDK's generated surface changes.
+It is there for the tooling around the SDK — a generator deciding whether to re-run, a
+contract test asserting the vendored copy is current, a gateway keyed on a spec revision.
+Comparing digests is exact where comparing versions was not.
 
 ---
 
