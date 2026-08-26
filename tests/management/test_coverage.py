@@ -89,7 +89,9 @@ class _Colour(Enum):
 
 def test_expose_renders_the_kinds_model_dump_leaves_as_objects() -> None:
     """``model_dump`` in python mode hands back objects JSON cannot carry."""
-    when = datetime.datetime(2026, 8, 26, tzinfo=datetime.UTC)
+    # `datetime.timezone.utc`, not `datetime.UTC`: the alias is 3.11+ and this
+    # SDK supports 3.10 (D-11).
+    when = datetime.datetime(2026, 8, 26, tzinfo=datetime.timezone.utc)
     identifier = uuid.UUID("11111111-1111-4111-8111-111111111111")
     assert _expose(_Colour.RED) == "red"
     assert _expose(identifier) == "11111111-1111-4111-8111-111111111111"
