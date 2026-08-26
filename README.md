@@ -24,12 +24,17 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 ## Contract conformance
 
 This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22,
-§23, §24, §25, §26 (including §6.1 mTLS and the §10.1 minimum local-verification set).
+§23, §24, §25, §26, §27 (including §6.1 mTLS and the §10.1 minimum local-verification
+set).
 
-§12.7, §14, §15, §20, §22, §24, §25 and §26 are named rather than folded into the
+§12.7, §14, §15, §20, §22, §24, §25, §26 and §27 are named rather than folded into the
 range because they landed after this SDK already claimed §1–§13: widening the
 range silently would turn a statement that was true when written into a
 different claim without anyone editing it.
+
+§27 is the management API — 146 administrative operations across 24 namespaces,
+generated from the vendored [`management-registry.json`](./management-registry.json)
+and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
 See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contract.
 
@@ -1249,6 +1254,116 @@ so a valid token legitimately arrives twice; the SDK has no durable store and
 an in-memory guard would silently drop a real second logout after a restart.
 
 See [`examples/logout.py`](./examples/logout.py).
+
+## Management API (§27)
+
+146 administrative operations across 24 namespaces, reached as
+`client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
+I/O, so there is nothing to cache and nothing to close:
+
+```python
+from pydantic import SecretStr
+
+from axiam_sdk import AxiamClient
+from axiam_sdk.management import PageRequest, models
+
+with AxiamClient(base_url="https://axiam.example", tenant_slug="acme") as client:
+    client.login("admin@example.test", password)
+
+    page = client.users.list(PageRequest(limit=50))
+    print(page.total)  # the whole set, not this page
+    everyone = client.users.list_all()  # walks to exhaustion
+
+    user = client.users.create(
+        models.CreateUserRequest(
+            username="alice", email="alice@example.test", password=SecretStr(pw)
+        )
+    )
+    client.users.update(user.id, models.UpdateUserRequest(email="new@example.test"))
+```
+
+The same surface exists on `AsyncAxiamClient` with `await`.
+
+### What the surface guarantees
+
+| Rule | What it means here |
+|------|--------------------|
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `list` and fourteen a `get`; flattening 146 operations onto the client would bury the eight §1 methods most callers want. |
+| §27.4 rule 1 | No session, no wire call — `login()` first, or an `AuthError` before anything is sent. |
+| §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.in_org(...)` / `.for_tenant(...)` override them and return a *new* handle. |
+| §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. |
+| §27.4 rule 5 | A sparse update body sends **only** the fields you set. A replacement body (`SetOrgSettings`, `SetMtlsTrustAnchor`, ...) will not construct half-filled. |
+| §27.4 rule 7 | 404 → `NotFoundError` (an `AuthzError`), 409 → `ConflictError`, 400/422 → `ValidationError` with per-field detail (a `NetworkError`). |
+| §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
+| §27.5 | One-time secrets come back as `SecretStr` — redacted from every `repr`, log line and JSON rendering. `.get_secret_value()` is the only way out. |
+
+Every `{..._id}` on this surface is a UUID, and a non-UUID argument is refused
+locally rather than sent to produce a 404 that reads as "no such object".
+
+### Declarative management (§27.6 / §27.7)
+
+Describe the shape a tenant should have, then reconcile it. `plan` reads only;
+`apply` stops at the first failure and reports every step, including the ones it
+did not attempt — these are independent HTTP endpoints and nothing spans them,
+so there is deliberately no `rollback`.
+
+```python
+from axiam_sdk.management.manifest import (
+    GrantSpec,
+    PermissionSpec,
+    ResourceSpec,
+    RoleSpec,
+    ScopeSpec,
+    define_manifest,
+)
+
+shape = define_manifest(
+    resources=[
+        ResourceSpec(
+            key="docs",
+            name="documents",
+            resource_type="collection",
+            scopes=(ScopeSpec(key="draft", name="draft", description="Unpublished"),),
+        )
+    ],
+    permissions=[PermissionSpec(key="read", action="document:read", description="Read")],
+    roles=[
+        RoleSpec(
+            key="editor",
+            name="Editor",
+            description="Edits",
+            grants=(GrantSpec(permission="read", scopes=("draft",)),),
+        )
+    ],
+)
+
+plan = client.manifest.plan(shape)
+if not plan.is_converged():
+    report = client.manifest.apply(shape)
+```
+
+`define_manifest` validates at the point of declaration, so a dangling key, a
+duplicate, or a cycle in the resource parents fails where the manifest is
+*written* rather than on the first plan against a live tenant. The decorator form
+(`@axiam_resource`, `@axiam_role`, `@axiam_grant`, ... assembled by
+`collect_manifest`) lowers to exactly the same value.
+
+Certificates, CA certificates, PGP keys and SCIM tokens are deliberately absent
+from the manifest: they mint one-time secrets, and "ensure a certificate exists"
+either re-mints one on every run or silently accepts drift.
+
+### Regenerating the surface
+
+```bash
+python scripts/gen_management.py           # rewrite the generated files
+python scripts/gen_management.py --check    # what CI runs; fails on drift
+```
+
+The generator reads `management-registry.json` and `openapi.json` — both
+vendored from `ilpanich/axiam` — and formats its output with `ruff format`, the
+same tool the lint job checks with. Do not edit anything under
+`src/axiam_sdk/management/ops/`, `src/axiam_sdk/management/models.py` or
+`tests/test_management_surface_generated.py` by hand.
 
 ## Webhook signature verification (§13)
 

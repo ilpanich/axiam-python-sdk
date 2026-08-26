@@ -109,10 +109,13 @@ omit = ["*/grpc/gen/*"]
 # False. precision = 2 makes the printed message and the real gate decision
 # agree, so "FAIL" in the log always means a failing exit code.
 #
-# Floor set below the current measured level (97.33% on main as of
-# 2026-08-15, generated stubs excluded per [tool.coverage.run] above) so it
-# never false-fails; ratchet upward as coverage rises.
-fail_under = 97
+# Floor set below the current measured level so it never false-fails; ratchet
+# upward as coverage rises. History: 97 against 97.33% (2026-08-15); raised to
+# 98 against 98.59% when CONTRACT §27's management surface landed, which is
+# generated from management-registry.json and exercised operation-by-operation
+# by tests/test_management_surface_generated.py -- a body of code that would
+# otherwise let the ratio drift downward unnoticed.
+fail_under = 98
 precision = 2
 
 [tool.mypy]

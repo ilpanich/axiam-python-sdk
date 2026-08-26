@@ -67,6 +67,7 @@ from axiam_sdk._webauthn import (
     WebauthnWorkspace,
     _WebauthnMixin,
 )
+from axiam_sdk.management.ops import ManagementNamespaces
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Imported for types only. At runtime `_opaque` is imported inside the two
@@ -251,6 +252,24 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         configured ``org_id`` if present, otherwise the value resolved from
         the access token's ``org_id`` claim after login/refresh, if any."""
         return self._resolved_org_id
+
+    def resolved_tenant_id(self) -> str | None:
+        """The tenant UUID resolved from the access token's ``tenant_id`` claim.
+
+        The public twin of :meth:`resolved_org_id`, and symmetric with it for the
+        same reason: this client is constructed with a tenant *slug* (§5 requires
+        one and there is no ``tenant_id`` argument), so the UUID only exists
+        after a login or refresh has decoded it. CONTRACT.md §27 routes that name
+        a tenant explicitly -- the signing CAs under ``ca_certificates``, and the
+        ``tenants`` namespace itself -- take that UUID as an ordinary argument
+        rather than defaulting it (§27.4 rule 3, because there it names the
+        object being acted on rather than the context), so a caller needs a way
+        to read the one the session already knows instead of re-deriving it.
+
+        Returns ``None`` before any login, exactly as :meth:`resolved_org_id`
+        does.
+        """
+        return self._resolved_tenant_id
 
     def _set_resolved_org_id(self, org_id: str) -> None:
         """Cache ``org_id`` resolved from an access token's ``org_id`` claim
@@ -622,7 +641,7 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         self._decision_memo.clear()
 
 
-class AxiamClient(_AxiamClientBase):
+class AxiamClient(_AxiamClientBase, ManagementNamespaces):
     """The AXIAM SDK's sync REST entry point (CONTRACT.md §1-§10).
 
     ``client.login(...)`` returns a typed :class:`~axiam_sdk._models.LoginResult`

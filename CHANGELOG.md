@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CONTRACT.md §27 — the management API.** 146 administrative operations
+  across 24 namespaces, on both `AxiamClient` and `AsyncAxiamClient`, reached as
+  `client.<namespace>.<operation>` (and equivalently through
+  `client.management`). The namespace handles and their models are generated
+  from the vendored `management-registry.json` and `openapi.json` by
+  `scripts/gen_management.py`; a new CI job runs that generator with `--check`,
+  so a registry that moves without a regeneration fails the build rather than
+  shipping a client that disagrees with the contract.
+
+  The semantics the section fixes are implemented rather than approximated:
+  acquiring a handle performs no I/O; `{org_id}`/`{tenant_id}` default from the
+  client and are overridable per handle with `.in_org(...)` / `.for_tenant(...)`;
+  `Page.total` is the whole set and `list_all()` walks it; a sparse update body
+  sends only the fields that were set; 404/409/400/422 map to `NotFoundError`,
+  `ConflictError` and `ValidationError` (subclasses of the §2 types, so existing
+  `except` clauses keep working); only `GET` is retried; and one-time secrets
+  come back as `SecretStr`.
+
+- **Declarative management (§27.6/§27.7).** `client.manifest.plan(...)` reports
+  what reconciling a `ManagementManifest` would do without writing anything, and
+  `.apply(...)` runs it, stopping at the first failure and reporting every step
+  including the ones it did not attempt. Two declarative spellings, both
+  validated where the manifest is written: `define_manifest(...)` and the
+  `@axiam_resource` / `@axiam_role` / `@axiam_grant` / … class decorators
+  assembled by `collect_manifest(...)`.
+
+- **`AxiamClient.resolved_tenant_id()`** — the public twin of the existing
+  `resolved_org_id()`. §27 routes where `{tenant_id}` names the object rather
+  than the context (the signing CAs under `ca_certificates`, and the `tenants`
+  namespace) take that UUID as an ordinary argument, so callers need to read the
+  one the session already decoded instead of re-deriving it.
+
+- **Examples**: `management_basics.py`, `management_manifest.py`, and
+  `device_mtls_provisioning.py` — an end-to-end IoT flow that mints a device
+  certificate from the tenant's signing CA, binds it to a service account, and
+  then authenticates as that device over §6.1 mutual TLS.
+
+### Changed
+
+- Coverage floor raised from 97% to 98% (measured 98.59%).
+
 ## [1.0.0-alpha44] - 2026-08-25
 
 ### Changed

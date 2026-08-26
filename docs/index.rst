@@ -4,7 +4,9 @@ AXIAM Python SDK
 Official Python client for `AXIAM <https://github.com/ilpanich/axiam>`_, an
 open-source IAM server. The SDK covers the full client contract — REST, gRPC
 and AMQP transports, OAuth2/OIDC relying-party helpers, UMA, webhook signature
-verification and OPAQUE.
+verification, OPAQUE, and the §27 management API (146 administrative operations
+across 24 namespaces, plus a declarative layer that reconciles a tenant against
+a manifest).
 
 This is the API reference, generated from the docstrings in the source. For
 task-oriented material — installation, quickstart, framework integrations,
