@@ -69,9 +69,10 @@ from axiam_sdk._webauthn import (
     WebauthnLoginResult,
     WebauthnWorkspace,
 )
+from axiam_sdk.management.ops import AsyncManagementNamespaces
 
 
-class AsyncAxiamClient(_AxiamClientBase):
+class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
     """The AXIAM SDK's dedicated async REST entry point (CONTRACT.md §1-§10,
     SDK-Q08).
 

@@ -113,6 +113,33 @@ jobs:
       - name: Fail on drift — committed stubs must match protos (D-04)
         run: git diff --exit-code src/axiam_sdk/grpc/gen
 
+  management-drift-check:
+    name: §27 management surface drift-check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # CONTRACT.md §27.8: the generated §27 surface is derived from the
+      # vendored management-registry.json and openapi.json, so a registry that
+      # moves without a regeneration must fail the build rather than ship a
+      # client that disagrees with the contract. `--check` compares the
+      # generator's output against the committed files without writing.
+      #
+      # The generator formats its own output with `ruff format`, which is why
+      # the dev extras are installed here rather than only the stdlib being
+      # relied on -- the `ruff format --check .` step in the lint job would
+      # otherwise reject what this one produced.
+      - name: Install dependencies (dev extras, for ruff)
+        run: pip install -e '.[dev]'
+
+      - name: Fail on drift — committed §27 surface must match the registry
+        run: python scripts/gen_management.py --check
+
   lint:
     name: Lint (mypy --strict + ruff + interrogate) (D-20)
     if: github.event_name == 'pull_request'
