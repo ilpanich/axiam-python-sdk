@@ -16,7 +16,7 @@ import httpx
 import pytest
 import respx
 
-from axiam_sdk import AsyncAxiamClient, AuthError, AuthzError, AxiamClient
+from axiam_sdk import AsyncAxiamClient, AuthError, AuthzError, AxiamClient, NetworkError
 
 BASE_URL = "https://axiam.test"
 A = f"{BASE_URL}/api/v1/auth"
@@ -240,6 +240,105 @@ def test_resend_verification() -> None:
         "email": "alice@example.com",
         "tenant_id": TENANT_ID,
     }
+
+
+# ---------------------------------------------------------------------------
+# §25.7 — the two resends are two operations
+# ---------------------------------------------------------------------------
+
+ME_RESEND = f"{BASE_URL}/api/v1/users/me/resend-verification"
+
+
+@respx.mock
+def test_resend_own_verification_sends_no_address() -> None:
+    """The body assertion is the one that matters.
+
+    A signature with no address parameter proves nothing about what the SDK
+    serializes, and an address on this endpoint would let an authenticated
+    session mail an arbitrary one.
+    """
+    route = respx.post(ME_RESEND).mock(return_value=httpx.Response(200, json={"sent": True}))
+    _client().resend_own_verification()
+    assert json.loads(route.calls[0].request.content) == {}
+
+
+@respx.mock
+def test_the_two_resends_reach_different_endpoints() -> None:
+    """An SDK that aliased one to the other reintroduces the §25.7 defect.
+
+    Every other test here would still pass, so this asserts on the path each
+    operation actually reached.
+    """
+    public = respx.post(f"{A}/resend-verification").mock(return_value=httpx.Response(200))
+    own = respx.post(ME_RESEND).mock(return_value=httpx.Response(200, json={"sent": True}))
+
+    client = _client()
+    client.resend_verification(email="alice@example.com", tenant_id=TENANT_ID)
+    client.resend_own_verification()
+
+    assert public.call_count == 1
+    assert own.call_count == 1
+
+
+@respx.mock
+def test_resend_own_verification_raises_on_409_without_falling_back() -> None:
+    """The bug this operation exists to fix was a success return on a no-op.
+
+    "Does not return normally" is the assertion; the public endpoint's zero
+    calls is what rules out the §25.7 rule 2 fallback, which would turn both
+    failures back into a green result with an extra round-trip.
+    """
+    public = respx.post(f"{A}/resend-verification").mock(return_value=httpx.Response(200))
+    respx.post(ME_RESEND).mock(return_value=httpx.Response(409))
+
+    with pytest.raises(AuthzError):
+        _client().resend_own_verification()
+    assert public.call_count == 0
+
+
+@respx.mock
+def test_resend_own_verification_raises_on_the_daily_limit() -> None:
+    """``429`` is a rate limit, and §2 maps it to ``NetworkError``."""
+    public = respx.post(f"{A}/resend-verification").mock(return_value=httpx.Response(200))
+    respx.post(ME_RESEND).mock(return_value=httpx.Response(429))
+
+    with pytest.raises(NetworkError):
+        _client().resend_own_verification()
+    assert public.call_count == 0
+
+
+@respx.mock
+async def test_async_resend_own_verification_matches_the_sync_twin() -> None:
+    """The async path shares the semantics, not the code."""
+    route = respx.post(ME_RESEND).mock(return_value=httpx.Response(200, json={"sent": True}))
+    await _async_client().resend_own_verification()
+    assert json.loads(route.calls[0].request.content) == {}
+
+
+# ---------------------------------------------------------------------------
+# §5.2 — organization-level principals
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("wire", "expected"),
+    [(True, True), (False, False), (None, False)],
+)
+def test_login_reports_an_organization_level_principal(wire: bool | None, expected: bool) -> None:
+    """§5.2 — what an application checks before offering a tenant switch.
+
+    The ``None`` row is the one that matters: a server older than contract 1.31
+    omits the field, and ``False`` is the safe reading — the client then offers
+    no cross-tenant action rather than one that would 403.
+    """
+    user: dict[str, Any] = {"id": "u1", "username": "alice", "email": "alice@example.com"}
+    if wire is not None:
+        user["organization_level"] = wire
+    respx.post(f"{A}/login").mock(return_value=_session_response({**LOGIN_SUCCESS, "user": user}))
+
+    result = _client().login("alice@example.com", "correct horse battery staple")
+    assert result.organization_level is expected
 
 
 # ---------------------------------------------------------------------------

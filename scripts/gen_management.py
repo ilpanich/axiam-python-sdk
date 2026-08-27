@@ -418,6 +418,7 @@ def emit_model_class(
 def emit_models() -> str:
     """The whole ``models.py`` module."""
     secrets = sensitive_map()
+    projections = projection_map()
     classes: list[str] = []
     out: list[str] = [
         BANNER,
@@ -443,14 +444,27 @@ def emit_models() -> str:
         rname = pascal(name)
         if "enum" in schema:
             text = schema.get("description") or f"``{rname}`` (generated from openapi.json)."
+            text += (
+                "\n\nAn **open** enum. The trailing ``| str`` is what makes a value this "
+                "SDK's copy of the spec does not list validate instead of raising -- "
+                "CONTRACT §27.11 rule 1. A bare ``Literal`` is validated strictly by "
+                "pydantic, so the next value the server adds would fail the *whole* "
+                "response it arrived in, taking down every record on the page over one "
+                "field of one of them. The listed members stay in the annotation because "
+                "they are what a reader needs; what the widening removes is the claim "
+                "that nothing else can occur."
+            )
             members = [json.dumps(v) for v in schema["enum"]]
-            oneline = f"{rname} = Literal[" + ", ".join(members) + "]"
+            oneline = f"{rname} = Literal[" + ", ".join(members) + "] | str"
             if len(oneline) <= 100:
                 out.append(oneline)
             else:
-                out.append(f"{rname} = Literal[")
-                out.extend(f"    {m}," for m in members)
-                out.append("]")
+                out.append(f"{rname} = (")
+                out.append("    Literal[")
+                out.extend(f"        {m}," for m in members)
+                out.append("    ]")
+                out.append("    | str")
+                out.append(")")
             out.extend(field_doc(text, ""))
             out.append("")
             out.append("")
@@ -516,6 +530,23 @@ def emit_models() -> str:
             continue
 
         props, required, description = flatten(name)
+        props = dict(props)
+        for add in projections.get(name, []):
+            if add["name"] in props:
+                continue
+            required.discard(add["name"])
+            props[add["name"]] = {
+                "type": add.get("type"),
+                "format": add.get("format"),
+                "description": (
+                    "Resolved by the list projection only.\n\n"
+                    "The server resolves this for a whole page in one query, so it is "
+                    "populated by the ``list`` operation and is ``None`` on ``get`` "
+                    '(CONTRACT §27.11 rule 4). ``None`` there means "this read does not '
+                    'carry it", not "there is nothing bound" -- the SDK does not issue '
+                    "a second request to fill it in."
+                ),
+            }
         out.extend(
             emit_model_class(rname, props, required, description, secrets.get(name, set()), [])
         )
@@ -553,8 +584,46 @@ def implicit_params(namespace: str, op: dict[str, Any]) -> set[str]:
 
 def split_query(op: dict[str, Any]) -> tuple[list[Any], list[Any]]:
     """This operation's non-paging query params, split required / optional."""
-    extra = [q for q in op["query_params"] if q["name"] not in ("offset", "limit")]
+    extra = extra_query_params(op)
     return [q for q in extra if q["required"]], [q for q in extra if not q["required"]]
+
+
+def extra_query_params(op: dict[str, Any]) -> list[dict[str, Any]]:
+    """Query parameters that become method arguments, rather than ``PageRequest``.
+
+    ``offset`` and ``limit`` have always come from ``PageRequest``. ``search``
+    joins them on paginated operations (CONTRACT §27.4 rule 4): the term is part
+    of which page this is, and putting it on the page request rather than on each
+    of the twenty generated ``list`` methods is what makes ``collect_pages`` carry
+    it across the whole walk instead of filtering only the first request.
+
+    The ``paginated`` guard matters. A *non*-paginated operation that grew a
+    ``search`` parameter would have no ``PageRequest`` to carry it, so it keeps
+    its own argument -- none exists in the registry today, and this is what keeps
+    that from silently dropping the parameter if one ever does.
+    """
+    owned = ("offset", "limit", "search") if op["paginated"] else ("offset", "limit")
+    return [q for q in op["query_params"] if q["name"] not in owned]
+
+
+def projection_map() -> dict[str, list[dict[str, Any]]]:
+    """Schema name -> the fields a list projection adds on top of it.
+
+    ``certificates.list`` answers ``Certificate`` plus ``bound_service_account_id``,
+    a graph edge the server resolves for the whole page in one query. CONTRACT
+    §27.11 rule 4 lets an SDK carry that as an optional field on the base type,
+    which is what this does: the field is ``None`` on ``get``, and the SDK never
+    synthesizes it there with a second request.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for nsdef in REGISTRY["namespaces"].values():
+        for op in nsdef["operations"].values():
+            adds = op["response"].get("projected_fields")
+            if not adds or not op["response"].get("schema"):
+                continue
+            base = op["response"]["schema"].removeprefix("[]")
+            out.setdefault(base, []).extend(adds)
+    return out
 
 
 def filter_name(namespace: str, opname: str, optional: list[Any]) -> str | None:

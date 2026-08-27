@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 
-from axiam_sdk import AxiamClient
+from axiam_sdk import AxiamClient, NetworkError
+from axiam_sdk.management import ConflictError
 
 BASE_URL = os.environ.get("AXIAM_BASE_URL", "https://iam.example.com")
 TENANT_ID = os.environ.get("AXIAM_TENANT_ID", "11111111-1111-1111-1111-111111111111")
@@ -62,11 +63,59 @@ def sign_in(client: AxiamClient, email: str, password: str, code_from_user: str)
     else:
         print("signed in")
 
+    # §5.2: whether this principal lives in the organization's reserved tenant.
+    # Check it before offering a tenant switch -- an ordinary tenant principal
+    # is a principal of exactly one tenant, and changing `X-Tenant-ID` for one
+    # of those is a 403 the user discovers.
+    if result.organization_level:
+        print("organization-level: can act on any tenant of its organization")
+
 
 def verify_an_email(client: AxiamClient, token_from_link: str) -> None:
     """Confirm an address from the link in the verification mail."""
     client.verify_email(token=token_from_link, tenant_id=TENANT_ID)
     print("email verified")
+
+
+def resend_verification_anonymously(client: AxiamClient, email: str) -> None:
+    """The **unauthenticated** resend, for a caller with no session.
+
+    A sign-up screen that has an address and nothing else. Returns normally
+    whatever happens: unknown address, already verified, over the daily limit.
+
+    That is not a shortcoming to work around. It takes an address from an
+    anonymous caller, and a truthful answer there is an oracle for which
+    addresses have accounts (§25.7).
+    """
+    client.resend_verification(email=email, tenant_id=TENANT_ID)
+
+
+def resend_my_verification_mail(client: AxiamClient) -> None:
+    """The **authenticated** resend -- and the one a profile page wants.
+
+    Wiring that button to :func:`resend_verification_anonymously` is the defect
+    §25.7 exists to separate: it reports success while doing nothing, because
+    the address was already verified, or the account was locked, or the daily
+    limit was reached, and the response looks identical in every case.
+
+    Here the caller is signed in to the account it is asking about, so this one
+    is both available and truthful. It takes no address: the server reads it off
+    the caller's own record, and a parameter would let a session mail an
+    arbitrary one.
+    """
+    try:
+        client.resend_own_verification()
+        # "Sent" means ENQUEUED. Delivery is asynchronous and can still fail at
+        # the provider -- a queue that accepts everything in front of one that
+        # rejects it looks exactly like this succeeding.
+        print("verification mail enqueued")
+    except ConflictError:
+        print("already verified, or this account may not be sent one")
+    except NetworkError:
+        print("daily resend limit reached — try again tomorrow")
+    # Note what is NOT here: a fallback to `resend_verification` on either of
+    # those. It would turn both back into a normal return and rebuild the bug,
+    # with an extra round-trip (§25.7 rule 2).
 
 
 def start_a_password_reset(client: AxiamClient, email: str) -> None:

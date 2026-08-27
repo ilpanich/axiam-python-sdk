@@ -951,9 +951,59 @@ type with flags rather than a discriminated union — so nothing that reads
 
 ```python
 client.verify_email(token=token_from_link, tenant_id=tenant_id)
-client.resend_verification(email=email, tenant_id=tenant_id)
+client.resend_verification(email=email, tenant_id=tenant_id)  # anonymous caller
+client.resend_own_verification()  # signed-in caller
 client.request_password_reset(email=email)
 ```
+
+**There are two resends, and picking the wrong one is silent.** Use the second
+whenever you have a session.
+
+`resend_verification` takes an address from an *unauthenticated* caller, so it
+returns normally whatever happens — unknown address, already verified, over the
+daily limit. That constancy is the point: anything else is an oracle for which
+addresses have accounts.
+
+`resend_own_verification` is for a caller signed in to the account it is asking
+about. It takes **no address at all** (the server reads it off your own record,
+and a parameter would let a session mail an arbitrary one) and it says what
+happened:
+
+```python
+try:
+    client.resend_own_verification()  # minted and enqueued
+except ConflictError:
+    ...  # already verified, or not eligible
+except NetworkError:
+    ...  # 429 — daily limit
+```
+
+A profile page that called the *first* one reports success while doing nothing,
+which is the bug this pair exists to separate. This SDK does not fall back from
+the second to the first on either failure — that would turn both back into a
+normal return with an extra round-trip. And returning means *enqueued*: delivery
+is asynchronous and can still fail at the provider.
+
+### Organization-level principals (§5.2)
+
+A completed login also reports whether the account is an **organization-level**
+principal — one whose record lives in its organization's reserved tenant, so its
+global grants apply in every tenant of that organization:
+
+```python
+result = client.login(email, password)
+if result.organization_level:
+    # Acts on any tenant of its organization by sending a different
+    # `X-Tenant-ID` on the next request. No re-login: it already is a
+    # principal of every tenant there.
+    ...
+```
+
+Check it *before* offering a tenant switch. An ordinary tenant principal is a
+principal of exactly one tenant, and changing the header for one of those
+produces a `403` — so a UI that offers the switch to everyone has turned a
+distinction the server made into a failure the user discovers. `False` against a
+server older than contract 1.31, which is the safe reading of absent.
 
 `request_password_reset` returns normally **whether or not the address exists**,
 and this SDK exposes no way to tell them apart. Any signal distinguishing them —
@@ -1273,6 +1323,7 @@ with AxiamClient(base_url="https://axiam.example", tenant_slug="acme") as client
     page = client.users.list(PageRequest(limit=50))
     print(page.total)  # the whole set, not this page
     everyone = client.users.list_all()  # walks to exhaustion
+    found = client.users.list(PageRequest(limit=50, search="ada"))
 
     user = client.users.create(
         models.CreateUserRequest(
@@ -1291,11 +1342,50 @@ The same surface exists on `AsyncAxiamClient` with `await`.
 | §27.2 | Namespaced, not flat. Twenty namespaces have a `list` and fourteen a `get`; flattening 146 operations onto the client would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `login()` first, or an `AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.in_org(...)` / `.for_tenant(...)` override them and return a *new* handle. |
-| §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. |
+| §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. `PageRequest.search` filters **server-side**, before `offset`/`limit`, and `list_all()` carries the term across the whole walk. |
+| §27.11 | `Tenant.kind`, `MtlsTrustAnchorResponse.trusted_anchors` and `Certificate.bound_service_account_id` are optional, and each `None` means something specific — see below. Generated enums are open: an unrecognised value validates rather than failing the response. |
 | §27.4 rule 5 | A sparse update body sends **only** the fields you set. A replacement body (`SetOrgSettings`, `SetMtlsTrustAnchor`, ...) will not construct half-filled. |
 | §27.4 rule 7 | 404 → `NotFoundError` (an `AuthzError`), 409 → `ConflictError`, 400/422 → `ValidationError` with per-field detail (a `NetworkError`). |
 | §27.4 rule 8 | Only `GET` is retried. No write is replayed, including the ones that look idempotent. |
 | §27.5 | One-time secrets come back as `SecretStr` — redacted from every `repr`, log line and JSON rendering. `.get_secret_value()` is the only way out. |
+
+**`search` is on the page request, and the server does the filtering.**
+
+```python
+page = client.users.list(PageRequest(limit=50, search="ada"))
+found = client.users.list_all(PageRequest(limit=200, search="ada"))
+```
+
+It is matched case-insensitively against the identifying fields of whatever is
+being listed — a name or username, plus the record id, so a UUID out of a log
+line pastes in as-is. Three consequences worth knowing:
+
+- **`total` counts matches, not rows**, because the filter is applied before
+  `offset`/`limit`. That is what lets a pager built on it show a page count
+  belonging to the result set it is paging. Filtering the page in Python after
+  the fetch gives you neither.
+- **`list_all()` carries the term across the whole walk**, so it returns the
+  matches and not the matches followed by the unfiltered tail.
+- **A blank term is no term.** `search=""` and `search="   "` send no `search`
+  parameter at all, so a box that fires on every keystroke does not ask a
+  different question once it has been cleared. The server also caps the term's
+  length; this SDK does not copy that cap, because a client-side truncation the
+  server would not have made is a silently different query.
+
+**Three model fields arrived with contract 1.31 (§27.11), and each `None` means
+something specific.** `Tenant.kind` is `None` on a row written before
+organization scope existed — read it as `standard`.
+`MtlsTrustAnchorResponse.trusted_anchors` is `None` when nothing was reloaded,
+which is *not* zero: "the listener trusts no CAs" and "there was no listener to
+ask" are different states, and only one is a problem.
+`Certificate.bound_service_account_id` is resolved by `certificates.list()` and
+`None` on `get`; the SDK does not issue a second request to fill it in.
+
+**Generated enums are open.** Each is `Literal[...] | str`, so a value this
+SDK's copy of the spec does not list validates instead of raising. A bare
+`Literal` is checked strictly by pydantic, which would turn the next `kind` or
+`status` the server adds into a validation error on the *whole* response —
+taking down every record on the page over one field of one of them.
 
 Every `{..._id}` on this surface is a UUID, and a non-UUID argument is refused
 locally rather than sent to produce a 404 that reads as "no such object".

@@ -77,6 +77,7 @@ class _AccountMixin:
     _AC_MFA_SETUP_CONFIRM = "/api/v1/auth/mfa/setup/confirm"
     _AC_VERIFY_EMAIL = "/api/v1/auth/verify-email"
     _AC_RESEND_VERIFICATION = "/api/v1/auth/resend-verification"
+    _AC_RESEND_OWN_VERIFICATION = "/api/v1/users/me/resend-verification"
     _AC_RESET = "/api/v1/auth/reset"
     _AC_RESET_CONFIRM = "/api/v1/auth/reset/confirm"
     _AC_RESET_CONTEXT = "/api/v1/auth/reset/context"

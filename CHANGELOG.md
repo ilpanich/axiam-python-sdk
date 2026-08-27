@@ -9,6 +9,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CONTRACT 1.31 — the AXIAM server PR #383 surface.** `CONTRACT.md`,
+  `openapi.json` and `management-registry.json` re-vendored, and the six things
+  they describe implemented.
+
+  - **`search` on all twenty paginated management operations** (§27.4 rule 4).
+    A third field on `PageRequest`, not a third argument on twenty generated
+    `list` methods:
+
+    ```python
+    client.users.list(PageRequest(limit=50, search="ada"))
+    client.users.list_all(PageRequest(limit=200, search="ada"))
+    ```
+
+    Putting it on the page request is what makes `list_all` carry the term
+    across the whole walk. A walk that filtered its first request and not the
+    rest returns the matches followed by the unfiltered tail, which from the
+    caller's side looks like a server bug.
+
+    The server applies it **before** `offset`/`limit`, so `Page.total` counts
+    matches rather than rows. A blank or whitespace-only term is treated as
+    unset and sends no `search` parameter, so a box that fires on every
+    keystroke does not ask a different question once it is cleared. The server's
+    length cap is deliberately **not** copied here: a client-side truncation the
+    server would not have made is a silently different query.
+
+  - **`resend_own_verification()`** on both clients (§25.1, §25.7) —
+    `POST /api/v1/users/me/resend-verification`, for a caller signed in to the
+    account it is asking about. It takes no address, and reports what happened:
+    returns for enqueued, `ConflictError` for already-verified-or-ineligible,
+    `NetworkError` for the daily limit.
+
+    `resend_verification` still exists and still returns normally whatever
+    happens, because it takes an address from an anonymous caller and a truthful
+    answer there is an enumeration oracle. Use the new one whenever there is a
+    session — a profile page wired to the old one reports success while doing
+    nothing, which is the defect the pair exists to separate. This SDK does not
+    fall back from one to the other in either direction (§25.7 rule 2).
+
+  - **`LoginResult.organization_level`** (§5.2) — whether the account holds
+    grants that apply in every tenant of its organization. Check it before
+    offering a tenant switch: an ordinary tenant principal changing
+    `X-Tenant-ID` gets a `403`. `False` against a server older than contract
+    1.31, which is the safe reading of absent.
+
+  - **`Tenant.kind` and `TenantKind`** (§27.11) — ordinary tenant or the
+    organization's own scope. `None` on a row written before that scope existed.
+    Read-only: it is not on `CreateTenantRequest` or `UpdateTenantRequest`.
+
+  - **`MtlsTrustAnchorResponse.trusted_anchors`** (§27.11) — how many CAs the
+    live listener now trusts, when it was reloaded. `None` is **not** zero: it
+    means there was no listener to ask, which is the case
+    `restart_required=True` already reports.
+
+  - **`Certificate.bound_service_account_id`** (§27.11) — the service account a
+    certificate authenticates, resolved for a whole page in one query by
+    `certificates.list()` and `None` on `certificates.get()`. The SDK does not
+    issue a second request to fill it in there.
+
+### Changed
+
+- **Generated management enums are open.** Each is now `Literal[...] | str`, so
+  a value this SDK's copy of the spec does not list validates instead of raising
+  (§27.11 rule 1). A bare `Literal` is checked strictly by pydantic, which would
+  turn the next `kind` or `status` the server adds into a validation error on
+  the *whole* response — taking down every record on the page over one field of
+  one of them, including the records the caller was after. The listed members
+  stay in the annotation because they are what a reader needs; what the widening
+  removes is the claim that nothing else can occur.
+
+### Fixed
+
+- **`scripts/gen_management.py` no longer drops a projected list element.** The
+  server answers `GET /api/v1/certificates` with `Certificate` plus one resolved
+  graph edge, expressed as an `allOf` of the `$ref` and an anonymous object.
+  Read as a whole, that composition has no name, so the registry carried a page
+  with no element type and the added field reached no model. The generator now
+  takes the base name through the `allOf` and folds the projection's added
+  fields onto the base model as optional. (The registry-side half of this is
+  AXIAM PR #386.)
+
+### Added
+
 - **CONTRACT.md §27 — the management API.** 146 administrative operations
   across 24 namespaces, on both `AxiamClient` and `AsyncAxiamClient`, reached as
   `client.<namespace>.<operation>` (and equivalently through
