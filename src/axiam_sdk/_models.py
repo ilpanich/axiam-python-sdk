@@ -47,6 +47,25 @@ class LoginResult(BaseModel):
     tenant_id: str | None = None
     session_id: str | None = None
     expires_in: int | None = None
+    organization_level: bool = False
+    """Whether the account that just signed in is an **organization-level**
+    principal — CONTRACT.md §5.2.
+
+    Such a principal's record lives in its organization's reserved tenant, so
+    its global grants apply in every tenant of that organization, and it can act
+    on a different one by sending a different ``X-Tenant-ID`` on the next
+    request — no re-login, because it already is a principal of every tenant
+    there.
+
+    An ordinary tenant principal is a principal of exactly one tenant. Changing
+    the header for one of those produces a ``403``, so this flag is what an
+    application checks *before* offering a tenant switch, rather than
+    discovering the answer from a failed request.
+
+    ``False`` on a completed login against a server older than contract 1.31,
+    and ``False`` on the two pending outcomes, where no principal has been
+    established yet.
+    """
 
     model_config = {"frozen": True}
 

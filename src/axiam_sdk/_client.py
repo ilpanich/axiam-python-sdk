@@ -425,6 +425,11 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
                 tenant_id=self._session.tenant_slug,
                 session_id=wire.get("session_id"),
                 expires_in=wire.get("expires_in"),
+                # §5.2: derived server-side and response-only. The `or False`
+                # is what makes a pre-1.31 server's silence mean "no
+                # cross-tenant action" rather than leaving `None` to be
+                # truthiness-tested somewhere downstream.
+                organization_level=bool(wire.get("user", {}).get("organization_level") or False),
             )
             self._absorb_session_cookies()
             return result
@@ -1882,12 +1887,57 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._expect_no_content(self._session._send_sync(request), "verify_email")
 
     def resend_verification(self, *, email: str, tenant_id: str) -> None:
-        """``POST /api/v1/auth/resend-verification`` (CONTRACT.md §25.1)."""
+        """``POST /api/v1/auth/resend-verification`` (CONTRACT.md §25.1) — the
+        **unauthenticated** resend, for a caller with no session.
+
+        **Returns normally whatever the outcome.** The address may not exist,
+        may already be verified, or may be over the daily limit, and this
+        answers identically in all of them, because it takes an address from an
+        anonymous caller and anything else is an oracle for which addresses have
+        accounts (§25.7).
+
+        A caller that *is* signed in wants :meth:`resend_own_verification`,
+        which says which of those happened. Do not reach for this one because it
+        is the name you already knew.
+        """
         self._ensure_open()
         request = self._session.sync_client.build_request(
             "POST", self._AC_RESEND_VERIFICATION, json={"email": email, "tenant_id": tenant_id}
         )
         self._expect_no_content(self._session._send_sync(request), "resend_verification")
+
+    def resend_own_verification(self) -> None:
+        """``POST /api/v1/users/me/resend-verification`` (CONTRACT.md
+        §25.1, §25.7) — resend the **signed-in caller's own** verification mail,
+        and say what happened.
+
+        Takes no address. The server reads it off the caller's own record, and
+        this signature deliberately offers no way to name a different one: a
+        parameter here would let an authenticated session mail an arbitrary
+        address.
+
+        Unlike :meth:`resend_verification` this reports the outcome, because the
+        caller is signed in to the account it is asking about and none of the
+        outcomes tells it anything it did not already know:
+
+        * returns — a token was minted and the mail **enqueued**. Delivery is
+          asynchronous and can still fail at the provider; a queue that accepts
+          everything in front of one that rejects it looks exactly like this
+          succeeding.
+        * :class:`~axiam_sdk.ConflictError` (from ``409``) — already verified,
+          or the account is in a state that must not be sent a live token.
+        * :class:`~axiam_sdk.NetworkError` (from ``429``) — the daily limit.
+
+        §25.7 rule 2 forbids falling back to the unauthenticated endpoint on
+        either of those, and this SDK does not: the fallback would turn both
+        failures back into a normal return and restore the bug this operation
+        exists to fix, with an extra round-trip.
+        """
+        self._ensure_open()
+        request = self._session.sync_client.build_request(
+            "POST", self._AC_RESEND_OWN_VERIFICATION, json={}
+        )
+        self._expect_no_content(self._session._send_sync(request), "resend_own_verification")
 
     def request_password_reset(
         self,

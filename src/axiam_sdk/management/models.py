@@ -28,8 +28,18 @@ from pydantic import Field, SecretStr, TypeAdapter
 
 from axiam_sdk.management._wire import ManagementModel
 
-ActorType = Literal["User", "ServiceAccount", "System"]
-"""``ActorType`` (generated from openapi.json)."""
+ActorType = Literal["User", "ServiceAccount", "System"] | str
+"""``ActorType`` (generated from openapi.json).
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class AddMemberRequest(ManagementModel):
@@ -74,7 +84,7 @@ class AssignRoleToUserRequest(ManagementModel):
     """``user_id``."""
 
 
-AttestationMode = Literal["none", "indirect", "direct_required"]
+AttestationMode = Literal["none", "indirect", "direct_required"] | str
 """What attestation conveyance a registration ceremony requests, and whether
 
 the policy is enforced at all.
@@ -82,6 +92,14 @@ the policy is enforced at all.
 `None` is the default and reproduces today's behavior byte-for-byte:
 `evaluate` allows every registration unconditionally, with no MDS lookup (D8
 step 1).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -119,8 +137,18 @@ class AuditLogEntry(ManagementModel):
     """``timestamp``."""
 
 
-AuditOutcome = Literal["Success", "Failure", "Denied"]
-"""``AuditOutcome`` (generated from openapi.json)."""
+AuditOutcome = Literal["Success", "Failure", "Denied"] | str
+"""``AuditOutcome`` (generated from openapi.json).
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class BindCertificate(ManagementModel):
@@ -259,6 +287,17 @@ class Certificate(ManagementModel):
     returned once on generation and never stored by AXIAM.
     """
 
+    bound_service_account_id: str | None = None
+    """Resolved by the list projection only.
+
+
+    The server resolves this for a whole page in one query, so it is
+    populated by the ``list`` operation and is ``None`` on ``get`` (CONTRACT
+    §27.11 rule 4). ``None`` there means "this read does not carry it", not
+    "there is nothing bound" -- the SDK does not issue a second request to
+    fill it in.
+    """
+
     cert_type: CertificateType
     """``cert_type``."""
 
@@ -309,15 +348,35 @@ class CertificatePolicy(ManagementModel):
     """``max_cert_validity_days``."""
 
 
-CertificateStatus = Literal["Active", "Revoked", "Expired"]
-"""Status of a certificate in its lifecycle."""
+CertificateStatus = Literal["Active", "Revoked", "Expired"] | str
+"""Status of a certificate in its lifecycle.
 
 
-CertificateType = Literal["User", "Service", "Device"]
-"""The purpose for which a certificate was issued."""
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
-CertificationLevel = Literal["L1", "L1Plus", "L2", "L2Plus", "L3", "L3Plus"]
+CertificateType = Literal["User", "Service", "Device"] | str
+"""The purpose for which a certificate was issued.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+CertificationLevel = Literal["L1", "L1Plus", "L2", "L2Plus", "L3", "L3Plus"] | str
 """FIDO certification level, as recorded in an MDS `statusReports` entry's
 
 `FIDO_CERTIFIED*` status.
@@ -326,15 +385,26 @@ Variant order is significant: `derive(PartialOrd, Ord)` gives `L1 < L1Plus <
 L2 < L2Plus < L3 < L3Plus`, which `WebauthnAttestationPolicy::evaluate` (D8
 step 9) relies on directly for the `min_certification` boundary check
 (`entry_level >= policy_min`).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
-ClientAuthMethod = Literal[
-    "client_secret_post",
-    "tls_client_auth",
-    "self_signed_tls_client_auth",
-    "private_key_jwt",
-]
+ClientAuthMethod = (
+    Literal[
+        "client_secret_post",
+        "tls_client_auth",
+        "self_signed_tls_client_auth",
+        "private_key_jwt",
+    ]
+    | str
+)
 """How a client proves its identity at the token endpoint (RFC 8705 §2, OIDC
 
 Core §9 naming).
@@ -344,10 +414,18 @@ deliberately no `none` variant: every AXIAM client is confidential today
 (see `handle_authorization_code`), and adding a public-client value here
 before the rest of the server understands one would let an operator register
 a client whose authentication is silently skipped.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
-ClientProfile = Literal["standard", "fapi2"]
+ClientProfile = Literal["standard", "fapi2"] | str
 """Which security posture a client is registered under (X5.1).
 
 
@@ -362,6 +440,14 @@ financial-grade?" by reading one field.
 The same philosophy as the rate-limit postures: ordinary clients see no
 behaviour change at all, because [`Standard`](Self::Standard) is the serde
 default and every row written before schema v38 decodes to it.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -990,11 +1076,19 @@ class EncryptedExport(ManagementModel):
     """``recipient_key_id``."""
 
 
-FailurePolicy = Literal["fail_closed", "fail_open"]
+FailurePolicy = Literal["fail_closed", "fail_open"] | str
 """What the server does when an interceptor does not produce a usable reply —
 
 timeout, transport failure, bad signature, stale nonce, or a patch the
 allow-list rejects.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -1403,8 +1497,18 @@ class ImportCaCertificateRequest(ManagementModel):
     """PEM-encoded CA certificate."""
 
 
-KeyAlgorithm = Literal["Rsa4096", "Ed25519"]
-"""The type of key algorithm used for a certificate."""
+KeyAlgorithm = Literal["Rsa4096", "Ed25519"] | str
+"""The type of key algorithm used for a certificate.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class LockoutPolicy(ManagementModel):
@@ -1535,8 +1639,18 @@ class MfaMethodResponse(ManagementModel):
     """``name``."""
 
 
-MfaMethodType = Literal["Totp", "Passkey", "SecurityKey"]
-"""Type of MFA method."""
+MfaMethodType = Literal["Totp", "Passkey", "SecurityKey"] | str
+"""Type of MFA method.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class MfaPolicy(ManagementModel):
@@ -1578,32 +1692,55 @@ class MtlsTrustAnchorResponse(ManagementModel):
     """The flag as now stored."""
 
     restart_required: bool
-    """Always `true`: rustls builds its client trust store once, when the
+    """Whether the change still needs a restart to take effect.
 
-    listener is constructed, so this takes effect at the next start.
+
+    `false` when the live listener accepted the new anchor set — the
+    ordinary case on a TLS deployment. `true` only when there was no
+    listener to reload into (plaintext, or `client_auth = off`), where the
+    flag is stored and applies at the next start.
+    """
+
+    trusted_anchors: int | None = None
+    """How many CAs the listener now trusts for client authentication, when it
+
+    was reloaded. `None` when nothing was reloaded.
     """
 
 
-NotificationEventType = Literal[
-    "login_failure",
-    "account_locked",
-    "mfa_enrollment_changed",
-    "password_changed",
-    "password_reset_requested",
-    "role_assigned",
-    "role_unassigned",
-    "permission_granted",
-    "permission_revoked",
-    "certificate_issued",
-    "certificate_revoked",
-    "ca_certificate_revoked",
-    "user_created",
-    "user_deleted",
-    "user_updated",
-    "service_account_created",
-    "service_account_deleted",
-]
-"""Events that can trigger an admin notification."""
+NotificationEventType = (
+    Literal[
+        "login_failure",
+        "account_locked",
+        "mfa_enrollment_changed",
+        "password_changed",
+        "password_reset_requested",
+        "role_assigned",
+        "role_unassigned",
+        "permission_granted",
+        "permission_revoked",
+        "certificate_issued",
+        "certificate_revoked",
+        "ca_certificate_revoked",
+        "user_created",
+        "user_deleted",
+        "user_updated",
+        "service_account_created",
+        "service_account_deleted",
+    ]
+    | str
+)
+"""Events that can trigger an admin notification.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class NotificationPolicy(ManagementModel):
@@ -1947,7 +2084,7 @@ class Permission(ManagementModel):
     """``updated_at``."""
 
 
-PermissionEffect = Literal["allow", "deny"]
+PermissionEffect = Literal["allow", "deny"] | str
 """Whether a grant permits an action or refuses it (B1, deny-override).
 
 
@@ -1967,6 +2104,14 @@ enumerating every other rule that might out-specify it.
 
 [`PermissionEffect::Allow`] is the default, so data written before this
 existed, and clients that send no `effect`, both mean "allow". No migration.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -2001,16 +2146,46 @@ class PgpKey(ManagementModel):
     """``tenant_id``."""
 
 
-PgpKeyAlgorithm = Literal["Rsa4096", "Ed25519"]
-"""Key algorithm for OpenPGP keys."""
+PgpKeyAlgorithm = Literal["Rsa4096", "Ed25519"] | str
+"""Key algorithm for OpenPGP keys.
 
 
-PgpKeyPurpose = Literal["AuditSigning", "Export"]
-"""The purpose of an OpenPGP key."""
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
-PgpKeyStatus = Literal["Active", "Revoked"]
-"""Status of an OpenPGP key."""
+PgpKeyPurpose = Literal["AuditSigning", "Export"] | str
+"""The purpose of an OpenPGP key.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+PgpKeyStatus = Literal["Active", "Revoked"] | str
+"""Status of an OpenPGP key.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class PolicyResponse(ManagementModel):
@@ -2237,8 +2412,18 @@ class ReactorEventDescriptor(ManagementModel):
     """``name``."""
 
 
-ReactorMode = Literal["intercept", "listen"]
-"""How a reactor participates in an event."""
+ReactorMode = Literal["intercept", "listen"] | str
+"""How a reactor participates in an event.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class ReactorResponse(ManagementModel):
@@ -2507,10 +2692,18 @@ class ScimTokenResponse(ManagementModel):
     """``user_id``."""
 
 
-ScimTokenStatus = Literal["active", "expired", "revoked"]
+ScimTokenStatus = Literal["active", "expired", "revoked"] | str
 """Why a token is or is not currently usable — for display only. The
 
 authentication path never surfaces this distinction on the wire.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -2753,8 +2946,18 @@ class SetOrgSettings(ManagementModel):
     """``require_uppercase``."""
 
 
-SettingsScope = Literal["Org", "Tenant"]
-"""Whether a settings row belongs to an organization or a tenant."""
+SettingsScope = Literal["Org", "Tenant"] | str
+"""Whether a settings row belongs to an organization or a tenant.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class SignAuditBatchRequest(ManagementModel):
@@ -2843,6 +3046,14 @@ class Tenant(ManagementModel):
     id: str
     """``id``."""
 
+    kind: TenantKind | None = None
+    """Whether this is an ordinary tenant or the organization's own scope.
+
+
+    `#[serde(default)]` so every row written before organization scope
+    existed reads back as [`TenantKind::Standard`], which is what it is.
+    """
+
     metadata: Any
     """Arbitrary key-value metadata."""
 
@@ -2860,6 +3071,26 @@ class Tenant(ManagementModel):
 
     updated_at: str
     """``updated_at``."""
+
+
+TenantKind = Literal["standard", "organization"] | str
+"""What a tenant *is*, as distinct from what state it is in.
+
+
+Reserved rather than inferred: an organization has exactly one tenant of
+kind [`Self::Organization`], enforced by a unique index rather than by
+convention. Deriving it from a magic slug or from "the oldest tenant" would
+make the organization scope something an operator could rename or delete by
+accident, and it is the scope the super-admin lives in.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class TenantSettingsOverride(ManagementModel):
@@ -2943,12 +3174,20 @@ class TenantSettingsOverride(ManagementModel):
     """``require_uppercase``."""
 
 
-TenantStatus = Literal["Active", "Suspended"]
+TenantStatus = Literal["Active", "Suspended"] | str
 """Lifecycle status of a tenant.
 
 
 A `Suspended` tenant remains stored and its data isolated, but is treated as
 administratively disabled. New tenants are `Active` by default.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -3029,11 +3268,19 @@ class TokenPolicy(ManagementModel):
     """``refresh_token_lifetime_secs``."""
 
 
-UnknownAaguidAction = Literal["allow", "deny"]
+UnknownAaguidAction = Literal["allow", "deny"] | str
 """What to do with an AAGUID that has no MDS entry (i.e. FIDO Alliance has no
 
 metadata for it — not necessarily malicious, MDS coverage is incomplete for
 some legitimate authenticators).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
 """
 
 
@@ -3449,8 +3696,28 @@ class UserResponse(ManagementModel):
     """``username``."""
 
 
-UserStatus = Literal["Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"]
-"""``UserStatus`` (generated from openapi.json)."""
+UserStatus = (
+    Literal[
+        "Active",
+        "Inactive",
+        "Locked",
+        "PendingVerification",
+        "Anonymized",
+        "Deleted",
+    ]
+    | str
+)
+"""``UserStatus`` (generated from openapi.json).
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class WebauthnAttestationPolicy(ManagementModel):

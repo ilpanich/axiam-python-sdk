@@ -59,9 +59,48 @@ def test_field_errors_of_an_unrecognised_body_are_empty() -> None:
 
 
 def test_page_query_omits_an_unset_limit_rather_than_sending_zero() -> None:
-    """The server reads ``limit=0`` as "none", which returns an empty page."""
-    assert page_query(None) == {"offset": "0", "limit": None}
-    assert page_query(PageRequest(offset=4, limit=2)) == {"offset": "4", "limit": "2"}
+    """The server reads ``limit=0`` as "none", which returns an empty page.
+
+    ``None`` here is what ``_request`` drops before the request is built, so a
+    ``None`` value in this mapping and an absent key are the same thing on the
+    wire — which is why the search cases below assert on the value rather than
+    on the key being missing.
+    """
+    assert page_query(None) == {"offset": "0", "limit": None, "search": None}
+    assert page_query(PageRequest(offset=4, limit=2)) == {
+        "offset": "4",
+        "limit": "2",
+        "search": None,
+    }
+
+
+def test_page_query_carries_a_search_term_and_trims_it() -> None:
+    """§27.4 rule 4 — the term goes on the same request as offset/limit."""
+    assert page_query(PageRequest(limit=2, search="ada"))["search"] == "ada"
+    assert page_query(PageRequest(limit=2, search="  ada  "))["search"] == "ada"
+
+
+def test_page_query_treats_a_blank_term_as_no_term() -> None:
+    """A box that fires on every keystroke sends ``?search=`` once cleared.
+
+    "Rows containing the empty string" is a different question from "all rows",
+    and §27.4 rule 4 makes the SDK ask the second one — the server normalizes
+    the same way, so an SDK that forwarded the blank would produce a request the
+    server then has to undo.
+    """
+    for blank in ("", "   ", "\t\n"):
+        assert page_query(PageRequest(limit=2, search=blank))["search"] is None
+
+
+def test_page_query_does_not_truncate_a_long_term() -> None:
+    """The server's length cap is the server's (§27.4 rule 4).
+
+    A client-side truncation the server would not have made is a silently
+    different query: the caller asked one question and the wire carried another,
+    with nothing to indicate it.
+    """
+    long = "x" * 400
+    assert page_query(PageRequest(limit=2, search=long))["search"] == long
 
 
 def test_page_of_a_malformed_envelope_is_empty_rather_than_an_error() -> None:

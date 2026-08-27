@@ -267,6 +267,232 @@ def test_a_bare_array_operation_is_not_a_page() -> None:
 
 
 # ---------------------------------------------------------------------------
+# §27.4 rule 4 — search
+# ---------------------------------------------------------------------------
+
+
+def test_a_search_term_reaches_the_query_string() -> None:
+    """Asserted on the request URL, not on the arguments.
+
+    A term the SDK accepts, stores and never sends is invisible from the call
+    site, and it is the failure this test exists for.
+    """
+    sent: list[str | None] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        """Record the term and answer an empty page."""
+        sent.append(request.url.params.get("search"))
+        return httpx.Response(200, json={"items": [], "total": 0, "offset": 0, "limit": 50})
+
+    with with_client() as (router, client):
+        router.get(f"{BASE_URL}/api/v1/users").mock(side_effect=responder)
+        client.users.list(PageRequest(limit=50, search="ada"))
+        assert sent == ["ada"]
+
+
+@pytest.mark.parametrize("term", [None, "", "   "])
+def test_an_absent_or_blank_term_sends_no_search_key(term: str | None) -> None:
+    """Asserted on the exact query key set.
+
+    A UI that fires on every keystroke sends ``?search=`` the moment the box is
+    cleared, and "rows containing the empty string" is a different question from
+    "all rows" — different enough that the server normalizes it away too.
+    """
+    keys: list[list[str]] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        """Record every query key and answer an empty page."""
+        keys.append(list(request.url.params.keys()))
+        return httpx.Response(200, json={"items": [], "total": 0, "offset": 0, "limit": 50})
+
+    with with_client() as (router, client):
+        router.get(f"{BASE_URL}/api/v1/users").mock(side_effect=responder)
+        client.users.list(PageRequest(limit=50, search=term))
+        assert "search" not in keys[0]
+
+
+def test_list_all_carries_the_term_across_the_whole_walk() -> None:
+    """§27.4 rule 4 — every request of the walk, not only the first.
+
+    A walk that filtered page one and not page two would concatenate the matches
+    with the unfiltered remainder, which reads as a server bug from the caller's
+    side and which a test counting requests would pass.
+    """
+    terms: list[str | None] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        """Two pages of one, recording the term each time."""
+        terms.append(request.url.params.get("search"))
+        offset = int(request.url.params.get("offset", "0"))
+        return httpx.Response(
+            200,
+            json={"items": [_user(offset)], "total": 2, "offset": offset, "limit": 1},
+        )
+
+    with with_client() as (router, client):
+        router.get(f"{BASE_URL}/api/v1/users").mock(side_effect=responder)
+        found = client.users.list_all(PageRequest(limit=1, search="ad"))
+        assert len(found) == 2
+        assert terms == ["ad", "ad"]
+
+
+def test_a_long_term_is_sent_whole_rather_than_truncated_locally() -> None:
+    """The server's length cap is the server's (§27.4 rule 4).
+
+    A client-side truncation the server would not have made is a silently
+    different query: the caller asked one question and the wire carried another.
+    """
+    sent: list[str | None] = []
+    long = "x" * 400
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        """Record the term as it arrived."""
+        sent.append(request.url.params.get("search"))
+        return httpx.Response(200, json={"items": [], "total": 0, "offset": 0, "limit": 50})
+
+    with with_client() as (router, client):
+        router.get(f"{BASE_URL}/api/v1/users").mock(side_effect=responder)
+        client.users.list(PageRequest(limit=50, search=long))
+        assert sent == [long]
+
+
+# ---------------------------------------------------------------------------
+# §27.11 — model additions
+# ---------------------------------------------------------------------------
+
+
+def _tenant(slug: str, kind: str | None = None) -> dict[str, object]:
+    """A tenant envelope, with ``kind`` present only when asked for."""
+    body: dict[str, object] = {
+        "id": EXAMPLE_ID,
+        "organization_id": ORG_ID,
+        "name": slug,
+        "slug": slug,
+        "status": "Active",
+        "metadata": {},
+        "created_at": "2026-08-27T00:00:00Z",
+        "updated_at": "2026-08-27T00:00:00Z",
+    }
+    if kind is not None:
+        body["kind"] = kind
+    return body
+
+
+def test_an_unknown_tenant_kind_decodes_instead_of_failing_the_page() -> None:
+    """§27.11 rule 1 — an open enum, so one new value cannot fail a page.
+
+    A bare ``Literal`` is validated strictly by pydantic, so the next ``kind``
+    the server adds would raise on the *whole* response — taking down every
+    tenant on the page over one field of one of them, including the ones the
+    caller was after.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/organizations/{ORG_ID}/tenants",
+            200,
+            {
+                "items": [
+                    _tenant("prod", "standard"),
+                    _tenant("future", "some-kind-from-a-newer-server"),
+                ],
+                "total": 2,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        page = client.tenants.list(PageRequest(limit=50))
+        assert page.items[0].kind == "standard"
+        assert page.items[1].kind == "some-kind-from-a-newer-server"
+
+
+def test_a_tenant_written_before_organization_scope_has_no_kind() -> None:
+    """``kind`` is defaulted, not required — a pre-1.31 row still decodes."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/organizations/{ORG_ID}/tenants/{EXAMPLE_ID}",
+            200,
+            _tenant("prod"),
+        )
+        assert client.tenants.get(EXAMPLE_ID).kind is None
+
+
+def test_trusted_anchors_is_absent_rather_than_zero_when_nothing_reloaded() -> None:
+    """§27.11 rule 3 — ``None`` is "no listener to ask", not "trusts zero CAs".
+
+    They are different operational states and only one of them is a problem, so
+    the SDK must not coalesce the first into the second.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/organizations/{ORG_ID}/ca-certificates/{EXAMPLE_ID}/mtls-trust-anchor",
+            200,
+            {
+                "ca_certificate_id": EXAMPLE_ID,
+                "mtls_trust_anchor": True,
+                "restart_required": True,
+                "message": "stored; applies at next start",
+            },
+        )
+        out = client.ca_certificates.set_mtls_trust_anchor(
+            EXAMPLE_ID, models.SetMtlsTrustAnchor(enabled=True)
+        )
+        assert out.restart_required is True
+        assert out.trusted_anchors is None
+
+
+def test_bound_service_account_id_is_on_the_list_projection_only() -> None:
+    """§27.11 rule 4 — resolved by ``list``, ``None`` on ``get``.
+
+    The ``get`` assertion is the load-bearing one: an SDK that filled the field
+    in there would be issuing a second request nobody asked for.
+    """
+
+    def _cert(**extra: object) -> dict[str, object]:
+        """A certificate envelope, with the projection field optional."""
+        return {
+            "id": EXAMPLE_ID,
+            "tenant_id": TENANT_ID,
+            "issuer_ca_id": ORG_ID,
+            "subject": "CN=device-1",
+            "public_cert_pem": "-----BEGIN CERTIFICATE-----",
+            "fingerprint": "ab:cd",
+            "cert_type": "Device",
+            "key_algorithm": "Ed25519",
+            "not_before": "2026-08-27T00:00:00Z",
+            "not_after": "2027-08-27T00:00:00Z",
+            "status": "Active",
+            "metadata": {},
+            "created_at": "2026-08-27T00:00:00Z",
+            **extra,
+        }
+
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/certificates",
+            200,
+            {
+                "items": [_cert(bound_service_account_id=TENANT_ID)],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        mount_json(router, "GET", f"/api/v1/certificates/{EXAMPLE_ID}", 200, _cert())
+
+        page = client.certificates.list(PageRequest(limit=50))
+        assert page.items[0].bound_service_account_id == TENANT_ID
+        assert client.certificates.get(EXAMPLE_ID).bound_service_account_id is None
+
+
+# ---------------------------------------------------------------------------
 # §27.4 rule 5 — update shapes
 # ---------------------------------------------------------------------------
 

@@ -55,6 +55,53 @@ def main() -> None:
         everyone = users.list_all(PageRequest(limit=100))
         print(f"walked {len(everyone)} users")
 
+        # --- Search --------------------------------------------------------
+        # The term rides on the page request rather than being a third argument
+        # on each of the twenty `list` methods, and that is what makes
+        # `list_all` carry it across the whole walk: a walk that filtered page
+        # one and not page two would hand back the matches followed by the
+        # unfiltered tail.
+        #
+        # The SERVER filters, before offset/limit, so `total` counts matches --
+        # filtering the page here in Python would give you neither that nor a
+        # page count that belongs to the set it labels.
+        matches = users.list(PageRequest(limit=25, search="ada"))
+        print(f"{matches.total} users match 'ada'")
+
+        # Blank is the same request as unset: `PageRequest(search="")` and
+        # `PageRequest(search="   ")` send no `search` key at all. A box that
+        # fires on every keystroke sends one of those the moment it is cleared,
+        # and "rows containing the empty string" is a different question from
+        # "all rows" -- so this pair issues the identical request.
+        cleared = users.list(PageRequest(limit=25, search="   "))
+        print(f"a cleared box asks for everything again: {cleared.total} users")
+
+        # The server caps the term's length. This SDK does not copy that cap: a
+        # truncation the server would not have made is a silently different
+        # query, with nothing to say so.
+
+        # --- Open enums ----------------------------------------------------
+        # `TenantKind` is `Literal["standard", "organization"] | str`. The
+        # widening is not laziness: a bare Literal is validated strictly by
+        # pydantic, so the next kind the server adds would raise on the WHOLE
+        # response -- taking down every tenant on the page over one field of one
+        # of them, including the ones you were after (§27.11 rule 1).
+        for tenant in client.tenants.list_all(PageRequest(limit=100))[:1]:
+            # `kind` is None on a row written before organization scope
+            # existed; read that as "standard".
+            print(f"tenant {tenant.slug!r} kind={tenant.kind!r}")
+
+        # --- Two other Nones that are not zero ------------------------------
+        # MtlsTrustAnchorResponse.trusted_anchors is None when NOTHING WAS
+        # RELOADED -- not when the listener trusts zero CAs. Only one of those
+        # two states is a problem.
+        #
+        # Certificate.bound_service_account_id is resolved by `list` and is None
+        # on `get`. The SDK spends no second request filling it in behind you.
+        certs = client.certificates.list(PageRequest(limit=5))
+        for cert in certs.items[:1]:
+            print(f"cert {cert.id} bound to {cert.bound_service_account_id!r}")
+
         # A bare-array read is a list, not a page -- modelling it as a page
         # would give it a `total` that only ever equalled `len(items)`.
         for resource in client.resources.list_all(PageRequest(limit=100))[:1]:
