@@ -140,6 +140,26 @@ def _call_delete(
     )
 
 
+def _call_export_audit(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    tenant_id: str,
+) -> ManagementCall:
+    """Build the ``tenants.export_audit`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    org_id = resolve_org(client, scope, "tenants.export_audit")
+    tenant_id = require_uuid(tenant_id, "tenant_id", "tenants.export_audit")
+    return ManagementCall(
+        operation="tenants.export_audit",
+        method="POST",
+        path_template="/api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export",
+        path=f"/api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export",
+    )
+
+
 class TenantsApi:
     """The ``tenants`` namespace handle.
 
@@ -222,6 +242,18 @@ class TenantsApi:
         send_management(
             self._client,
             _call_delete(self._client, self._scope, tenant_id),
+        )
+
+    def export_audit(self, tenant_id: str) -> None:
+        """``POST
+        /api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_export_audit(self._client, self._scope, tenant_id),
         )
 
 
@@ -307,4 +339,16 @@ class AsyncTenantsApi:
         await send_management_async(
             self._client,
             _call_delete(self._client, self._scope, tenant_id),
+        )
+
+    async def export_audit(self, tenant_id: str) -> None:
+        """``POST
+        /api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_export_audit(self._client, self._scope, tenant_id),
         )

@@ -5,7 +5,7 @@
 """One handle per §27 namespace, and the accessors that reach them.
 
 §27.2 makes this namespacing normative rather than stylistic: twenty namespaces
-have a ``list`` and fourteen a ``get``, so flattening 146 operations onto the
+have a ``list`` and fourteen a ``get``, so flattening 147 operations onto the
 client would need a disambiguating prefix invented once per operation -- and
 would bury the eight §1 methods most callers actually want under five times as
 many they do not.

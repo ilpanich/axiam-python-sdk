@@ -391,6 +391,35 @@ async def test_tenants_delete_async() -> None:
         await client.tenants.delete(EXAMPLE_ID)
 
 
+def test_tenants_export_audit() -> None:
+    """``tenants.export_audit`` -- POST
+    /api/v1/organizations/{org_id}/tenants/{tenant_id}/audit-export.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/organizations/{ORG_ID}/tenants/{EXAMPLE_ID}/audit-export",
+            200,
+            None,
+        )
+        client.tenants.export_audit(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_tenants_export_audit_async() -> None:
+    """``tenants.export_audit`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/organizations/{ORG_ID}/tenants/{EXAMPLE_ID}/audit-export",
+            200,
+            None,
+        )
+        await client.tenants.export_audit(EXAMPLE_ID)
+
+
 def test_users_list() -> None:
     """``users.list`` -- GET /api/v1/users."""
     with with_client() as (router, client):
@@ -6501,6 +6530,7 @@ EXERCISED = [
     "settings.set_tenant_override",
     "tenants.create",
     "tenants.delete",
+    "tenants.export_audit",
     "tenants.get",
     "tenants.list",
     "tenants.update",
@@ -6527,10 +6557,10 @@ EXERCISED = [
 
 
 def test_generated_surface_covers_the_registry() -> None:
-    """§27.9: a partial regeneration must fail here, not ship 140 of 146.
+    """§27.9: a partial regeneration must fail here, not ship 140 of 147.
 
     Asserting the whole set rather than the count catches a regeneration
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 146
+    assert len(EXERCISED) == 147
