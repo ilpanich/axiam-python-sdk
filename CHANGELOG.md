@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A whitespace-only `tenant_slug` is now refused at construction** (CONTRACT.md
+  §5, §5.2.1 rule 2). `not tenant_slug` caught `""` but not `"   "`, which is
+  exactly as much of a tenant and reaches the wire the same way.
+
+  It matters because nothing can carry a blank slug: the server resolves
+  nothing, and on `/auth/opaque/login/start` it fails on the workspace *before*
+  the tenant's OPAQUE mode is read — so the `404` of §23.4 rule 10 never
+  arrives, this SDK has no fallback to take, and sign-in fails even against a
+  tenant with OPAQUE **disabled**, answered as "invalid credentials".
+
+### Changed
+
+- **CONTRACT 1.32 — signing in an organization-level principal (§5.2.1).**
+  `CONTRACT.md`, `openapi.json` and `management-registry.json` re-vendored from
+  the AXIAM server, where the same bug class had made an organization-level
+  administrator unable to sign in at all (ilpanich/axiam#388).
+
+  Naming no tenant now resolves the organization's own reserved scope on
+  `/auth/login`, `/auth/opaque/login/start`, `/auth/opaque/register/start` and
+  `/auth/webauthn/authenticate/discoverable/start`. That reserved tenant's slug
+  is `organization`, so this SDK reaches it through the ordinary constructor:
+
+  ```python
+  AxiamClient(base_url=..., tenant_slug="organization", org_slug="globex")
+  ```
+
+  Prefer that over omitting the tenant: §5 rule 2 still requires one on the
+  `X-Tenant-ID` header of every request after the login.
+
 ## [1.0.0-beta02] - 2026-08-28
 
 ### Added
