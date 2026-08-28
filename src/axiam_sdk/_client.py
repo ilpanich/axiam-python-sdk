@@ -197,10 +197,20 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             ValueError: if exactly one of ``client_cert``/``client_key`` is
                 supplied, or if the supplied client identity is not valid PEM.
         """
-        if not tenant_slug:
+        if not tenant_slug or not tenant_slug.strip():
+            # Blank, not just absent (§5.2.1 rule 2). Nothing can carry an empty
+            # slug, so ``tenant_slug: ""`` on the wire resolves nothing — and on
+            # ``/auth/opaque/login/start`` it fails on the workspace *before* the
+            # tenant's OPAQUE mode is read, so the ``404`` that means "OPAQUE is
+            # not offered here" never arrives and this SDK has no fallback to
+            # take. Sign-in then fails even against a tenant with OPAQUE
+            # disabled, answered as "invalid credentials", which sends a user off
+            # to reset a password that works.
             raise AuthError(
-                "tenant_slug is required — AXIAM is multi-tenant and there is no default "
-                "tenant (CONTRACT.md §5)"
+                "tenant_slug is required and must not be blank — AXIAM is multi-tenant and "
+                "there is no default tenant; to sign in an organization-level principal, name "
+                'the organization\'s reserved tenant, whose slug is "organization" '
+                "(CONTRACT.md §5, §5.2.1)"
             )
         if org_slug and org_id:
             raise AuthError("org_slug and org_id are mutually exclusive — supply at most one")

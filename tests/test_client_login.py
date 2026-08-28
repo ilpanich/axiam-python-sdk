@@ -67,6 +67,48 @@ def test_missing_tenant_slug_raises_at_construction() -> None:
         AxiamClient(base_url=BASE_URL)  # type: ignore[call-arg]
 
 
+def test_whitespace_tenant_slug_raises_at_construction() -> None:
+    """§5.2.1 rule 2: an SDK MUST NOT send an empty-string slug.
+
+    A slug of spaces is as much of a tenant as none at all, and ``not
+    tenant_slug`` alone lets it through. It matters because nothing can carry a
+    blank slug: the server resolves nothing, and on ``/auth/opaque/login/start``
+    it fails on the workspace *before* the tenant's OPAQUE mode is read — so the
+    ``404`` of §23.4 rule 10 never arrives, this SDK has no fallback to take, and
+    sign-in fails even against a tenant with OPAQUE disabled.
+    """
+    with pytest.raises(AuthError, match="blank"):
+        AxiamClient(base_url=BASE_URL, tenant_slug="   ")
+
+
+def test_the_reserved_organization_tenant_is_named_like_any_other(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """§5.2.1: an organization-level principal signs in by naming the
+    organization's reserved tenant, whose slug is fixed in every deployment.
+
+    No new surface — the ordinary constructor reaches it, and the login body
+    carries the slug exactly as it would any tenant's.
+    """
+    captured: dict[str, object] = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"user": {"id": "user-1"}, "session_id": "session-uuid-1", "expires_in": 900},
+            headers=[_set_cookie_header("axiam_access", _make_access_token())],
+        )
+
+    respx_mock.post(f"{BASE_URL}/api/v1/auth/login").mock(side_effect=_capture)
+
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="organization", org_slug="globex")
+    client.login("root@example.com", "pw")
+
+    assert captured["tenant_slug"] == "organization"
+    assert captured["org_slug"] == "globex"
+
+
 def test_org_slug_and_org_id_are_mutually_exclusive() -> None:
     with pytest.raises(AuthError):
         AxiamClient(
