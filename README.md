@@ -32,7 +32,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 range silently would turn a statement that was true when written into a
 different claim without anyone editing it.
 
-§27 is the management API — 146 administrative operations across 24 namespaces,
+§27 is the management API — 147 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1335,7 +1335,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-146 administrative operations across 24 namespaces, reached as
+147 administrative operations across 24 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 
@@ -1367,7 +1367,7 @@ The same surface exists on `AsyncAxiamClient` with `await`.
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Twenty namespaces have a `list` and fourteen a `get`; flattening 146 operations onto the client would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Twenty namespaces have a `list` and fourteen a `get`; flattening 147 operations onto the client would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `login()` first, or an `AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.in_org(...)` / `.for_tenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. `PageRequest.search` filters **server-side**, before `offset`/`limit`, and `list_all()` carries the term across the whole walk. |

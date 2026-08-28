@@ -229,6 +229,7 @@ jobs:
       # (ilpanich/axiam-python-sdk), this workflow file (sdk-ci-python.yml) and
       # the `pypi` environment, or the token exchange is rejected.
       id-token: write
+      attestations: write   # T-148: build-provenance over the published dists
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Set up Python
@@ -256,6 +257,23 @@ jobs:
 
       - name: twine check (SC#5)
         run: twine check dist/*
+
+      # T-148 / H-1: a GitHub build-provenance attestation over the exact
+      # sdist and wheel published below.
+      #
+      #   gh attestation verify axiam_sdk-<version>-py3-none-any.whl \
+      #       --repo ilpanich/axiam-python-sdk
+      #
+      # This is NOT the same thing as the PEP 740 attestation the publish
+      # action attaches to the PyPI record, and neither replaces the other:
+      # that one is verified by pip against PyPI, this one by `gh` against the
+      # repository, and an integrator behind a mirror can only reach the
+      # second. Attested BEFORE the publish, so an artifact that cannot be
+      # attested is never uploaded.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: 'dist/*'
 
       # PyPI Trusted Publishing (OIDC, D-05) — no password/token input; the
       # id-token: write permission above is what authorizes the exchange.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the CONTRACT §27 management surface for the Python SDK.
 
-Reads ``management-registry.json`` (the 146 operations across 24 namespaces,
+Reads ``management-registry.json`` (the 147 operations across 24 namespaces,
 maintained in ``ilpanich/axiam`` and vendored here) plus ``openapi.json`` for the
 schemas those operations carry, and writes:
 
@@ -10,7 +10,7 @@ schemas those operations carry, and writes:
   namespace, in a sync and an async form;
 - ``src/axiam_sdk/management/ops/__init__.py`` — the accessors the clients mix in;
 - ``tests/test_management_surface_generated.py`` — one conformance case per
-  operation, plus the §27.9 assertion that all 146 are reached.
+  operation, plus the §27.9 assertion that all 147 are reached.
 
 Run with ``--check`` to verify the committed output is current; that is what CI
 runs, so a registry change that is not regenerated fails the build rather than
@@ -1035,7 +1035,7 @@ def emit_namespace(namespace: str, nsdef: dict[str, Any]) -> str:
 INDEX_DOC = '''"""One handle per §27 namespace, and the accessors that reach them.
 
 §27.2 makes this namespacing normative rather than stylistic: twenty namespaces
-have a ``list`` and fourteen a ``get``, so flattening 146 operations onto the
+have a ``list`` and fourteen a ``get``, so flattening 147 operations onto the
 client would need a disambiguating prefix invented once per operation -- and
 would bury the eight §1 methods most callers actually want under five times as
 many they do not.
@@ -1421,7 +1421,7 @@ def emit_test() -> str:
     out.append("def test_generated_surface_covers_the_registry() -> None:")
     out.extend(
         docstring(
-            "§27.9: a partial regeneration must fail here, not ship 140 of 146.\n\nAsserting "
+            "§27.9: a partial regeneration must fail here, not ship 140 of 147.\n\nAsserting "
             "the whole set rather than the count catches a regeneration that dropped one "
             "operation and gained another.",
             "    ",

@@ -1,6 +1,6 @@
 """The CONTRACT §27 management API.
 
-146 operations across 24 namespaces, reached as ``client.<namespace>.<operation>``
+147 operations across 24 namespaces, reached as ``client.<namespace>.<operation>``
 (and equivalently ``client.management.<namespace>.<operation>``). The namespace
 handles and the models they carry are generated from ``management-registry.json``
 and ``openapi.json`` by ``scripts/gen_management.py``; everything else in this
