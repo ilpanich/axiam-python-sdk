@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta02] - 2026-08-28
+
 ### Added
+
+- Contract 1.31 — list search, the truthful resend, organization scope
+
+- Implement CONTRACT §27 — the management API
 
 - **CONTRACT 1.31 — the AXIAM server PR #383 surface.** `CONTRACT.md`,
   `openapi.json` and `management-registry.json` re-vendored, and the six things
@@ -67,30 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `certificates.list()` and `None` on `certificates.get()`. The SDK does not
     issue a second request to fill it in there.
 
-### Changed
-
-- **Generated management enums are open.** Each is now `Literal[...] | str`, so
-  a value this SDK's copy of the spec does not list validates instead of raising
-  (§27.11 rule 1). A bare `Literal` is checked strictly by pydantic, which would
-  turn the next `kind` or `status` the server adds into a validation error on
-  the *whole* response — taking down every record on the page over one field of
-  one of them, including the records the caller was after. The listed members
-  stay in the annotation because they are what a reader needs; what the widening
-  removes is the claim that nothing else can occur.
-
-### Fixed
-
-- **`scripts/gen_management.py` no longer drops a projected list element.** The
-  server answers `GET /api/v1/certificates` with `Certificate` plus one resolved
-  graph edge, expressed as an `allOf` of the `$ref` and an anonymous object.
-  Read as a whole, that composition has no name, so the registry carried a page
-  with no element type and the added field reached no model. The generator now
-  takes the base name through the `allOf` and folds the projection's added
-  fields onto the base model as optional. (The registry-side half of this is
-  AXIAM PR #386.)
-
-### Added
-
 - **CONTRACT.md §27 — the management API.** 146 administrative operations
   across 24 namespaces, on both `AxiamClient` and `AsyncAxiamClient`, reached as
   `client.<namespace>.<operation>` (and equivalently through
@@ -130,7 +112,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Re-vendor openapi.json and management-registry.json from axiam main (#70)
+
+- Re-vendor the contract artifacts: spec digest + §27.10 posture (#68)
+
+- Re-vendor CONTRACT.md, openapi.json and the §27 registry
+
+- **Generated management enums are open.** Each is now `Literal[...] | str`, so
+  a value this SDK's copy of the spec does not list validates instead of raising
+  (§27.11 rule 1). A bare `Literal` is checked strictly by pydantic, which would
+  turn the next `kind` or `status` the server adds into a validation error on
+  the *whole* response — taking down every record on the page over one field of
+  one of them, including the records the caller was after. The listed members
+  stay in the annotation because they are what a reader needs; what the widening
+  removes is the claim that nothing else can occur.
+
 - Coverage floor raised from 97% to 98% (measured 98.59%).
+
+### Fixed
+
+- Use datetime.timezone.utc, not the 3.11-only datetime.UTC alias
+
+- **`scripts/gen_management.py` no longer drops a projected list element.** The
+  server answers `GET /api/v1/certificates` with `Certificate` plus one resolved
+  graph edge, expressed as an `allOf` of the `$ref` and an anonymous object.
+  Read as a whole, that composition has no name, so the registry carried a page
+  with no element type and the added field reached no model. The generator now
+  takes the base name through the `allOf` and folds the projection's added
+  fields onto the base model as optional. (The registry-side half of this is
+  AXIAM PR #386.)
 
 ## [1.0.0-alpha44] - 2026-08-25
 
