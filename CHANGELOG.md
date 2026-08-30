@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta07] - 2026-08-30
+
 ### Changed
+
+- Re-vendor AXIAM contract 1.36
 
 - **Documented contract 1.36, which this SDK already vendors.** `CONTRACT.md`,
   `openapi.json` and `management-registry.json` were re-vendored from the
