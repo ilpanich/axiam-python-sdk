@@ -1207,6 +1207,123 @@ async def test_groups_list_roles_async() -> None:
         await client.groups.list_roles(EXAMPLE_ID)
 
 
+def test_groups_list_service_accounts() -> None:
+    """``groups.list_service_accounts`` -- GET
+    /api/v1/groups/{group_id}/service-accounts.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/groups/{EXAMPLE_ID}/service-accounts",
+            200,
+            {
+                "items": [
+                    {
+                        "client_id": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "status": "Active",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.groups.list_service_accounts(EXAMPLE_ID, PageRequest(limit=50))
+        client.groups.list_service_accounts_all(EXAMPLE_ID, PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_groups_list_service_accounts_async() -> None:
+    """``groups.list_service_accounts`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/groups/{EXAMPLE_ID}/service-accounts",
+            200,
+            {
+                "items": [
+                    {
+                        "client_id": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "status": "Active",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.groups.list_service_accounts(EXAMPLE_ID, PageRequest(limit=50))
+        await client.groups.list_service_accounts_all(EXAMPLE_ID, PageRequest(limit=50))
+
+
+def test_groups_add_service_account() -> None:
+    """``groups.add_service_account`` -- POST
+    /api/v1/groups/{group_id}/service-accounts.
+    """
+    with with_client() as (router, client):
+        mount_json(router, "POST", f"/api/v1/groups/{EXAMPLE_ID}/service-accounts", 204, None)
+        client.groups.add_service_account(
+            EXAMPLE_ID,
+            models.AddServiceAccountMemberRequest(
+                service_account_id="11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_groups_add_service_account_async() -> None:
+    """``groups.add_service_account`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "POST", f"/api/v1/groups/{EXAMPLE_ID}/service-accounts", 204, None)
+        await client.groups.add_service_account(
+            EXAMPLE_ID,
+            models.AddServiceAccountMemberRequest(
+                service_account_id="11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+
+def test_groups_remove_service_account() -> None:
+    """``groups.remove_service_account`` -- DELETE
+    /api/v1/groups/{group_id}/service-accounts/{service_account_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "DELETE",
+            f"/api/v1/groups/{EXAMPLE_ID}/service-accounts/{EXAMPLE_ID}",
+            204,
+            None,
+        )
+        client.groups.remove_service_account(EXAMPLE_ID, EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_groups_remove_service_account_async() -> None:
+    """``groups.remove_service_account`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "DELETE",
+            f"/api/v1/groups/{EXAMPLE_ID}/service-accounts/{EXAMPLE_ID}",
+            204,
+            None,
+        )
+        await client.groups.remove_service_account(EXAMPLE_ID, EXAMPLE_ID)
+
+
 def test_roles_list() -> None:
     """``roles.list`` -- GET /api/v1/roles."""
     with with_client() as (router, client):
@@ -1697,6 +1814,107 @@ async def test_roles_revoke_permission_async() -> None:
             router, "DELETE", f"/api/v1/roles/{EXAMPLE_ID}/permissions/{EXAMPLE_ID}", 204, None
         )
         await client.roles.revoke_permission(EXAMPLE_ID, EXAMPLE_ID)
+
+
+def test_roles_list_service_accounts() -> None:
+    """``roles.list_service_accounts`` -- GET
+    /api/v1/roles/{role_id}/service-accounts.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/roles/{EXAMPLE_ID}/service-accounts",
+            200,
+            [
+                {
+                    "service_account": {
+                        "client_id": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "status": "Active",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                }
+            ],
+        )
+        client.roles.list_service_accounts(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_roles_list_service_accounts_async() -> None:
+    """``roles.list_service_accounts`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/roles/{EXAMPLE_ID}/service-accounts",
+            200,
+            [
+                {
+                    "service_account": {
+                        "client_id": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "status": "Active",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                }
+            ],
+        )
+        await client.roles.list_service_accounts(EXAMPLE_ID)
+
+
+def test_roles_assign_to_service_account() -> None:
+    """``roles.assign_to_service_account`` -- POST
+    /api/v1/roles/{role_id}/service-accounts.
+    """
+    with with_client() as (router, client):
+        mount_json(router, "POST", f"/api/v1/roles/{EXAMPLE_ID}/service-accounts", 204, None)
+        client.roles.assign_to_service_account(
+            EXAMPLE_ID,
+            models.AssignRoleToServiceAccountRequest(
+                service_account_id="11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_roles_assign_to_service_account_async() -> None:
+    """``roles.assign_to_service_account`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "POST", f"/api/v1/roles/{EXAMPLE_ID}/service-accounts", 204, None)
+        await client.roles.assign_to_service_account(
+            EXAMPLE_ID,
+            models.AssignRoleToServiceAccountRequest(
+                service_account_id="11111111-1111-4111-8111-111111111111"
+            ),
+        )
+
+
+def test_roles_unassign_from_service_account() -> None:
+    """``roles.unassign_from_service_account`` -- DELETE
+    /api/v1/roles/{role_id}/service-accounts/{service_account_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router, "DELETE", f"/api/v1/roles/{EXAMPLE_ID}/service-accounts/{EXAMPLE_ID}", 204, None
+        )
+        client.roles.unassign_from_service_account(EXAMPLE_ID, EXAMPLE_ID, None)
+
+
+@pytest.mark.asyncio
+async def test_roles_unassign_from_service_account_async() -> None:
+    """``roles.unassign_from_service_account`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router, "DELETE", f"/api/v1/roles/{EXAMPLE_ID}/service-accounts/{EXAMPLE_ID}", 204, None
+        )
+        await client.roles.unassign_from_service_account(EXAMPLE_ID, EXAMPLE_ID, None)
 
 
 def test_permissions_list() -> None:
@@ -2665,6 +2883,108 @@ async def test_service_accounts_bind_certificate_async() -> None:
             EXAMPLE_ID,
             models.BindCertificate(certificate_id="11111111-1111-4111-8111-111111111111"),
         )
+
+
+def test_service_accounts_list_roles() -> None:
+    """``service_accounts.list_roles`` -- GET
+    /api/v1/service-accounts/{service_account_id}/roles.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/service-accounts/{EXAMPLE_ID}/roles",
+            200,
+            [
+                {
+                    "role": {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "description": "example",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "is_global": True,
+                        "name": "example",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                }
+            ],
+        )
+        client.service_accounts.list_roles(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_service_accounts_list_roles_async() -> None:
+    """``service_accounts.list_roles`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/service-accounts/{EXAMPLE_ID}/roles",
+            200,
+            [
+                {
+                    "role": {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "description": "example",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "is_global": True,
+                        "name": "example",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                }
+            ],
+        )
+        await client.service_accounts.list_roles(EXAMPLE_ID)
+
+
+def test_service_accounts_list_groups() -> None:
+    """``service_accounts.list_groups`` -- GET
+    /api/v1/service-accounts/{service_account_id}/groups.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/service-accounts/{EXAMPLE_ID}/groups",
+            200,
+            [
+                {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "description": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "metadata": None,
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                    "updated_at": "2026-08-26T00:00:00Z",
+                }
+            ],
+        )
+        client.service_accounts.list_groups(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_service_accounts_list_groups_async() -> None:
+    """``service_accounts.list_groups`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/service-accounts/{EXAMPLE_ID}/groups",
+            200,
+            [
+                {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "description": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "metadata": None,
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                    "updated_at": "2026-08-26T00:00:00Z",
+                }
+            ],
+        )
+        await client.service_accounts.list_groups(EXAMPLE_ID)
 
 
 def test_certificates_list() -> None:
@@ -6439,13 +6759,16 @@ EXERCISED = [
     "federation.oidc_callback",
     "federation.update_config",
     "groups.add_member",
+    "groups.add_service_account",
     "groups.create",
     "groups.delete",
     "groups.get",
     "groups.list",
     "groups.list_members",
     "groups.list_roles",
+    "groups.list_service_accounts",
     "groups.remove_member",
+    "groups.remove_service_account",
     "groups.update",
     "notification_rules.create",
     "notification_rules.delete",
@@ -6493,6 +6816,7 @@ EXERCISED = [
     "resources.list_children",
     "resources.update",
     "roles.assign_to_group",
+    "roles.assign_to_service_account",
     "roles.assign_to_user",
     "roles.create",
     "roles.delete",
@@ -6501,9 +6825,11 @@ EXERCISED = [
     "roles.list",
     "roles.list_groups",
     "roles.list_permissions",
+    "roles.list_service_accounts",
     "roles.list_users",
     "roles.revoke_permission",
     "roles.unassign_from_group",
+    "roles.unassign_from_service_account",
     "roles.unassign_from_user",
     "roles.update",
     "scim_tokens.create",
@@ -6519,6 +6845,8 @@ EXERCISED = [
     "service_accounts.delete",
     "service_accounts.get",
     "service_accounts.list",
+    "service_accounts.list_groups",
+    "service_accounts.list_roles",
     "service_accounts.rotate_secret",
     "service_accounts.update",
     "settings.delete_tenant_override",
@@ -6563,4 +6891,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 147
+    assert len(EXERCISED) == 155

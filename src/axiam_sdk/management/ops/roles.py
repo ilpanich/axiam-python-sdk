@@ -320,6 +320,71 @@ def _call_revoke_permission(
     )
 
 
+def _call_list_service_accounts(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    role_id: str,
+) -> ManagementCall:
+    """Build the ``roles.list_service_accounts`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    role_id = require_uuid(role_id, "role_id", "roles.list_service_accounts")
+    return ManagementCall(
+        operation="roles.list_service_accounts",
+        method="GET",
+        path_template="/api/v1/roles/{role_id}/service-accounts",
+        path=f"/api/v1/roles/{role_id}/service-accounts",
+    )
+
+
+def _call_assign_to_service_account(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    role_id: str,
+    body: models.AssignRoleToServiceAccountRequest,
+) -> ManagementCall:
+    """Build the ``roles.assign_to_service_account`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    role_id = require_uuid(role_id, "role_id", "roles.assign_to_service_account")
+    return ManagementCall(
+        operation="roles.assign_to_service_account",
+        method="POST",
+        path_template="/api/v1/roles/{role_id}/service-accounts",
+        path=f"/api/v1/roles/{role_id}/service-accounts",
+        body=body.to_wire(),
+    )
+
+
+def _call_unassign_from_service_account(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    role_id: str,
+    service_account_id: str,
+    resource_id: str | None = None,
+) -> ManagementCall:
+    """Build the ``roles.unassign_from_service_account`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    role_id = require_uuid(role_id, "role_id", "roles.unassign_from_service_account")
+    service_account_id = require_uuid(
+        service_account_id, "service_account_id", "roles.unassign_from_service_account"
+    )
+    return ManagementCall(
+        operation="roles.unassign_from_service_account",
+        method="DELETE",
+        path_template="/api/v1/roles/{role_id}/service-accounts/{service_account_id}",
+        path=f"/api/v1/roles/{role_id}/service-accounts/{service_account_id}",
+        query={"resource_id": resource_id},
+    )
+
+
 class RolesApi:
     """The ``roles`` namespace handle.
 
@@ -492,6 +557,51 @@ class RolesApi:
         send_management(
             self._client,
             _call_revoke_permission(self._client, self._scope, role_id, permission_id),
+        )
+
+    def list_service_accounts(
+        self,
+        role_id: str,
+    ) -> builtins.list[models.RoleServiceAccountAssignment]:
+        """``GET /api/v1/roles/{role_id}/service-accounts``"""
+        raw = send_management(
+            self._client,
+            _call_list_service_accounts(self._client, self._scope, role_id),
+        )
+        return [models.RoleServiceAccountAssignment.model_validate(item) for item in raw or []]
+
+    def assign_to_service_account(
+        self,
+        role_id: str,
+        body: models.AssignRoleToServiceAccountRequest,
+    ) -> None:
+        """``POST /api/v1/roles/{role_id}/service-accounts``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_assign_to_service_account(self._client, self._scope, role_id, body),
+        )
+
+    def unassign_from_service_account(
+        self,
+        role_id: str,
+        service_account_id: str,
+        resource_id: str | None = None,
+    ) -> None:
+        """``DELETE
+        /api/v1/roles/{role_id}/service-accounts/{service_account_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_unassign_from_service_account(
+                self._client, self._scope, role_id, service_account_id, resource_id
+            ),
         )
 
 
@@ -667,4 +777,49 @@ class AsyncRolesApi:
         await send_management_async(
             self._client,
             _call_revoke_permission(self._client, self._scope, role_id, permission_id),
+        )
+
+    async def list_service_accounts(
+        self,
+        role_id: str,
+    ) -> builtins.list[models.RoleServiceAccountAssignment]:
+        """``GET /api/v1/roles/{role_id}/service-accounts``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_service_accounts(self._client, self._scope, role_id),
+        )
+        return [models.RoleServiceAccountAssignment.model_validate(item) for item in raw or []]
+
+    async def assign_to_service_account(
+        self,
+        role_id: str,
+        body: models.AssignRoleToServiceAccountRequest,
+    ) -> None:
+        """``POST /api/v1/roles/{role_id}/service-accounts``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_assign_to_service_account(self._client, self._scope, role_id, body),
+        )
+
+    async def unassign_from_service_account(
+        self,
+        role_id: str,
+        service_account_id: str,
+        resource_id: str | None = None,
+    ) -> None:
+        """``DELETE
+        /api/v1/roles/{role_id}/service-accounts/{service_account_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_unassign_from_service_account(
+                self._client, self._scope, role_id, service_account_id, resource_id
+            ),
         )

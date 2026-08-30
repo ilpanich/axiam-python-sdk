@@ -53,7 +53,7 @@ class LoginResult(BaseModel):
 
     Such a principal's record lives in its organization's reserved tenant, so
     its global grants apply in every tenant of that organization, and it can act
-    on a different one by sending a different ``X-Tenant-ID`` on the next
+    on a different one by sending a different ``X-Axiam-Tenant`` on the next
     request — no re-login, because it already is a principal of every tenant
     there.
 
@@ -65,6 +65,54 @@ class LoginResult(BaseModel):
     ``False`` on a completed login against a server older than contract 1.31,
     and ``False`` on the two pending outcomes, where no principal has been
     established yet.
+
+    Since contract 1.35 that reach can be narrowed per assignment, so this flag
+    alone no longer decides what to offer: consult
+    :attr:`reachable_tenant_ids` as well (§5.2.3 rule 3).
+    """
+
+    principal_tenant_id: str | None = None
+    """The tenant this principal's record **lives in** — CONTRACT.md §5.2.2.
+
+    Distinct from the tenant a request *acts on*: the two are the same value for
+    every ordinary principal and diverge only once an organization-level one
+    selects another tenant.
+
+    This is where the account's own credentials belong, and what a §23
+    registration record for *this* account must be sealed against — see
+    ``AxiamClient.opaque_enrollment_for_self``.
+
+    Falls back to the acting tenant the server reported when it omits this,
+    which is exactly right there: a server older than contract 1.34 cannot
+    switch the acting tenant, so the two cannot differ.
+    """
+
+    principal_tenant_slug: str | None = None
+    """Slug of :attr:`principal_tenant_id` — ``"organization"`` for an
+    organization-level principal. ``None`` when the server omits it.
+    """
+
+    org_id: str | None = None
+    """The caller's organization as a UUID — CONTRACT.md §5.2.2 rule 3.
+
+    Read this rather than resolving a slug through ``GET
+    /api/v1/organizations``, which is ``super-admin``-only and returns only the
+    caller's own organization.
+    """
+
+    reachable_tenant_ids: tuple[str, ...] | None = None
+    """The tenants this caller's roles reach, when narrowed — CONTRACT.md
+    §5.2.3.
+
+    ``None`` means **unrestricted**, which is both the common case and the only
+    thing a server older than contract 1.35 can mean. A present tuple is a
+    deliberately narrowed organization-level account: confine any tenant switch
+    to it, because naming anything outside is refused at the header (§5.2.3
+    rule 4).
+
+    Note the pairing with :attr:`organization_level`: a narrowed account still
+    reports ``True`` there, so gating on that flag alone offers tenants the
+    server will refuse.
     """
 
     model_config = {"frozen": True}

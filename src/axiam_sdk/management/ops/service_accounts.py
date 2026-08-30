@@ -174,6 +174,48 @@ def _call_bind_certificate(
     )
 
 
+def _call_list_roles(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    service_account_id: str,
+) -> ManagementCall:
+    """Build the ``service_accounts.list_roles`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    service_account_id = require_uuid(
+        service_account_id, "service_account_id", "service_accounts.list_roles"
+    )
+    return ManagementCall(
+        operation="service_accounts.list_roles",
+        method="GET",
+        path_template="/api/v1/service-accounts/{service_account_id}/roles",
+        path=f"/api/v1/service-accounts/{service_account_id}/roles",
+    )
+
+
+def _call_list_groups(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    service_account_id: str,
+) -> ManagementCall:
+    """Build the ``service_accounts.list_groups`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    service_account_id = require_uuid(
+        service_account_id, "service_account_id", "service_accounts.list_groups"
+    )
+    return ManagementCall(
+        operation="service_accounts.list_groups",
+        method="GET",
+        path_template="/api/v1/service-accounts/{service_account_id}/groups",
+        path=f"/api/v1/service-accounts/{service_account_id}/groups",
+    )
+
+
 class ServiceAccountsApi:
     """The ``service_accounts`` namespace handle.
 
@@ -292,6 +334,22 @@ class ServiceAccountsApi:
             self._client,
             _call_bind_certificate(self._client, self._scope, sa_id, body),
         )
+
+    def list_roles(self, service_account_id: str) -> builtins.list[models.RoleAssignment]:
+        """``GET /api/v1/service-accounts/{service_account_id}/roles``"""
+        raw = send_management(
+            self._client,
+            _call_list_roles(self._client, self._scope, service_account_id),
+        )
+        return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    def list_groups(self, service_account_id: str) -> builtins.list[models.Group]:
+        """``GET /api/v1/service-accounts/{service_account_id}/groups``"""
+        raw = send_management(
+            self._client,
+            _call_list_groups(self._client, self._scope, service_account_id),
+        )
+        return [models.Group.model_validate(item) for item in raw or []]
 
 
 class AsyncServiceAccountsApi:
@@ -412,3 +470,19 @@ class AsyncServiceAccountsApi:
             self._client,
             _call_bind_certificate(self._client, self._scope, sa_id, body),
         )
+
+    async def list_roles(self, service_account_id: str) -> builtins.list[models.RoleAssignment]:
+        """``GET /api/v1/service-accounts/{service_account_id}/roles``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_roles(self._client, self._scope, service_account_id),
+        )
+        return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    async def list_groups(self, service_account_id: str) -> builtins.list[models.Group]:
+        """``GET /api/v1/service-accounts/{service_account_id}/groups``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_groups(self._client, self._scope, service_account_id),
+        )
+        return [models.Group.model_validate(item) for item in raw or []]
