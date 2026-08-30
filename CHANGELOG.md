@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Re-vendored the AXIAM contract artifacts at contract 1.36.** `CONTRACT.md`,
+  `openapi.json` and `management-registry.json` are byte-identical copies of the
+  `sdks/` sources in [`ilpanich/axiam`](https://github.com/ilpanich/axiam)
+  (ilpanich/axiam#396). `proto/` and `opaque-test-vectors.json` did not change
+  in 1.36 and are untouched. No SDK code changes with them; the three entries
+  below are why not.
+
+- **§5.2.2 rule 4 is new, and is an errata rather than a wire change.** The
+  server now scopes every *self-service* endpoint to `principal_tenant_id`
+  rather than to the acting tenant — `GET`/`PUT /users/{own id}`, that user's
+  `mfa-methods`, `POST /users/{own id}/reset-mfa`, `POST /auth/mfa/enroll` and
+  `/confirm`, `POST /auth/webauthn/register/start` and `/finish`, `POST
+  /users/me/resend-verification`, the §25 account export and erasure for the
+  caller's own id, and `GET /oauth2/userinfo`. Each of those answered `404` for
+  an organization-level caller that had switched to another tenant and now
+  succeeds. No request or response field is added, so nothing here is a wire
+  change.
+
+  The rule also forbids the obvious workaround: an SDK MUST NOT clear or rewrite
+  the acting-tenant header for those calls, because that header is what makes
+  the **administrative** form of the same endpoints reach the tenant the caller
+  asked for — stripping it would break reading another tenant's user in order to
+  fix reading your own. This SDK was audited for such a workaround and has none:
+  `X-Tenant-ID` is set in one place, `_session.py`'s request decorator,
+  unconditionally for every same-origin request; no endpoint is special-cased.
+
+- **Issue #395 is settled: the acting-tenant header is `X-Axiam-Tenant`**, and
+  §5.2, §5.2.2 and §5.2.3 now name it. The note under 1.0.0-beta05 below
+  recorded the contract and the server disagreeing on it; they no longer do, and
+  the name this SDK documents was already the server's — checked against the
+  vendored contract rather than assumed. §5 rule 2's *unconditional*
+  `X-Tenant-ID` is deliberately **not** renamed, and the contract now carries a
+  note saying why it must not be: it names the client's *constructor* tenant, so
+  folding it into `X-Axiam-Tenant` would override the acting tenant on every
+  request an organization-level principal made after a switch. Every existing §5
+  rule 2 send is left exactly as it was.
+
+- **`openapi.json` gains `/api/v1/auth/me`, `/api/v1/auth/password/change` and
+  `/api/v1/admin/bootstrap`.** All three were always served and always normative
+  in `CONTRACT.md`; they were missing from the generated document only because
+  their handlers were never listed in its `paths(…)`. `management-registry.json`
+  changes only in its `spec_digest` and by one new exclusion entry —
+  `operation_count` stays **155**, bootstrap being excluded on the §27.0
+  boundary — so §27 code generation must produce no diff. Re-ran `python3
+  scripts/gen_management.py` to confirm it produces none.
+
 ## [1.0.0-beta05] - 2026-08-30
 
 ### Added
