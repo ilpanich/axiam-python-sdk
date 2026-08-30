@@ -89,6 +89,29 @@ ACCESS_COOKIE = "axiam_access"
 REFRESH_COOKIE = "axiam_refresh"
 
 
+def _principal_scope(user: dict[str, Any]) -> dict[str, Any]:
+    """The CONTRACT.md §5.2.2/§5.2.3 scope fields, read off a login response.
+
+    Kept beside the mapper rather than inline because the fallback is the whole
+    point and is easy to lose in a constructor call: §5.2.2 rule 1 says an
+    absent ``principal_tenant_id`` means *equal to the acting tenant*, not
+    unknown. A server older than contract 1.34 omits it and cannot switch the
+    acting tenant either, so reading ``tenant_id`` there is not a guess — it is
+    the only value the field could have had.
+    """
+    tenant_id = user.get("tenant_id")
+    reachable = user.get("reachable_tenant_ids")
+    return {
+        "principal_tenant_id": user.get("principal_tenant_id") or tenant_id,
+        "principal_tenant_slug": user.get("principal_tenant_slug"),
+        "org_id": user.get("org_id"),
+        # A tuple, and `None` rather than `()` when absent: an empty collection
+        # would read as "reaches nothing", which is the opposite of what an
+        # omitted field means here (§5.2.3 — absent is unrestricted).
+        "reachable_tenant_ids": tuple(reachable) if reachable else None,
+    }
+
+
 def _decode_unverified_claims(token: str) -> dict[str, Any]:
     """Base64url-decode a JWT's payload segment WITHOUT verifying its
     signature — signature verification is the JWKS/middleware concern
@@ -233,6 +256,12 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         self._decision_memo.report_clamp(decision_memo_ttl_ms, self._telemetry)
         # §18 shutdown flag, read on every operation.
         self._closed = False
+        # CONTRACT.md §5.2.2 — the tenant the signed-in principal's record
+        # *lives* in, as reported by the login response. Distinct from the
+        # tenant being acted on, which is the session's; the two diverge for an
+        # organization-level principal that has selected another one. Read by
+        # `opaque_enrollment_for_self`. `None` until a login completes.
+        self._principal_tenant_id: str | None = None
 
         self._session = _Session(
             base_url=base_url,
@@ -327,7 +356,11 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         body["ke1"] = ke1
         return body
 
-    def _opaque_register_start_body(self, registration_request: str) -> dict[str, Any]:
+    def _opaque_register_start_body(
+        self,
+        registration_request: str,
+        principal_tenant_id: str | None = None,
+    ) -> dict[str, Any]:
         """Build the ``POST /api/v1/auth/opaque/register/start`` body.
 
         Same workspace resolution, with both the password *and* the username
@@ -335,10 +368,18 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         identifier the server chooses, which is why the SRP verifier's
         ``identity`` argument has no successor here — and why a later rename
         cannot invalidate a credential.
+
+        ``principal_tenant_id`` overrides the workspace for the caller's *own*
+        credential (CONTRACT.md §5.2.2 rule 2). The slug goes with it: a slug
+        naming the acting tenant would out-vote the id server-side, which is
+        the exact confusion the override exists to avoid.
         """
         body = self._login_body("", "")
         body.pop("password", None)
         body.pop("username_or_email", None)
+        if principal_tenant_id is not None:
+            body["tenant_id"] = principal_tenant_id
+            body.pop("tenant_slug", None)
         body["registration_request"] = registration_request
         return body
 
@@ -440,8 +481,13 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
                 # cross-tenant action" rather than leaving `None` to be
                 # truthiness-tested somewhere downstream.
                 organization_level=bool(wire.get("user", {}).get("organization_level") or False),
+                **_principal_scope(wire.get("user", {})),
             )
             self._absorb_session_cookies()
+            # §5.2.2: remember where this principal lives, so a later
+            # `opaque_enrollment_for_self` seals against the account's own
+            # tenant without a second round trip.
+            self._principal_tenant_id = result.principal_tenant_id
             return result
         if response.status_code == httpx.codes.ACCEPTED:
             wire = response.json()
@@ -816,8 +862,15 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         return self._handle_login_response(response)
 
     def opaque_enrollment(self, password: str) -> dict[str, Any]:
-        """Build a registration record to send with any request that sets a
-        password (user creation, change-password, reset completion).
+        """Build a registration record sealed against the tenant this client is
+        **acting on**.
+
+        That is the right tenant when the record is for an account being created
+        in it — §27 ``users.create``, and the reset-completion flow, which names
+        its own tenant. It is the **wrong** tenant for the caller's own password
+        change once an organization-level principal has selected another one to
+        act on: the account's credentials live where the account does. Use
+        :meth:`opaque_enrollment_for_self` there — CONTRACT.md §5.2.2 rule 2.
 
         The server cannot build one — it never sees the plaintext — so it has to
         arrive with the request or not at all.
@@ -836,6 +889,40 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             shared library is not installed, or when the server names a KSF this
             SDK cannot perform.
         """
+        return self._enroll(password, None)
+
+    def opaque_enrollment_for_self(self, password: str) -> dict[str, Any]:
+        """Build a registration record for the **caller's own** new password,
+        sealed against the tenant the caller's account lives in.
+
+        CONTRACT.md §5.2.2 rule 2. ``POST /auth/password/change`` and the record
+        that accompanies it are about the account, not about whatever tenant the
+        client is currently pointed at, and a record sealed against the acting
+        tenant is refused with *"the OPAQUE session was issued for a different
+        tenant"*.
+
+        The distinction only bites for an organization-level principal that has
+        selected another tenant to act on; for everyone else the two tenants are
+        the same value and this behaves identically to
+        :meth:`opaque_enrollment`. It is still the method to call for a
+        self-service password change, because which principal is signed in is
+        not something the call site usually knows.
+
+        :raises NetworkError: when no login has completed on this client yet —
+            the principal tenant is reported by the login response, so there is
+            nothing to seal against before then — and on the same terms as
+            :meth:`opaque_enrollment` otherwise.
+        """
+        if self._principal_tenant_id is None:
+            raise NetworkError(
+                "OPAQUE: no principal tenant is known yet — sign in before "
+                "building a registration record for your own password"
+            )
+        return self._enroll(password, self._principal_tenant_id)
+
+    def _enroll(self, password: str, principal_tenant_id: str | None) -> dict[str, Any]:
+        """The shared body of the two enrolment methods; they differ only in the
+        tenant the record is sealed against."""
         from ._opaque import KsfParams, start_registration
 
         self._ensure_open()
@@ -844,7 +931,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST",
             OPAQUE_REGISTER_START_PATH,
-            json=self._opaque_register_start_body(exchange.request),
+            json=self._opaque_register_start_body(exchange.request, principal_tenant_id),
         )
         response = self._session._send_sync(request)
         if response.status_code != httpx.codes.OK:

@@ -49,6 +49,13 @@ class AddMemberRequest(ManagementModel):
     """``user_id``."""
 
 
+class AddServiceAccountMemberRequest(ManagementModel):
+    """``AddServiceAccountMemberRequest`` (generated from openapi.json)."""
+
+    service_account_id: str
+    """``service_account_id``."""
+
+
 class ApiProviderConfig(ManagementModel):
     """API-based provider configuration (SendGrid, Postmark, Resend, Brevo).
 
@@ -73,12 +80,67 @@ class AssignRoleToGroupRequest(ManagementModel):
     resource_id: str | None = None
     """``resource_id``."""
 
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches.
+
+
+    Only meaningful for an assignment made in an organization's scope, whose
+    global roles otherwise reach every tenant of the organization; naming
+    tenants here confines the assignment to those and to nothing else, the
+    organization's own scope included. Omitted — the default — reaches
+    wherever the role does.
+
+    Refused with 400 outside an organization scope, when empty, and when it
+    names a tenant of another organization or the organization's own scope
+    tenant.
+    """
+
+
+class AssignRoleToServiceAccountRequest(ManagementModel):
+    """``AssignRoleToServiceAccountRequest`` (generated from openapi.json)."""
+
+    resource_id: str | None = None
+    """``resource_id``."""
+
+    service_account_id: str
+    """``service_account_id``."""
+
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches.
+
+
+    Only meaningful for an assignment made in an organization's scope, whose
+    global roles otherwise reach every tenant of the organization; naming
+    tenants here confines the assignment to those and to nothing else, the
+    organization's own scope included. Omitted — the default — reaches
+    wherever the role does.
+
+    Refused with 400 outside an organization scope, when empty, and when it
+    names a tenant of another organization or the organization's own scope
+    tenant.
+    """
+
 
 class AssignRoleToUserRequest(ManagementModel):
     """``AssignRoleToUserRequest`` (generated from openapi.json)."""
 
     resource_id: str | None = None
     """``resource_id``."""
+
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches.
+
+
+    Only meaningful for an assignment made in an organization's scope, whose
+    global roles otherwise reach every tenant of the organization; naming
+    tenants here confines the assignment to those and to nothing else, the
+    organization's own scope included. Omitted — the default — reaches
+    wherever the role does.
+
+    Refused with 400 outside an organization scope, when empty, and when it
+    names a tenant of another organization or the organization's own scope
+    tenant.
+    """
 
     user_id: str
     """``user_id``."""
@@ -2621,6 +2683,9 @@ class RoleAssignment(ManagementModel):
     role: Role
     """``role``."""
 
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches. See [`TenantScope`]."""
+
 
 class RoleGroupAssignment(ManagementModel):
     """A group together with the resource scope of its assignment of this role."""
@@ -2631,6 +2696,33 @@ class RoleGroupAssignment(ManagementModel):
     resource_id: str | None = None
     """`None` means the role was assigned globally (no resource scope)."""
 
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches, or omitted for "wherever the role
+
+    does". Shown next to the assignment so an operator can tell a
+    deliberately narrowed grant from an organization-wide one.
+    """
+
+
+class RoleServiceAccountAssignment(ManagementModel):
+    """A service account together with the resource scope of its assignment."""
+
+    resource_id: str | None = None
+    """`None` means the role was assigned globally (no resource scope)."""
+
+    service_account: ServiceAccountResponse
+    """The assigned service account. Carries no secret — the client secret is
+
+    returned once, at creation, and never again.
+    """
+
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches, or omitted for "wherever the role
+
+    does". Shown next to the assignment so an operator can tell a
+    deliberately narrowed grant from an organization-wide one.
+    """
+
 
 class RoleUserAssignment(ManagementModel):
     """A user together with the resource scope of their assignment of this
@@ -2639,6 +2731,13 @@ class RoleUserAssignment(ManagementModel):
 
     resource_id: str | None = None
     """`None` means the role was assigned globally (no resource scope)."""
+
+    tenant_scope: list[str] | None = None
+    """The tenants this assignment reaches, or omitted for "wherever the role
+
+    does". Shown next to the assignment so an operator can tell a
+    deliberately narrowed grant from an organization-wide one.
+    """
 
     user: UserResponse
     """The assigned user."""
@@ -3797,8 +3896,10 @@ class WebhookResponse(ManagementModel):
 # fail at import, where it names itself, not inside an unrelated request.
 for _model in (
     AddMemberRequest,
+    AddServiceAccountMemberRequest,
     ApiProviderConfig,
     AssignRoleToGroupRequest,
+    AssignRoleToServiceAccountRequest,
     AssignRoleToUserRequest,
     AuditLogEntry,
     BindCertificate,
@@ -3881,6 +3982,7 @@ for _model in (
     Role,
     RoleAssignment,
     RoleGroupAssignment,
+    RoleServiceAccountAssignment,
     RoleUserAssignment,
     RotateSecretResponse,
     ScimTokenResponse,

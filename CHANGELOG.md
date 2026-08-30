@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Contract 1.35, which carries contract 1.34 with it.** Nothing had been
+  fanned out since 1.33, so this re-vendors `CONTRACT.md`, `openapi.json` and
+  `management-registry.json` across both revisions. The registry still holds
+  155 operations across 24 namespaces — 1.35 changed only its `spec_digest` —
+  so the eight §27 operations below arrived with 1.34 and are new here
+  regardless.
+
+- **§27: service accounts as RBAC principals** (contract 1.34) — eight
+  generated operations across `roles`, `groups` and `service_accounts`.
+  `unassign_from_service_account` takes the same optional `resource_id` query
+  parameter as the user and group unassign calls: omitting it removes the
+  *global* grant specifically, not every grant of that role.
+
+- **§5.2.2: the acting tenant and the principal tenant are different things**
+  (contract 1.34). `LoginResult` gains `principal_tenant_id`,
+  `principal_tenant_slug`, `org_id` and (from §5.2.3) `reachable_tenant_ids`.
+  Absent means equal — a server older than 1.34 omits them and cannot switch
+  the acting tenant either, so `principal_tenant_id` falls back to the acting
+  tenant the server reported. Read `org_id` from the session instead of
+  resolving a slug through `GET /api/v1/organizations`, which is
+  `super-admin`-only.
+
+- **§5.2.3: tenant-scoped role assignments** (contract 1.35). `tenant_scope`
+  appears on the three assignment request bodies and on the assignment objects
+  the read paths return. Omitted means unrestricted, which is what every
+  assignment written before the field existed already meant.
+
+### Fixed
+
+- **A registration record for your own password was sealed against the wrong
+  tenant.** CONTRACT.md §5.2.2 rule 2: the caller's credentials live in the
+  tenant the *account* lives in, not whichever tenant the client is currently
+  pointed at, and a record sealed against the acting tenant is refused with
+  "the OPAQUE session was issued for a different tenant".
+
+  `opaque_enrollment` had one behaviour for a method documented for three
+  callers — user creation, change-password and reset completion — and only the
+  first of those wants the acting tenant. It keeps that behaviour, which is
+  correct for creating *another* account; the new
+  `opaque_enrollment_for_self` seals against `principal_tenant_id` and is what
+  a self-service password change must call. Both `AxiamClient` and
+  `AsyncAxiamClient` carry it — fixing only one would have left the bug live
+  on the other.
+
+  The two collapse to the same request for every ordinary principal, so this
+  only bit an organization-level account that had switched tenant — which is
+  why it survived every test written against an ordinary one.
+
+- **An empty `tenant_scope` is no longer put on the wire.** The server refuses
+  `[]` with `400`: an assignment reaching no tenant is a grant that does not
+  exist rather than a restriction. `exclude_unset` did not cover it, because
+  the natural way to build the field is to collect into a list and pass it,
+  which yields `[]` and *is* set. `ManagementModel.to_wire` now drops it, via a
+  one-field allowlist — elsewhere `[]` means "clear this list", and dropping it
+  there would make "remove every entry" inexpressible.
+
+### Note on `X-Tenant-ID` vs `X-Axiam-Tenant`
+
+CONTRACT.md §5.2.2 and §5.2.3 name the acting-tenant header `X-Tenant-ID`, but
+the AXIAM server reads **`X-Axiam-Tenant`** (`ACTIVE_TENANT_HEADER` in
+`crates/axiam-api-rest/src/extractors/auth.rs`), as do its own tests, the admin
+UI, and the `openapi.json` vendored alongside that contract. The server never
+reads `X-Tenant-ID` at all.
+
+Documentation updated here names `X-Axiam-Tenant`, because a tenant switch sent
+under the other name is not refused — it is ignored, and the request quietly
+acts on the principal's own tenant instead. The discrepancy has been reported
+upstream; this SDK's existing `X-Tenant-ID` sends are left as they are, being
+out of scope for a contract re-vendor.
+
 ## [1.0.0-beta04] - 2026-08-28
 
 ### Changed

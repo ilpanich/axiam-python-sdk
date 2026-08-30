@@ -36,7 +36,12 @@ from axiam_sdk._client import (
     _expose_token,
 )
 from axiam_sdk._decision_memo import memo_key
-from axiam_sdk._errors import AuthError, error_from_http_status, error_from_oauth2_response
+from axiam_sdk._errors import (
+    AuthError,
+    NetworkError,
+    error_from_http_status,
+    error_from_oauth2_response,
+)
 from axiam_sdk._models import (
     AccessCheck,
     AccessResult,
@@ -190,11 +195,32 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         return self._handle_login_response(response)
 
     async def opaque_enrollment(self, password: str) -> dict[str, Any]:
-        """Build a registration record for *password*.
+        """Build a registration record for *password*, sealed against the tenant
+        this client is **acting on**.
 
         The async twin of :meth:`AxiamClient.opaque_enrollment`; see that method
-        for the full contract.
+        for the full contract, including why the caller's *own* password change
+        wants :meth:`opaque_enrollment_for_self` instead.
         """
+        return await self._enroll(password, None)
+
+    async def opaque_enrollment_for_self(self, password: str) -> dict[str, Any]:
+        """Build a registration record for the **caller's own** new password,
+        sealed against the tenant the caller's account lives in.
+
+        The async twin of :meth:`AxiamClient.opaque_enrollment_for_self`; see
+        that method for the full contract (CONTRACT.md §5.2.2 rule 2).
+        """
+        if self._principal_tenant_id is None:
+            raise NetworkError(
+                "OPAQUE: no principal tenant is known yet — sign in before "
+                "building a registration record for your own password"
+            )
+        return await self._enroll(password, self._principal_tenant_id)
+
+    async def _enroll(self, password: str, principal_tenant_id: str | None) -> dict[str, Any]:
+        """The shared body of the two enrolment methods; they differ only in the
+        tenant the record is sealed against."""
         from ._opaque import KsfParams, start_registration
 
         self._ensure_open()
@@ -203,7 +229,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST",
             OPAQUE_REGISTER_START_PATH,
-            json=self._opaque_register_start_body(exchange.request),
+            json=self._opaque_register_start_body(exchange.request, principal_tenant_id),
         )
         response = await self._session._send_async(request)
         if response.status_code != httpx.codes.OK:

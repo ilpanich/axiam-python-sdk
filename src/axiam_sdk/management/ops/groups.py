@@ -216,6 +216,71 @@ def _call_list_roles(
     )
 
 
+def _call_list_service_accounts(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    group_id: str,
+    page: PageRequest | None = None,
+) -> ManagementCall:
+    """Build the ``groups.list_service_accounts`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    group_id = require_uuid(group_id, "group_id", "groups.list_service_accounts")
+    return ManagementCall(
+        operation="groups.list_service_accounts",
+        method="GET",
+        path_template="/api/v1/groups/{group_id}/service-accounts",
+        path=f"/api/v1/groups/{group_id}/service-accounts",
+        query={**page_query(page)},
+    )
+
+
+def _call_add_service_account(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    group_id: str,
+    body: models.AddServiceAccountMemberRequest,
+) -> ManagementCall:
+    """Build the ``groups.add_service_account`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    group_id = require_uuid(group_id, "group_id", "groups.add_service_account")
+    return ManagementCall(
+        operation="groups.add_service_account",
+        method="POST",
+        path_template="/api/v1/groups/{group_id}/service-accounts",
+        path=f"/api/v1/groups/{group_id}/service-accounts",
+        body=body.to_wire(),
+    )
+
+
+def _call_remove_service_account(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    group_id: str,
+    service_account_id: str,
+) -> ManagementCall:
+    """Build the ``groups.remove_service_account`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    group_id = require_uuid(group_id, "group_id", "groups.remove_service_account")
+    service_account_id = require_uuid(
+        service_account_id, "service_account_id", "groups.remove_service_account"
+    )
+    return ManagementCall(
+        operation="groups.remove_service_account",
+        method="DELETE",
+        path_template="/api/v1/groups/{group_id}/service-accounts/{service_account_id}",
+        path=f"/api/v1/groups/{group_id}/service-accounts/{service_account_id}",
+    )
+
+
 class GroupsApi:
     """The ``groups`` namespace handle.
 
@@ -346,6 +411,59 @@ class GroupsApi:
             _call_list_roles(self._client, self._scope, group_id),
         )
         return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    def list_service_accounts(
+        self,
+        group_id: str,
+        page: PageRequest | None = None,
+    ) -> Page[models.ServiceAccountResponse]:
+        """``GET /api/v1/groups/{group_id}/service-accounts``"""
+        raw = send_management(
+            self._client,
+            _call_list_service_accounts(self._client, self._scope, group_id, page),
+        )
+        return page_of(raw, models.ServiceAccountResponse)
+
+    def list_service_accounts_all(
+        self,
+        group_id: str,
+        start: PageRequest | None = None,
+    ) -> builtins.list[models.ServiceAccountResponse]:
+        """Walk ``groups.list_service_accounts`` to exhaustion, concatenating
+        every page.
+
+        The auto-paging form §27.4 rule 4 requires. It stops on an empty
+        page even if ``total`` disagrees, so a misreporting server costs one
+        wasted request rather than an unbounded loop.
+        """
+        return collect_pages(start, lambda p: self.list_service_accounts(group_id, p))
+
+    def add_service_account(
+        self,
+        group_id: str,
+        body: models.AddServiceAccountMemberRequest,
+    ) -> None:
+        """``POST /api/v1/groups/{group_id}/service-accounts``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_add_service_account(self._client, self._scope, group_id, body),
+        )
+
+    def remove_service_account(self, group_id: str, service_account_id: str) -> None:
+        """``DELETE
+        /api/v1/groups/{group_id}/service-accounts/{service_account_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_remove_service_account(self._client, self._scope, group_id, service_account_id),
+        )
 
 
 class AsyncGroupsApi:
@@ -478,3 +596,56 @@ class AsyncGroupsApi:
             _call_list_roles(self._client, self._scope, group_id),
         )
         return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    async def list_service_accounts(
+        self,
+        group_id: str,
+        page: PageRequest | None = None,
+    ) -> Page[models.ServiceAccountResponse]:
+        """``GET /api/v1/groups/{group_id}/service-accounts``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_service_accounts(self._client, self._scope, group_id, page),
+        )
+        return page_of(raw, models.ServiceAccountResponse)
+
+    async def list_service_accounts_all(
+        self,
+        group_id: str,
+        start: PageRequest | None = None,
+    ) -> builtins.list[models.ServiceAccountResponse]:
+        """Walk ``groups.list_service_accounts`` to exhaustion, concatenating
+        every page.
+
+        The auto-paging form §27.4 rule 4 requires. It stops on an empty
+        page even if ``total`` disagrees, so a misreporting server costs one
+        wasted request rather than an unbounded loop.
+        """
+        return await collect_pages_async(start, lambda p: self.list_service_accounts(group_id, p))
+
+    async def add_service_account(
+        self,
+        group_id: str,
+        body: models.AddServiceAccountMemberRequest,
+    ) -> None:
+        """``POST /api/v1/groups/{group_id}/service-accounts``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_add_service_account(self._client, self._scope, group_id, body),
+        )
+
+    async def remove_service_account(self, group_id: str, service_account_id: str) -> None:
+        """``DELETE
+        /api/v1/groups/{group_id}/service-accounts/{service_account_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_remove_service_account(self._client, self._scope, group_id, service_account_id),
+        )
