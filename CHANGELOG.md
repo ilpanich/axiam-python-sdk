@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta05] - 2026-08-30
+
 ### Added
+
+- Contract 1.35, carrying 1.34 — service-account RBAC, principal tenant, tenant scope
 
 - **Contract 1.35, which carries contract 1.34 with it.** Nothing had been
   fanned out since 1.33, so this re-vendors `CONTRACT.md`, `openapi.json` and
