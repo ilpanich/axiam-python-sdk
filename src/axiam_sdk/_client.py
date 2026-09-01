@@ -38,6 +38,7 @@ from axiam_sdk._models import (
     BatchCheckResult,
     DeviceAuthorization,
     ExchangedToken,
+    FederationProviderList,
     IntrospectionResult,
     LoginResult,
     OidcConfiguration,
@@ -53,6 +54,10 @@ from axiam_sdk._models import (
 from axiam_sdk._oidc import (
     DISCOVERY_PATH,
     SSO_CALLBACK_PATH,
+    SSO_HANDOFF_PATH,
+    SSO_OAUTH2_CALLBACK_PATH,
+    SSO_OAUTH2_START_PATH,
+    SSO_PROVIDERS_PATH,
     SSO_START_PATH,
     PollSchedule,
     _OidcMixin,
@@ -1772,6 +1777,128 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         )
         response = self._session._send_sync(request)
         return self._handle_sso_complete_response(response)
+
+    def sso_providers(
+        self,
+        *,
+        org_id: str | None = None,
+        org_slug: str | None = None,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+    ) -> FederationProviderList:
+        """``GET /api/v1/auth/federation/providers`` (CONTRACT.md §12.1) —
+        which "Sign in with X" buttons to render for a workspace.
+
+        The identifiers travel as **query** parameters; this is a ``GET``
+        and sends no body.
+
+        **An empty list is a success.** An unknown organization, a known one
+        with nothing configured, and a request naming no workspace at all
+        all answer ``200`` with an empty ``providers`` array (§12.1 note 9).
+        Every one of them comes back as an ordinary result, and nothing here
+        synthesises a not-found: the endpoint is deliberately shaped so it
+        cannot be used to enumerate organization or tenant slugs, and an SDK
+        that reintroduced the distinction would reintroduce the oracle. A
+        caller learns it named the workspace wrongly at the start
+        operations, where every failure is a uniform ``401``.
+
+        For the same reason this is the one federation operation that does
+        **not** refuse client-side when no workspace resolves.
+        """
+        params = self._sso_providers_params(
+            org_id=org_id,
+            org_slug=org_slug,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+        )
+        request = self._session.sync_client.build_request("GET", SSO_PROVIDERS_PATH, params=params)
+        response = self._session._send_sync(request)
+        return self._handle_sso_providers_response(response)
+
+    def sso_start_oauth2(
+        self,
+        *,
+        federation_config_id: str,
+        redirect_uri: str,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+        org_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> SsoStartResult:
+        """``POST /api/v1/auth/federation/oauth2/start`` (CONTRACT.md
+        §12.1) — step 1 of a login through a **plain-OAuth2** upstream
+        (GitHub, Facebook, ``generic_oauth2``).
+
+        Call this, rather than :meth:`sso_start`, exactly when the
+        provider's ``protocol`` is ``OAuth2`` (§12.1 note 10). The server
+        refuses a mismatch with ``400`` rather than accepting it silently,
+        so a client that assumes OIDC fails on every GitHub button.
+
+        PKCE is mandatory on this path and is generated and stored
+        **server-side**; nothing about it appears in the request or the
+        response (§12.1 note 11).
+
+        A ``400`` here can mean the ``redirect_uri`` is not on an origin the
+        deployment accepts (§12.1 rule 12a); it surfaces as
+        :class:`~axiam_sdk.NetworkError` and is not retried.
+        """
+        body = self._sso_start_oauth2_body(
+            federation_config_id=federation_config_id,
+            redirect_uri=redirect_uri,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            org_id=org_id,
+            org_slug=org_slug,
+        )
+        request = self._session.sync_client.build_request("POST", SSO_OAUTH2_START_PATH, json=body)
+        response = self._session._send_sync(request)
+        return self._handle_sso_start_oauth2_response(response)
+
+    def sso_complete_oauth2(self, *, state: str, code: str) -> SsoCompleteResult:
+        """``POST /api/v1/auth/federation/oauth2/callback`` (CONTRACT.md
+        §12.1) — step 2 of a plain-OAuth2 login.
+
+        The session arrives as ``Set-Cookie`` (§12.1 note 6) and is absorbed
+        exactly as :meth:`sso_complete` absorbs it, so ``refresh()`` and
+        ``logout()`` work afterwards.
+
+        §12.4 does not apply: an ``OAuth2`` provider issues no ID token, so
+        there is nothing to validate. The server authenticated the user by
+        calling a configured userinfo endpoint with the access token it had
+        just received — configuration and transport trust rather than
+        cryptographic trust (§12.1 note 11).
+        """
+        request = self._session.sync_client.build_request(
+            "POST", SSO_OAUTH2_CALLBACK_PATH, json={"state": state, "code": code}
+        )
+        response = self._session._send_sync(request)
+        return self._handle_federation_session_response(response, "ssoCompleteOauth2")
+
+    def sso_complete_handoff(self, *, code: str) -> SsoCompleteResult:
+        """``POST /api/v1/auth/federation/handoff`` (CONTRACT.md §12.1) —
+        redeem the single-use code the SAML and Apple flows deliver.
+
+        Those two protocols return **cross-site**, so the server cannot set
+        ``SameSite=Strict`` session cookies on that response. It instead
+        redirects the browser to the SPA's callback URL with an
+        ``axiam_handoff`` query parameter (``HANDOFF_QUERY_PARAM``); this
+        call posts that code back same-origin, and *this* response is the
+        one that carries the cookies (§12.1 note 12).
+
+        **The code is gone either way.** It is valid for
+        ``HANDOFF_CODE_TTL_SECONDS`` seconds and redeemable **once**. Redeem
+        it from the same origin, immediately, and never retry a failed
+        redemption: a ``401`` is terminal, and this method makes exactly one
+        wire call so that it cannot become a retry by accident. Unknown,
+        expired and already-redeemed all answer the same ``401``,
+        deliberately — telling them apart is not something a caller gets to
+        do.
+        """
+        request = self._session.sync_client.build_request(
+            "POST", SSO_HANDOFF_PATH, json={"code": code}
+        )
+        response = self._session._send_sync(request)
+        return self._handle_federation_session_response(response, "ssoCompleteHandoff")
 
     # ------------------------------------------------------------------
     # §24 WebAuthn / passkeys — the relying-party layer
