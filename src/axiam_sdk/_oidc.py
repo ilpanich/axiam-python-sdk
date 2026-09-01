@@ -50,6 +50,7 @@ from axiam_sdk._models import (
     AuthorizationRequest,
     DeviceAuthorization,
     ExchangedToken,
+    FederationProviderList,
     IntrospectionResult,
     OidcConfiguration,
     OidcTokenSet,
@@ -82,6 +83,36 @@ SSO_START_PATH = "/api/v1/auth/federation/oidc/start"
 
 #: Path of the federation SSO step-2 (callback) endpoint.
 SSO_CALLBACK_PATH = "/api/v1/auth/federation/oidc/callback"
+
+#: Path of the public provider-listing endpoint (contract 1.38).
+SSO_PROVIDERS_PATH = "/api/v1/auth/federation/providers"
+
+#: Path of the plain-OAuth2 federation step-1 endpoint (contract 1.38).
+SSO_OAUTH2_START_PATH = "/api/v1/auth/federation/oauth2/start"
+
+#: Path of the plain-OAuth2 federation step-2 (callback) endpoint (contract 1.38).
+SSO_OAUTH2_CALLBACK_PATH = "/api/v1/auth/federation/oauth2/callback"
+
+#: Path of the handoff-code redemption endpoint (contract 1.38).
+SSO_HANDOFF_PATH = "/api/v1/auth/federation/handoff"
+
+PROTOCOL_OIDC_CONNECT = "OidcConnect"
+"""``protocol`` value selecting ``sso_start`` (CONTRACT.md §12.1 note 10)."""
+
+PROTOCOL_OAUTH2 = "OAuth2"
+"""``protocol`` value selecting ``sso_start_oauth2`` (§12.1 note 10)."""
+
+PROTOCOL_SAML = "Saml"
+"""``protocol`` value selecting the SAML login endpoint, which is **not** a
+§12 vocabulary operation (§12.1 note 10)."""
+
+HANDOFF_QUERY_PARAM = "axiam_handoff"
+"""The query parameter the server delivers a handoff code in, on the SPA's
+own callback URL (CONTRACT.md §12.1 note 12)."""
+
+HANDOFF_CODE_TTL_SECONDS = 60
+"""How long a handoff code is valid (§12.1 note 12). It exists to survive one
+redirect. Redeem it immediately, once."""
 
 #: Minimum — and default — discovery-cache TTL. CONTRACT.md §12.3 rule 6
 #: sets a floor of 5 minutes; a smaller configured value is raised to it.
@@ -1147,6 +1178,158 @@ class _OidcMixin:
         if response.status_code != httpx.codes.OK:
             raise error_from_http_status(
                 response.status_code, "ssoComplete request failed", response=response
+            )
+        self._absorb_session_cookies()
+        return SsoCompleteResult.model_validate(response.json())
+
+    # ------------------------------------------------------------------
+    # 10-13. Public "Sign in with X" login providers (contract 1.38)
+    # ------------------------------------------------------------------
+
+    def _sso_providers_params(
+        self,
+        *,
+        org_id: str | None = None,
+        org_slug: str | None = None,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+    ) -> dict[str, str]:
+        """Build the ``GET /api/v1/auth/federation/providers`` **query**
+        parameters (CONTRACT.md §12.1).
+
+        The identifiers travel in the query string, not a body — the
+        neighbouring start operations take the same four in a JSON body and
+        the two are one copy-paste apart.
+
+        Unlike :meth:`_sso_start_body` this raises **nothing** when no
+        workspace resolves. §12.1 note 9 makes an unknown organization, a
+        known one with nothing configured, and a request naming no workspace
+        at all answer identically — ``200`` with an empty list — precisely so
+        the endpoint cannot be used to enumerate organization or tenant
+        slugs. A client-side refusal here would restore that two-valued
+        answer by another route.
+        """
+        resolved_tenant_id = tenant_id or self._resolved_tenant_id
+        resolved_tenant_slug = tenant_slug or self._session.tenant_slug
+        resolved_org_id = org_id or self.resolved_org_id()
+        resolved_org_slug = org_slug or self._org_slug
+
+        params: dict[str, str] = {}
+        if resolved_org_id:
+            params["org_id"] = resolved_org_id
+        elif resolved_org_slug:
+            params["org_slug"] = resolved_org_slug
+        if resolved_tenant_id:
+            params["tenant_id"] = resolved_tenant_id
+        elif resolved_tenant_slug:
+            params["tenant_slug"] = resolved_tenant_slug
+        return params
+
+    def _handle_sso_providers_response(self, response: httpx.Response) -> FederationProviderList:
+        """Parse ``GET /api/v1/auth/federation/providers``'s response.
+
+        An **empty** ``providers`` list is an ordinary success and is
+        returned as one (§12.1 note 9). Nothing here synthesises a
+        not-found: an SDK that reintroduced the distinction would
+        reintroduce the organization-slug oracle the endpoint is shaped to
+        deny.
+        """
+        if response.status_code != httpx.codes.OK:
+            raise error_from_http_status(
+                response.status_code, "ssoProviders request failed", response=response
+            )
+        return FederationProviderList.model_validate(response.json())
+
+    def _sso_start_oauth2_body(
+        self,
+        *,
+        federation_config_id: str,
+        redirect_uri: str,
+        tenant_id: str | None = None,
+        tenant_slug: str | None = None,
+        org_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> dict[str, str]:
+        """Build the ``POST /api/v1/auth/federation/oauth2/start`` request
+        body (§12.1, §5.1).
+
+        Identical in shape to :meth:`_sso_start_body`, because the wire
+        schemas are: ``OAuth2StartRequest`` and ``OidcStartRequest`` differ
+        in name only. There is **no** PKCE field, and there must not be —
+        the verifier is generated and held server-side (§12.1 note 11).
+
+        Raises:
+            AuthError: client-side, without a wire call, when neither tenant
+                nor organization context can be resolved.
+        """
+        resolved_tenant_id = tenant_id or self._resolved_tenant_id
+        resolved_tenant_slug = tenant_slug or self._session.tenant_slug
+        resolved_org_id = org_id or self.resolved_org_id()
+        resolved_org_slug = org_slug or self._org_slug
+
+        if not resolved_tenant_id and not resolved_tenant_slug:
+            raise AuthError(
+                "sso_start_oauth2 requires tenant context: pass tenant_id or "
+                "tenant_slug, or construct the client with one (CONTRACT.md §5.1)."
+            )
+        if not resolved_org_id and not resolved_org_slug:
+            raise AuthError(
+                "sso_start_oauth2 requires organization context: pass org_id or "
+                "org_slug, or construct the client with one (CONTRACT.md §5.1)."
+            )
+
+        body: dict[str, str] = {
+            "federation_config_id": federation_config_id,
+            "redirect_uri": redirect_uri,
+        }
+        if resolved_tenant_id:
+            body["tenant_id"] = resolved_tenant_id
+        elif resolved_tenant_slug:
+            body["tenant_slug"] = resolved_tenant_slug
+        if resolved_org_id:
+            body["org_id"] = resolved_org_id
+        elif resolved_org_slug:
+            body["org_slug"] = resolved_org_slug
+        return body
+
+    def _handle_sso_start_oauth2_response(self, response: httpx.Response) -> SsoStartResult:
+        """Parse ``POST /api/v1/auth/federation/oauth2/start``'s response.
+
+        The federation endpoints document no error schema, so a non-2xx
+        falls through to the generic §2 status mapping — never
+        :class:`~axiam_sdk._errors.OAuthProtocolError`, which §12.3 rule 3
+        scopes to ``/oauth2/*``.
+
+        One case is worth naming: a **400** can mean the ``redirect_uri`` is
+        not on an origin the deployment accepts (§12.1 rule 12a). §2's 400
+        row makes that a :class:`~axiam_sdk._errors.NetworkError` — this
+        taxonomy's configuration/programming-error member, as distinct from
+        the :class:`~axiam_sdk._errors.AuthError` a 401 gets. It is not
+        retried, and retrying it cannot help.
+        """
+        if response.status_code != httpx.codes.OK:
+            raise error_from_http_status(
+                response.status_code, "ssoStartOauth2 request failed", response=response
+            )
+        return SsoStartResult.model_validate(response.json())
+
+    def _handle_federation_session_response(
+        self, response: httpx.Response, operation: str
+    ) -> SsoCompleteResult:
+        """Parse the response of a federation call that establishes a
+        session — ``sso_complete_oauth2`` or ``sso_complete_handoff``.
+
+        The session arrives as **``Set-Cookie``** (§12.1 note 6), so on
+        success this runs the same :meth:`_absorb_session_cookies` post-login
+        hook ``login()``/``verify_mfa()``/``sso_complete()`` use.
+
+        §12.4 does not apply to either: the OAuth2 variant issues no ID token
+        at all, and the handoff carries no token material — the session is
+        minted at redemption.
+        """
+        if response.status_code != httpx.codes.OK:
+            raise error_from_http_status(
+                response.status_code, f"{operation} request failed", response=response
             )
         self._absorb_session_cookies()
         return SsoCompleteResult.model_validate(response.json())

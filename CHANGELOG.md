@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Contract 1.38: the four public "Sign in with X" operations.** `sso_providers`,
+  `sso_start_oauth2`, `sso_complete_oauth2` and `sso_complete_handoff`, under the
+  exact CONTRACT.md §12.2 Python names, on **both** `AxiamClient` and
+  `AsyncAxiamClient` — the same snake_case names on each, as `async def` twins on
+  the async client (SDK-Q08 still prohibits `async_*` prefixes). New public models
+  `FederationProvider` and `FederationProviderList`, named by the §12.1 SDK-type
+  table. Upstream: ilpanich/axiam#398.
+
+  Four rules an implementation can satisfy by accident and break by accident, so
+  each is stated in the code and carries a test:
+
+  - **An empty provider list is a success** (§12.1 note 9). An unknown
+    organization, a known one with nothing configured, and a request naming no
+    workspace at all all answer `200 []`. `sso_providers` returns each as an
+    ordinary result and raises nothing: the endpoint is shaped so it cannot
+    enumerate organization or tenant slugs, and distinguishing the three
+    client-side would rebuild that oracle. It is therefore also the one
+    federation operation whose body builder raises **no** `AuthError` when no
+    workspace resolves — a client-side refusal would be that same two-valued
+    answer by another route.
+  - **`protocol` selects the start operation** (§12.1 note 10), never
+    `provider_kind`: `OidcConnect` → `sso_start`, `OAuth2` → `sso_start_oauth2`,
+    `Saml` → the SAML login endpoint, which is not a §12 vocabulary operation.
+    `FederationProvider.protocol` is the wire string, with `PROTOCOL_OIDC_CONNECT`
+    / `PROTOCOL_OAUTH2` / `PROTOCOL_SAML` exported to compare against; an enum the
+    SDK enforced would turn a value added server-side into a validation failure
+    for the whole list.
+  - **PKCE on the OAuth2 variant is server-side** (§12.1 note 11). Nothing here
+    computes a verifier or sends a challenge, and a test asserts the absence
+    rather than leaving it to be noticed.
+  - **A `400` from a start call is a configuration refusal** (§12.1 rule 12a,
+    new at 1.38): the deployment rejecting a `redirect_uri` whose origin is
+    neither its own issuer nor listed in `AXIAM__AUTH__SSO_SPA_ORIGINS`. It
+    surfaces as `NetworkError` — §2's `400` row, the taxonomy's
+    configuration/programming-error member, distinct from the `AuthError` a `401`
+    gets — and is not retried.
+
+  `HANDOFF_QUERY_PARAM` (`axiam_handoff`) and `HANDOFF_CODE_TTL_SECONDS` (60) are
+  exported for callers driving the browser hop. A handoff `401` is terminal:
+  `sso_complete_handoff` makes exactly one wire call, so it cannot become a retry
+  by accident.
+
+- `tests/test_oidc_login_providers.py` — 27 tests. The wire-shape half reads the
+  vendored `openapi.json` and asserts method, path, media type, the success schema
+  names, that the `sso_providers` identifiers are declared `in: query`, and that
+  neither OAuth2 start schema carries PKCE material; the SDK half asserts what
+  actually reaches the wire matches. The rule half covers note 9 (all three
+  empty-list cases, plus that a workspace-less request is still *sent*), note 10
+  (all three dispatch branches, with a `Saml` fixture whose `provider_kind` is
+  `google` so a kind-based dispatch fails), note 12 (terminal `401`, exactly one
+  request) and rule 12a (a `400` from either start operation is `NetworkError` and
+  unretried; a `401` from the same endpoint stays `AuthError`). Every operation is
+  exercised on both clients.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` (1.29 → 1.38), `openapi.json` and
+  `management-registry.json` byte-for-byte from `ilpanich/axiam@1c457f6`.
+  `proto/axiam/v1/` and `opaque-test-vectors.json` did not change upstream and
+  were re-verified as already identical rather than re-copied.
+  `management-registry.json` moves only its `spec_digest`: `operation_count`
+  stays at 155, so no §27 operation was added or removed.
+
+- Regenerated the §27 management surface (`python scripts/gen_management.py`), as
+  §27.8 requires whenever the vendored artifacts move. `openapi.json` gains ten
+  fields on the federation-config schemas (`allow_tenant_inheritance`,
+  `allowed_issuer_tenants`, the two Apple identifiers, the OAuth2 endpoint trio,
+  `provider_kind`/`provider_slug`, `button_icon`, `scopes`/`effective_scopes`,
+  `has_bundled_mark`, `mints_client_secret`, `pkce_required`), so
+  `src/axiam_sdk/management/models.py` and the generated surface test move with
+  it. The operation surface itself is unchanged.
+
+- The README's contract-conformance statement names **contract 1.38** and §12's
+  thirteen operations, and its §12 section documents the four new ones, the
+  protocol-dispatch table, the faithful `FederationProvider` shape, and the
+  rule-12a taxonomy mapping.
+
 ## [1.0.0-beta07] - 2026-08-30
 
 ### Changed

@@ -433,6 +433,78 @@ class SsoCompleteResult(BaseModel):
     model_config = {"frozen": True}
 
 
+class FederationProvider(BaseModel):
+    """One sign-in button (wire schema ``PublicFederationProvider``,
+    CONTRACT.md §12.1).
+
+    This is an **unauthenticated** response and carries only what a button
+    needs. There is no ``client_id``, no ``metadata_url``, no endpoint URL
+    and no secret — absent by construction rather than filtered out — and
+    §12.1 note 9 forbids an SDK from expecting one.
+    """
+
+    id: str
+    """Config id, to be echoed back to the matching start operation.
+
+    Pass it through unmodified: inheritance is resolved server-side (§12.1
+    note 13) and this id is how the server is told what resolution
+    produced."""
+
+    provider_kind: str
+    """Which provider this is, for the button's branding — ``google``,
+    ``github``, ``generic_oidc``, … **Not** what selects the start
+    operation; see :attr:`protocol`."""
+
+    display_name: str
+    """The operator's display name for the provider."""
+
+    protocol: str
+    """``OidcConnect``, ``Saml`` or ``OAuth2`` — the value that selects
+    which start operation to call (§12.1 note 10). Compare against
+    ``PROTOCOL_OIDC_CONNECT``/``PROTOCOL_OAUTH2``/``PROTOCOL_SAML``.
+
+    Kept as the wire string rather than narrowed to an enum: the server owns
+    this vocabulary, and an SDK enum would turn a value added server-side
+    into a validation failure for the whole list.
+
+    An ``OAuth2`` provider issues **no ID token** — the server authenticates
+    by calling a configured userinfo endpoint, so there is no signature, no
+    ``nonce`` and no ``aud`` (§12.1 note 11). A surface rendering these
+    buttons SHOULD make that distinction visible rather than presenting the
+    two as equivalent."""
+
+    has_bundled_mark: bool
+    """Whether AXIAM ships this provider's own sign-in mark, which its
+    button must then use. ``False`` for the generic kinds, whose buttons
+    read "Sign in with ``display_name``" and use :attr:`button_icon` where
+    the operator uploaded one."""
+
+    inherited: bool
+    """``True`` when the provider is inherited from the organization rather
+    than configured on this tenant (§12.1 note 13). Informational — it is
+    not needed to sign in, and nothing in this SDK computes it."""
+
+    button_icon: str | None = None
+    """The operator's uploaded button icon as a bounded raster ``data:``
+    URL. ``None`` for most providers: present only for generic ones whose
+    operator uploaded a mark."""
+
+    model_config = {"frozen": True}
+
+
+class FederationProviderList(BaseModel):
+    """The result of ``sso_providers`` (wire schema
+    ``PublicFederationProvidersResponse``, CONTRACT.md §12.1).
+
+    An **empty** :attr:`providers` is a normal success, never an error
+    (§12.1 note 9).
+    """
+
+    providers: list[FederationProvider]
+
+    model_config = {"frozen": True}
+
+
 class UserInfo(BaseModel):
     """The authenticated caller's OIDC-style identity claims returned by the
     gRPC-only ``get_user_info`` operation (CONTRACT.md §1.1) — the low-latency

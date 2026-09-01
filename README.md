@@ -23,9 +23,10 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to CONTRACT.md §1–§13 and §12.7, §14, §15, §17, §19, §20, §21, §22,
-§23, §24, §25, §26, §27 (including §6.1 mTLS and the §10.1 minimum local-verification
-set).
+This SDK conforms to **contract 1.38**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+§19, §20, §21, §22, §23, §24, §25, §26, §27 (including §6.1 mTLS and the §10.1 minimum
+local-verification set). §12 is implemented in full at its 1.38 shape: all **thirteen**
+operations, including the four public "Sign in with X" entry points, on both clients.
 
 §12.7, §14, §15, §20, §22, §24, §25, §26 and §27 are named rather than folded into the
 range because they landed after this SDK already claimed §1–§13: widening the
@@ -43,7 +44,7 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 Implemented (Phase 19). `AxiamClient` (sync) and the dedicated
 `AsyncAxiamClient` (async, SDK-Q08) each expose the same canonical operation
 names — `login`, `verify_mfa`, `refresh`, `logout`, `check_access`, `can`,
-`batch_check`, and the nine §12 OIDC/SSO relying-party operations (see below)
+`batch_check`, and the thirteen §12 OIDC/SSO relying-party operations (see below)
 — as sync or `async def` methods respectively (never an `async_*`-prefixed
 twin on the sync class). Each client owns its own session, cookie jar, and
 single-flight refresh guard. gRPC (sync `grpcio` + async `grpc.aio`), AMQP
@@ -591,14 +592,15 @@ See [`examples/fastapi_dependency.py`](./examples/fastapi_dependency.py) and
 
 ## OIDC / SSO relying-party helpers (§12)
 
-`AxiamClient`/`AsyncAxiamClient` expose the nine canonical §12 operations
+`AxiamClient`/`AsyncAxiamClient` expose the thirteen canonical §12 operations
 directly (this SDK has no browser-bundle constraint, so — unlike the
 TypeScript SDK's dedicated `OidcClient` — the methods live on the same
 client used for everything else). They let a backend application offer
 "Login with AXIAM" (authorization-code + PKCE against AXIAM's own OIDC
 provider), authenticate itself as a service account (`client_credentials`),
-introspect/revoke tokens, and drive the server's upstream-IdP federation
-endpoints:
+introspect/revoke tokens, drive the server's upstream-IdP federation
+endpoints, and — as of **contract 1.38** — render and drive the public
+"Sign in with X" buttons:
 
 | Operation | Purpose |
 |-----------|---------|
@@ -611,11 +613,77 @@ endpoints:
 | `revoke(...)` | `POST /oauth2/revoke` (RFC 7009) — idempotent; any `200` (including for an unknown token) is success |
 | `sso_start(...)` | `POST /api/v1/auth/federation/oidc/start` — step 1 of upstream-IdP SSO |
 | `sso_complete(...)` | `POST /api/v1/auth/federation/oidc/callback` — step 2; the session arrives via `Set-Cookie`, no token in the body |
+| `sso_providers(...)` | `GET /api/v1/auth/federation/providers` — which "Sign in with X" buttons to render. Identifiers go in the **query string**, not a body. An **empty list is a success** — see below |
+| `sso_start_oauth2(...)` | `POST /api/v1/auth/federation/oauth2/start` — step 1 through a **plain-OAuth2** upstream (GitHub, Facebook, `generic_oauth2`). PKCE is mandatory here and is generated and held **server-side**, so this SDK computes no verifier and sends no challenge |
+| `sso_complete_oauth2(...)` | `POST /api/v1/auth/federation/oauth2/callback` — step 2 of the OAuth2 variant; same `Set-Cookie` session and same post-login sync as `sso_complete` |
+| `sso_complete_handoff(...)` | `POST /api/v1/auth/federation/handoff` — redeems the single-use `axiam_handoff` code the SAML and Apple flows deliver. Valid 60 s, redeemable **once**; a `401` is terminal and is **never retried** |
 
 Both `AxiamClient` (sync) and `AsyncAxiamClient` (async, `async def` twins
-under the *same* names, SDK-Q08) expose all nine — including `oidc_begin`,
+under the *same* names, SDK-Q08) expose all thirteen — including `oidc_begin`,
 which performs no I/O but is still `async def` on the async client, per
 CONTRACT.md §12.2's Python naming table.
+
+### The four public login-provider operations, and their rules
+
+**An empty provider list is a success** (§12.1 note 9). An unknown
+organization, a known one with nothing configured, and a request naming no
+workspace at all *all* answer `200` with an empty array. `sso_providers`
+returns every one of them as an ordinary result and never raises: the endpoint
+is deliberately shaped so it cannot be used to enumerate organization or tenant
+slugs, and telling the three apart client-side would rebuild that oracle. For
+the same reason `sso_providers` is the one federation operation that does
+**not** refuse client-side when no workspace resolves — it sends the request.
+You learn you named the workspace wrongly at the start operations, where every
+failure is a uniform `401`.
+
+**`protocol` selects which start operation to call** (§12.1 note 10) — never
+`provider_kind`, which is branding:
+
+| `provider.protocol` | call |
+|---|---|
+| `OidcConnect` (`PROTOCOL_OIDC_CONNECT`) | `sso_start` |
+| `OAuth2` (`PROTOCOL_OAUTH2`) | `sso_start_oauth2` |
+| `Saml` (`PROTOCOL_SAML`) | the SAML login endpoint — not a §12 vocabulary operation |
+
+The server refuses a mismatch with `400` rather than accepting it silently, so
+a client that assumes OIDC fails on every GitHub button. An `OAuth2` provider
+also issues **no ID token**: the server authenticates by calling a configured
+userinfo endpoint, so there is no signature, no `nonce` and no `aud`. A UI
+rendering these buttons should make that distinction visible rather than
+presenting the two as equivalent.
+
+**`FederationProvider` is modelled faithfully** — `id`, `provider_kind`,
+`display_name`, `protocol`, `has_bundled_mark`, `inherited`, and the optional
+`button_icon` (a `data:` URL, `None` for most providers). Inheritance from the
+organization is resolved **server-side** (§12.1 note 13): pass back the
+workspace and the `id` `sso_providers` gave you, and compute nothing locally.
+`inherited` is reported so an admin surface can show that a provider is not the
+tenant's to edit.
+
+**A `400` from a start call is a configuration refusal** (§12.1 rule 12a). On
+the SAML and Apple flows the identity provider never validates the SPA
+`redirect_uri`, so the server confines it to its own issuer origin plus
+`AXIAM__AUTH__SSO_SPA_ORIGINS`. That refusal surfaces as **`NetworkError`** —
+§2's `400` row, the taxonomy's configuration/programming-error member, as
+distinct from the `AuthError` a `401` gets — and is not retried, because the
+same origin will be refused again. Never build a `redirect_uri` out of anything
+the identity provider supplied.
+
+```python
+from axiam_sdk import HANDOFF_QUERY_PARAM, PROTOCOL_OAUTH2, PROTOCOL_OIDC_CONNECT
+
+providers = client.sso_providers(org_slug=org_slug).providers
+# Empty is normal: render a password form, not an error.
+for p in providers:
+    if p.protocol == PROTOCOL_OIDC_CONNECT:
+        start = client.sso_start(federation_config_id=p.id, redirect_uri=redirect_uri)
+    elif p.protocol == PROTOCOL_OAUTH2:
+        start = client.sso_start_oauth2(federation_config_id=p.id, redirect_uri=redirect_uri)
+
+# SAML / Apple come back through a handoff code on your own callback route.
+code = request.GET[HANDOFF_QUERY_PARAM]
+session = client.sso_complete_handoff(code=code)  # once, never retried
+```
 
 **The caller owns the login state (§12.3 rule 1).** `oidc_begin` returns
 `state`, `nonce`, and `code_verifier` and stores none of them anywhere — no

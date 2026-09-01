@@ -26,6 +26,8 @@ from axiam_sdk._models import (
     BatchCheckResult,
     DeviceAuthorization,
     ExchangedToken,
+    FederationProvider,
+    FederationProviderList,
     IdTokenClaims,
     IntrospectionResult,
     LoginResult,
@@ -46,7 +48,12 @@ from axiam_sdk._models import (
 )
 from axiam_sdk._oidc import (
     ACCESS_TOKEN_TYPE,
+    HANDOFF_CODE_TTL_SECONDS,
+    HANDOFF_QUERY_PARAM,
     JWT_TOKEN_TYPE,
+    PROTOCOL_OAUTH2,
+    PROTOCOL_OIDC_CONNECT,
+    PROTOCOL_SAML,
     UMA_CLAIM_TOKEN_FORMAT,
     UMA_PROTECTION_SCOPE,
     UMA_TICKET_GRANT_TYPE,
@@ -124,6 +131,16 @@ __all__ = [
     "IntrospectionResult",
     "SsoStartResult",
     "SsoCompleteResult",
+    # Contract 1.38's public "Sign in with X" surface. `protocol` -- not
+    # `provider_kind` -- selects which start operation to call (§12.1 note 10),
+    # so the three discriminants are exported to compare against.
+    "FederationProvider",
+    "FederationProviderList",
+    "PROTOCOL_OIDC_CONNECT",
+    "PROTOCOL_OAUTH2",
+    "PROTOCOL_SAML",
+    "HANDOFF_QUERY_PARAM",
+    "HANDOFF_CODE_TTL_SECONDS",
     "OidcStateStore",
     "OidcStateEntry",
     "MemoryOidcStateStore",
