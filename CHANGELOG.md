@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta08] - 2026-09-02
+
 ### Added
+
+- The four public "Sign in with X" operations (CONTRACT §12.1, 1.38)
 
 - **Contract 1.38: the four public "Sign in with X" operations.** `sso_providers`,
   `sso_start_oauth2`, `sso_complete_oauth2` and `sso_complete_handoff`, under the
@@ -64,6 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercised on both clients.
 
 ### Changed
+
+- State contract 1.38 conformance and document the thirteen §12 operations
+
+- Regenerate the §27 surface from the re-vendored artifacts
+
+- Wire shape and the four load-bearing rules for the 1.38 operations
+
+- Re-vendor CONTRACT.md 1.38, openapi.json and management-registry.json
 
 - Re-vendored `CONTRACT.md` (1.29 → 1.38), `openapi.json` and
   `management-registry.json` byte-for-byte from `ilpanich/axiam@1c457f6`.
