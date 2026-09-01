@@ -610,14 +610,51 @@ class CreateCertificateRequest(ManagementModel):
 class CreateFederationConfigRequest(ManagementModel):
     """``CreateFederationConfigRequest`` (generated from openapi.json)."""
 
+    allow_tenant_inheritance: bool | None = None
+    """Whether tenants of this organization may inherit this provider. Only
+
+    meaningful on a config in the organization-scope tenant.
+    """
+
     allowed_algorithms: list[str] | None = None
     """Accepted JWT signing algorithms (OIDC) or signature algorithms (SAML).
 
     Defaults to `["RS256"]` when not provided (CQ-B40/REQ-14 AC-5).
     """
 
+    allowed_issuer_tenants: list[str] | None = None
+    """External IdP tenant identifiers accepted when the provider publishes a
+
+    templated issuer (Entra ID's `{tenantid}`).
+    """
+
+    apple_key_id: str | None = None
+    """Apple Key ID of the `.p8` signing key (10 characters). With both Apple
+
+    identifiers set, `client_secret` is the `.p8` key itself and AXIAM mints
+    a fresh five-minute client secret per token exchange.
+    """
+
+    apple_team_id: str | None = None
+    """Apple Team ID (10 characters)."""
+
     attribute_map: Any | None = None
     """Maps external IdP attributes to AXIAM user fields."""
+
+    authorization_endpoint: str | None = None
+    """OAuth2-variant authorization endpoint. Required for `OAuth2`."""
+
+    button_icon: str | None = None
+    """Sign-in-button icon for a **generic** provider, as a base64 raster data
+
+    URL (`data:image/png;base64,…`), already cropped to
+    `PROVIDER_ICON_SIZE_PX` square by the client.
+
+    Refused for the branded kinds: Google, Apple and Microsoft all publish
+    sign-in-button rules that require their own mark, so substituting a
+    picture would produce a button that breaks the guidelines it exists to
+    follow.
+    """
 
     client_id: str
     """OAuth2 client ID registered with the external IdP."""
@@ -645,8 +682,37 @@ class CreateFederationConfigRequest(ManagementModel):
     provider: str
     """Display name for the identity provider (e.g., "Google", "Okta")."""
 
+    provider_kind: str | None = None
+    """Which provider this is: `google`, `github`, `facebook`, `apple`,
+
+    `microsoft`, `generic_oidc`, `generic_oauth2` or `generic_saml`.
+
+    Selects the sign-in button's branding, the per-kind defaults, and the
+    key on which a tenant config overrides an inherited organization one.
+    Omitted ⇒ derived from `protocol`, which is what every config written
+    before this field existed means.
+    """
+
+    provider_slug: str | None = None
+    """Operator-chosen identifier, **required** for the `generic_*` kinds and
+
+    refused for the branded ones.
+    """
+
+    require_pkce: bool | None = None
+    """Send PKCE on the authorization request. Forced on for `OAuth2`."""
+
+    scopes: list[str] | None = None
+    """Scopes to request. Omitted or empty ⇒ the per-kind default."""
+
+    token_endpoint: str | None = None
+    """OAuth2-variant token endpoint. Required for `OAuth2`."""
+
     token_exchange: TokenExchangeTrustRequest | None = None
     """``token_exchange``."""
+
+    userinfo_endpoint: str | None = None
+    """OAuth2-variant userinfo endpoint. Required for `OAuth2`."""
 
 
 class CreateGroupRequest(ManagementModel):
@@ -1157,8 +1223,32 @@ what the widening removes is the claim that nothing else can occur.
 class FederationConfigResponse(ManagementModel):
     """Federation config response -- omits client_secret."""
 
+    allow_tenant_inheritance: bool
+    """Whether tenants of this organization may inherit this provider."""
+
+    allowed_algorithms: list[str]
+    """Accepted signing algorithms. Returned for OIDC and SAML; meaningless,
+
+    and therefore empty, for the OAuth2 variant.
+    """
+
+    allowed_issuer_tenants: list[str]
+    """Accepted external IdP tenants for a templated issuer."""
+
+    apple_key_id: str | None = None
+    """Apple Key ID."""
+
+    apple_team_id: str | None = None
+    """Apple Team ID. Not secret — the `.p8` key is, and it is never returned."""
+
     attribute_map: Any
     """``attribute_map``."""
+
+    authorization_endpoint: str | None = None
+    """OAuth2-variant authorization endpoint."""
+
+    button_icon: str | None = None
+    """Custom sign-in-button icon, when one is set."""
 
     client_id: str
     """``client_id``."""
@@ -1166,8 +1256,22 @@ class FederationConfigResponse(ManagementModel):
     created_at: str
     """``created_at``."""
 
+    effective_scopes: list[str]
+    """The per-kind default that an empty `scopes` resolves to. Returned so the
+
+    admin UI can show what will actually be requested without duplicating
+    the table.
+    """
+
     enabled: bool
     """``enabled``."""
+
+    has_bundled_mark: bool
+    """Whether AXIAM ships this provider's own mark. When true the button uses
+
+    it and `button_icon` is refused; when false the button reads "Sign in
+    with <provider>" and may carry a custom icon.
+    """
 
     id: str
     """``id``."""
@@ -1175,20 +1279,54 @@ class FederationConfigResponse(ManagementModel):
     metadata_url: str | None = None
     """``metadata_url``."""
 
+    mints_client_secret: bool
+    """Whether AXIAM mints this provider's client secret itself, per exchange,
+
+    rather than sending a stored one. True only for an Apple config with
+    both identifiers set.
+    """
+
+    pkce_required: bool
+    """Whether PKCE is sent on the authorization request. Always true for the
+
+    OAuth2 variant regardless of the stored flag.
+    """
+
     protocol: str
     """``protocol``."""
 
     provider: str
     """``provider``."""
 
+    provider_kind: str
+    """Which provider this is. Derived from `protocol` for a config written
+
+    before the field existed.
+    """
+
+    provider_slug: str | None = None
+    """Operator-chosen identifier for a `generic_*` kind."""
+
+    scopes: list[str]
+    """Scopes as stored. Empty means "use the per-kind default"; see
+
+    `effective_scopes`.
+    """
+
     tenant_id: str
     """``tenant_id``."""
+
+    token_endpoint: str | None = None
+    """OAuth2-variant token endpoint."""
 
     token_exchange: TokenExchangeTrustResponse
     """X4 external token-exchange trust."""
 
     updated_at: str
     """``updated_at``."""
+
+    userinfo_endpoint: str | None = None
+    """OAuth2-variant userinfo endpoint."""
 
 
 class FederationLinkResponse(ManagementModel):
@@ -3391,11 +3529,32 @@ class UpdateFederationConfigRequest(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    allow_tenant_inheritance: bool | None = None
+    """Whether tenants may inherit this organization-level provider."""
+
     allowed_algorithms: list[str] | None = None
     """Accepted signature algorithms (CQ-B40/REQ-14 AC-5)."""
 
+    allowed_issuer_tenants: list[str] | None = None
+    """Accepted external IdP tenants for a templated issuer. Replaced
+
+    wholesale.
+    """
+
+    apple_key_id: str | None = None
+    """Apple Key ID. `Some(None)` clears it."""
+
+    apple_team_id: str | None = None
+    """Apple Team ID. `Some(None)` clears it."""
+
     attribute_map: Any | None = None
     """``attribute_map``."""
+
+    authorization_endpoint: str | None = None
+    """OAuth2-variant authorization endpoint. `Some(None)` clears it."""
+
+    button_icon: str | None = None
+    """Sign-in-button icon for a generic provider. `Some(None)` clears it."""
 
     client_id: str | None = None
     """``client_id``."""
@@ -3423,8 +3582,29 @@ class UpdateFederationConfigRequest(ManagementModel):
     provider: str | None = None
     """``provider``."""
 
+    provider_slug: str | None = None
+    """Operator-chosen identifier for a `generic_*` kind. `Some(None)` clears
+
+    it.
+    """
+
+    require_pkce: bool | None = None
+    """Send PKCE on the authorization request."""
+
+    scopes: list[str] | None = None
+    """Scopes to request. Replaced wholesale; empty restores the per-kind
+
+    default.
+    """
+
+    token_endpoint: str | None = None
+    """OAuth2-variant token endpoint. `Some(None)` clears it."""
+
     token_exchange: TokenExchangeTrustRequest | None = None
     """``token_exchange``."""
+
+    userinfo_endpoint: str | None = None
+    """OAuth2-variant userinfo endpoint. `Some(None)` clears it."""
 
 
 class UpdateGroup(ManagementModel):
