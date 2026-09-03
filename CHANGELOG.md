@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Regenerated the §27 management surface from the vendored
+  `management-registry.json` / `openapi.json`. The v1.0.0-beta09 re-vendor
+  carried the WebAuthn user-verification policy — `SecuritySettings.webauthn`,
+  and `webauthn_user_verification` on the organization and tenant settings
+  requests — without regenerating the code emitted from it. This SDK's
+  drift-check runs on pull requests only, so beta09 and beta10 both published a
+  surface in which the new policy could be neither read nor set.
+  `python3 scripts/gen_management.py --check` is green again.
+
 ## [1.0.0-beta10] - 2026-09-03
 
 ### Changed
