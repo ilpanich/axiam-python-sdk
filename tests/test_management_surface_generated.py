@@ -5554,6 +5554,7 @@ def test_settings_get_org() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         client.settings.get_org()
@@ -5603,6 +5604,7 @@ async def test_settings_get_org_async() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         await client.settings.get_org()
@@ -5651,6 +5653,7 @@ def test_settings_set_org() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         client.settings.set_org(
@@ -5723,6 +5726,7 @@ async def test_settings_set_org_async() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         await client.settings.set_org(
@@ -5794,6 +5798,7 @@ def test_settings_get_effective() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         client.settings.get_effective()
@@ -5843,6 +5848,7 @@ async def test_settings_get_effective_async() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         await client.settings.get_effective()
@@ -5891,6 +5897,7 @@ def test_settings_set_effective() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         client.settings.set_effective(models.TenantSettingsOverride())
@@ -5940,6 +5947,7 @@ async def test_settings_set_effective_async() -> None:
                 "scope_id": "11111111-1111-4111-8111-111111111111",
                 "token": {"access_token_lifetime_secs": 1, "refresh_token_lifetime_secs": 1},
                 "updated_at": "2026-08-26T00:00:00Z",
+                "webauthn": {"webauthn_user_verification": "example"},
             },
         )
         await client.settings.set_effective(models.TenantSettingsOverride())

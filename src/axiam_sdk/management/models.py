@@ -3014,6 +3014,9 @@ class SecuritySettings(ManagementModel):
     updated_at: str
     """``updated_at``."""
 
+    webauthn: WebauthnPolicy
+    """``webauthn``."""
+
 
 class ServiceAccountCreatedResponse(ManagementModel):
     """Response for service account creation — includes the one-time plaintext
@@ -3181,6 +3184,9 @@ class SetOrgSettings(ManagementModel):
 
     require_uppercase: bool
     """``require_uppercase``."""
+
+    webauthn_user_verification: str | None = None
+    """``webauthn_user_verification``."""
 
 
 SettingsScope = Literal["Org", "Tenant"] | str
@@ -3409,6 +3415,9 @@ class TenantSettingsOverride(ManagementModel):
 
     require_uppercase: bool | None = None
     """``require_uppercase``."""
+
+    webauthn_user_verification: str | None = None
+    """``webauthn_user_verification``."""
 
 
 TenantStatus = Literal["Active", "Suspended"] | str
@@ -4042,6 +4051,30 @@ class WebauthnAttestationPolicy(ManagementModel):
     """``unknown_aaguid``."""
 
 
+class WebauthnPolicy(ManagementModel):
+    """WebAuthn ceremony policy.
+
+    One field today. It is a struct rather than a bare field on
+    [`SecuritySettings`] so that the next WebAuthn control has an obvious
+    home, and so the admin UI can group them.
+
+    The *attestation* policy is deliberately not here: it lives in
+    [`crate::models::webauthn_policy::WebauthnAttestationPolicy`], is
+    tenant-only, and cannot join this model because AAGUID allow/block lists
+    have no "more restrictive than" ordering to validate an override
+    against. User verification does, so it can.
+    """
+
+    webauthn_user_verification: str
+    """How hard the authenticator must prove *who* is present.
+
+
+    Applies to enrolment and to second-factor authentication. Usernameless
+    sign-in is held to `required` whatever this says — see
+    [`WebauthnUserVerification`].
+    """
+
+
 class WebhookResponse(ManagementModel):
     """Webhook response — omits the shared secret."""
 
@@ -4198,6 +4231,7 @@ for _model in (
     UpdateWebhookRequest,
     UserResponse,
     WebauthnAttestationPolicy,
+    WebauthnPolicy,
     WebhookResponse,
 ):
     _model.model_rebuild()
