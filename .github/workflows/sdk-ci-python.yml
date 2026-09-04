@@ -113,9 +113,12 @@ jobs:
       - name: Fail on drift — committed stubs must match protos (D-04)
         run: git diff --exit-code src/axiam_sdk/grpc/gen
 
+  # R-2 (T-235): runs on BOTH triggers. It was `pull_request`-only, so a stale
+  # §27 surface reaching a tag by any route other than `scripts/mass-tag.sh`
+  # met no repository-side gate at all — and the version it shipped under can
+  # never be reused.
   management-drift-check:
     name: §27 management surface drift-check
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -219,7 +222,7 @@ jobs:
     # triggered by a PR, so no publish-adjacent OIDC token is ever exposed to a
     # PR-triggered job.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: verify-tag-on-main
+    needs: [management-drift-check, verify-tag-on-main]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
