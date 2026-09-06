@@ -202,6 +202,56 @@ class BatchCheckResult(BaseModel):
     model_config = {"frozen": True}
 
 
+class MtlsEndpointAliases(BaseModel):
+    """RFC 8705 §5 ``mtls_endpoint_aliases`` — the six endpoints re-based on
+    the host that performs the mutual-TLS handshake (wire schema
+    ``MtlsEndpointAliases``, contract 1.40).
+
+    A TLS listener decides whether to request a client certificate during the
+    handshake, before it has seen any HTTP, so "ask for a certificate on
+    ``/oauth2/token`` but not on ``/oauth2/authorize``" is not something one
+    listener can do. A deployment wanting both runs two, and this object names
+    the second.
+
+    Only these six are ever aliased. ``authorization_endpoint`` and
+    ``end_session_endpoint`` are front-channel and ``jwks_uri`` is public key
+    material, so CONTRACT.md §21.3 rule 2 forbids synthesising an alias for any
+    of them — sending a browser to an mTLS host raises a native
+    certificate-chooser dialog most users cannot answer. ``issuer`` is not an
+    endpoint and does not move either: §12.4 rule 3 still compares ``iss``
+    against it by exact string.
+
+    Every field is optional even though the server's schema marks all six
+    required. AXIAM builds them from one path through a shared macro and so
+    always publishes the complete set, but RFC 8705 §5 permits an OP to alias
+    fewer, and the shape of this member must never be why a client stops
+    working — the same principle rule 2 point 1 states for the object as a
+    whole, one level in. An absent entry falls back to the top-level endpoint
+    of the same name, exactly as an absent object does.
+    """
+
+    token_endpoint: str | None = None
+    """RFC 8705 §2 client authentication, and §3 the mint of a
+    certificate-bound token."""
+
+    userinfo_endpoint: str | None = None
+    """OIDC Core §5.3, reached with an access token that may carry ``cnf``."""
+
+    revocation_endpoint: str | None = None
+    """RFC 7009 §2.1 — authenticates the client."""
+
+    introspection_endpoint: str | None = None
+    """RFC 7662 §2.1 — authenticates the caller."""
+
+    device_authorization_endpoint: str | None = None
+    """RFC 8628 §3.1 — authenticates the client."""
+
+    pushed_authorization_request_endpoint: str | None = None
+    """RFC 9126 §2 — authenticates the client."""
+
+    model_config = {"frozen": True}
+
+
 class OidcConfiguration(BaseModel):
     """The OIDC Discovery 1.0 metadata document served by ``GET
     /.well-known/openid-configuration`` (wire schema ``OidcDiscoveryDocument``,
@@ -265,6 +315,18 @@ class OidcConfiguration(BaseModel):
 
     backchannel_logout_session_supported: bool | None = None
     """Whether those logout tokens carry ``sid``. AXIAM always sends it."""
+
+    mtls_endpoint_aliases: MtlsEndpointAliases | None = None
+    """RFC 8705 §5 endpoint aliases for a deployment that terminates mutual
+    TLS on a host other than the issuer's own (contract 1.40, §21.3 rule 2).
+
+    Optional, and **``None`` means "no separate host", not "mTLS
+    unsupported"**: a deployment running ``client_auth = optional`` on one
+    listener serves both populations at the conventional endpoints and
+    correctly publishes nothing here. A client treating absence as an error
+    would refuse the most common mTLS topology AXIAM ships. The server omits
+    the key rather than serialising ``null``.
+    """
 
     model_config = {"frozen": True}
 

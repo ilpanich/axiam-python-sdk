@@ -155,6 +155,13 @@ class _Session:
         else:
             self._verify = custom_ca if custom_ca else True
 
+        # Whether this session presents a §6.1 client certificate, and so
+        # whether CONTRACT.md §21.3 rule 2 applies to the calls it makes. The
+        # identity is configured once and presented on every request, so "is
+        # this call going over mutual TLS" has a whole-session answer here
+        # rather than a per-call one.
+        self.presents_client_certificate: bool = client_cert is not None and client_key is not None
+
         # Assumption A1: share ONE raw http.cookiejar.CookieJar between both
         # clients by wrapping it in exactly one cookie-jar wrapper instance
         # and handing that same instance's `.jar` to both — see module

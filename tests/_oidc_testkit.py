@@ -68,6 +68,70 @@ def discovery_document(**overrides: Any) -> dict[str, Any]:
     return doc
 
 
+MTLS_BASE_URL = "https://mtls.axiam.example.test"
+MTLS_TOKEN_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/token"
+MTLS_INTROSPECT_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/introspect"
+MTLS_REVOKE_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/revoke"
+MTLS_DEVICE_AUTHORIZATION_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/device_authorization"
+MTLS_PAR_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/par"
+
+
+def mtls_endpoint_aliases(**overrides: Any) -> dict[str, Any]:
+    """The six RFC 8705 §5 aliases, every one on :data:`MTLS_BASE_URL`
+    (CONTRACT.md §21.3 rule 2, contract 1.40)."""
+    aliases: dict[str, Any] = {
+        "token_endpoint": MTLS_TOKEN_ENDPOINT,
+        "userinfo_endpoint": f"{MTLS_BASE_URL}/oauth2/userinfo",
+        "revocation_endpoint": MTLS_REVOKE_ENDPOINT,
+        "introspection_endpoint": MTLS_INTROSPECT_ENDPOINT,
+        "device_authorization_endpoint": MTLS_DEVICE_AUTHORIZATION_ENDPOINT,
+        "pushed_authorization_request_endpoint": MTLS_PAR_ENDPOINT,
+    }
+    aliases.update(overrides)
+    return aliases
+
+
+def discovery_document_with_aliases(**overrides: Any) -> dict[str, Any]:
+    """The standard discovery document plus an ``mtls_endpoint_aliases``
+    object pointing at a *second* origin — the shape a deployment that
+    terminates mutual TLS on its own host publishes."""
+    return discovery_document(mtls_endpoint_aliases=mtls_endpoint_aliases(), **overrides)
+
+
+def client_identity_pem() -> tuple[bytes, bytes]:
+    """Generate a throwaway self-signed client certificate + PKCS#8 key PEM
+    pair, for use as a §6.1 client identity. Minted fresh in-process; nothing
+    is committed (§6.1 rule 3 / §7)."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "axiam-sdk-test-client")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM),
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ),
+    )
+
+
 def discovery_document_without_optional_endpoints(**overrides: Any) -> dict[str, Any]:
     """A discovery document with the §14/§12.7 endpoints deliberately absent —
     the shape an older AXIAM, or a third-party OP without those features,
