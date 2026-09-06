@@ -32,7 +32,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -668,6 +668,21 @@ class _AsyncSingleFlight:
         return await asyncio.shield(self._claim_or_join(fn))
 
 
+#: The six endpoint names RFC 8705 §5 ever aliases (CONTRACT.md §21.3 rule 2).
+#: Naming them as a closed set is what makes `authorization_endpoint`,
+#: `end_session_endpoint` and `jwks_uri` unreachable through the alias lookup
+#: rather than merely unused — rule 2 forbids synthesising an alias for any of
+#: the three, and a type error is a better place to learn that than production.
+_AliasableEndpoint = Literal[
+    "token_endpoint",
+    "userinfo_endpoint",
+    "revocation_endpoint",
+    "introspection_endpoint",
+    "device_authorization_endpoint",
+    "pushed_authorization_request_endpoint",
+]
+
+
 class _OidcMixin:
     """Shared OIDC/SSO logic mixed into
     :class:`~axiam_sdk._client._AxiamClientBase` (CONTRACT.md §12).
@@ -914,7 +929,11 @@ class _OidcMixin:
                 concatenation onto the issuer — that works against AXIAM and
                 breaks against every other OP the same code is pointed at.
         """
-        endpoint = configuration.pushed_authorization_request_endpoint
+        endpoint = self._preferred_optional_endpoint(
+            configuration,
+            "pushed_authorization_request_endpoint",
+            configuration.pushed_authorization_request_endpoint,
+        )
         if not endpoint:
             raise AuthError(
                 "the authorization server's discovery document advertises no "
@@ -963,10 +982,61 @@ class _OidcMixin:
             code_verifier=request.code_verifier,
         )
 
+    def _mtls_alias(self, configuration: OidcConfiguration, name: _AliasableEndpoint) -> str | None:
+        """The RFC 8705 §5 alias for ``name``, or ``None`` when this call is
+        not going over mutual TLS, the document publishes no aliases, or it
+        publishes none for this endpoint (CONTRACT.md §21.3 rule 2).
+
+        Three things this deliberately does NOT do, each of them a documented
+        way to get rule 2 wrong:
+
+        * An absent ``mtls_endpoint_aliases`` is never an error. It means "no
+          separate mTLS host", not "mTLS unsupported" — a deployment running
+          ``client_auth = optional`` on one listener serves both populations at
+          the conventional endpoints and correctly publishes nothing.
+        * ``name`` is looked up on :class:`MtlsEndpointAliases`, which carries
+          only the six aliasable endpoints, so ``authorization_endpoint``,
+          ``end_session_endpoint`` and ``jwks_uri`` cannot be reached through
+          here: they are front-channel or public, and an mTLS host would raise
+          a certificate-chooser dialog in the user's browser.
+        * ``issuer`` is untouched. It is an identifier, not an endpoint, and
+          §12.4 rule 3 still compares a token's ``iss`` against
+          ``configuration.issuer`` by exact string — including for a token
+          minted at an alias endpoint.
+        """
+        if not self._session.presents_client_certificate:
+            return None
+        aliases = configuration.mtls_endpoint_aliases
+        if aliases is None:
+            return None
+        alias: str | None = getattr(aliases, name)
+        return alias
+
+    def _preferred_endpoint(
+        self, configuration: OidcConfiguration, name: _AliasableEndpoint, top_level: str
+    ) -> str:
+        """An always-advertised endpoint, preferring its §21.3 rule 2 alias."""
+        return self._mtls_alias(configuration, name) or top_level
+
+    def _preferred_optional_endpoint(
+        self,
+        configuration: OidcConfiguration,
+        name: _AliasableEndpoint,
+        top_level: str | None,
+    ) -> str | None:
+        """A conditionally-advertised endpoint, preferring its §21.3 rule 2
+        alias. ``None`` still means "this server does not support the feature"
+        — the caller raises that, and never concatenates a URL onto the issuer.
+        """
+        return self._mtls_alias(configuration, name) or top_level
+
     def _token_endpoint_url(self, configuration: OidcConfiguration, tenant_id: str | None) -> str:
         """The token endpoint URL with the mandatory ``?tenant_id=<uuid>``
         query parameter (§12.1 note 2)."""
-        return self._endpoint_url(configuration.token_endpoint, tenant_id)
+        return self._endpoint_url(
+            self._preferred_endpoint(configuration, "token_endpoint", configuration.token_endpoint),
+            tenant_id,
+        )
 
     def _endpoint_url(self, endpoint: str, tenant_id: str | None) -> str:
         """Build the final endpoint URL: the discovery document's endpoint
@@ -1055,14 +1125,24 @@ class _OidcMixin:
     ) -> str:
         """The introspection endpoint URL with the mandatory ``tenant_id``
         query parameter (§12.1 note 2)."""
-        return self._endpoint_url(configuration.introspection_endpoint, tenant_id)
+        return self._endpoint_url(
+            self._preferred_endpoint(
+                configuration, "introspection_endpoint", configuration.introspection_endpoint
+            ),
+            tenant_id,
+        )
 
     def _endpoint_url_for_revoke(
         self, configuration: OidcConfiguration, tenant_id: str | None
     ) -> str:
         """The revocation endpoint URL with the mandatory ``tenant_id``
         query parameter (§12.1 note 2)."""
-        return self._endpoint_url(configuration.revocation_endpoint, tenant_id)
+        return self._endpoint_url(
+            self._preferred_endpoint(
+                configuration, "revocation_endpoint", configuration.revocation_endpoint
+            ),
+            tenant_id,
+        )
 
     def _handle_introspect_response(self, response: httpx.Response) -> IntrospectionResult:
         """Parse ``POST /oauth2/introspect``'s response (§12.1 note 4)."""
@@ -1439,7 +1519,11 @@ class _OidcMixin:
                 concatenation onto the issuer — that works against AXIAM and
                 breaks against every other OP the same code is pointed at.
         """
-        endpoint = configuration.device_authorization_endpoint
+        endpoint = self._preferred_optional_endpoint(
+            configuration,
+            "device_authorization_endpoint",
+            configuration.device_authorization_endpoint,
+        )
         if not endpoint:
             raise AuthError(
                 "the authorization server's discovery document advertises no "
