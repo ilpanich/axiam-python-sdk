@@ -4253,6 +4253,8 @@ def test_oauth2_clients_list() -> None:
             {
                 "items": [
                     {
+                        "authn_request_params": "ignore",
+                        "browser_sso": True,
                         "client_id": "example",
                         "created_at": "2026-08-26T00:00:00Z",
                         "dpop_bound_access_tokens": True,
@@ -4292,6 +4294,8 @@ async def test_oauth2_clients_list_async() -> None:
             {
                 "items": [
                     {
+                        "authn_request_params": "ignore",
+                        "browser_sso": True,
                         "client_id": "example",
                         "created_at": "2026-08-26T00:00:00Z",
                         "dpop_bound_access_tokens": True,
@@ -4385,6 +4389,8 @@ def test_oauth2_clients_get() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "authn_request_params": "ignore",
+                "browser_sso": True,
                 "client_id": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "dpop_bound_access_tokens": True,
@@ -4416,6 +4422,8 @@ async def test_oauth2_clients_get_async() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "authn_request_params": "ignore",
+                "browser_sso": True,
                 "client_id": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "dpop_bound_access_tokens": True,
@@ -4446,6 +4454,8 @@ def test_oauth2_clients_update() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "authn_request_params": "ignore",
+                "browser_sso": True,
                 "client_id": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "dpop_bound_access_tokens": True,
@@ -4477,6 +4487,8 @@ async def test_oauth2_clients_update_async() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "authn_request_params": "ignore",
+                "browser_sso": True,
                 "client_id": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "dpop_bound_access_tokens": True,
@@ -5535,6 +5547,7 @@ def test_settings_get_org() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5585,6 +5598,7 @@ async def test_settings_get_org_async() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5634,6 +5648,7 @@ def test_settings_set_org() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5707,6 +5722,7 @@ async def test_settings_set_org_async() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5779,6 +5795,7 @@ def test_settings_get_effective() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5829,6 +5846,7 @@ async def test_settings_get_effective_async() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5878,6 +5896,7 @@ def test_settings_set_effective() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -5928,6 +5947,7 @@ async def test_settings_set_effective_async() -> None:
                 },
                 "mfa": {"mfa_challenge_lifetime_secs": 1, "mfa_enforced": True},
                 "notification": {"admin_notifications_enabled": True},
+                "oidc": {"sensitive_scopes_enabled": True},
                 "opaque": {
                     "opaque_ksf": "example",
                     "opaque_mode": "example",
@@ -6732,6 +6752,83 @@ async def test_privacy_cancel_delete_async() -> None:
         await client.privacy.cancel_delete("example")
 
 
+def test_privacy_list_consents() -> None:
+    """``privacy.list_consents`` -- GET /api/v1/account/consents."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/account/consents",
+            200,
+            [
+                {
+                    "accepted_at": "2026-08-26T00:00:00Z",
+                    "consent_type": "example",
+                    "version": "example",
+                    "withdrawable": True,
+                }
+            ],
+        )
+        client.privacy.list_consents()
+
+
+@pytest.mark.asyncio
+async def test_privacy_list_consents_async() -> None:
+    """``privacy.list_consents`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/account/consents",
+            200,
+            [
+                {
+                    "accepted_at": "2026-08-26T00:00:00Z",
+                    "consent_type": "example",
+                    "version": "example",
+                    "withdrawable": True,
+                }
+            ],
+        )
+        await client.privacy.list_consents()
+
+
+def test_privacy_grant_scope_consent() -> None:
+    """``privacy.grant_scope_consent`` -- POST
+    /api/v1/account/consents/oidc-scopes.
+    """
+    with with_client() as (router, client):
+        mount_json(router, "POST", "/api/v1/account/consents/oidc-scopes", 200, None)
+        client.privacy.grant_scope_consent(models.GrantScopeConsent(client_id="example", scopes=[]))
+
+
+@pytest.mark.asyncio
+async def test_privacy_grant_scope_consent_async() -> None:
+    """``privacy.grant_scope_consent`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "POST", "/api/v1/account/consents/oidc-scopes", 200, None)
+        await client.privacy.grant_scope_consent(
+            models.GrantScopeConsent(client_id="example", scopes=[])
+        )
+
+
+def test_privacy_withdraw_scope_consent() -> None:
+    """``privacy.withdraw_scope_consent`` -- DELETE
+    /api/v1/account/consents/oidc-scopes/{client_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(router, "DELETE", "/api/v1/account/consents/oidc-scopes/example", 200, None)
+        client.privacy.withdraw_scope_consent("example")
+
+
+@pytest.mark.asyncio
+async def test_privacy_withdraw_scope_consent_async() -> None:
+    """``privacy.withdraw_scope_consent`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "DELETE", "/api/v1/account/consents/oidc-scopes/example", 200, None)
+        await client.privacy.withdraw_scope_consent("example")
+
+
 def test_platform_health() -> None:
     """``platform.health`` -- GET /health."""
     with with_client() as (router, client):
@@ -6880,8 +6977,11 @@ EXERCISED = [
     "platform.ready",
     "privacy.cancel_delete",
     "privacy.download_export",
+    "privacy.grant_scope_consent",
+    "privacy.list_consents",
     "privacy.request_delete",
     "privacy.request_export",
+    "privacy.withdraw_scope_consent",
     "reactors.create",
     "reactors.delete",
     "reactors.get",
@@ -6971,4 +7071,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 155
+    assert len(EXERCISED) == 158
