@@ -10,9 +10,11 @@ Scoped to the caller, never to another user.
 
 from __future__ import annotations
 
+import builtins
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from axiam_sdk.management import models
 from axiam_sdk.management._request import (
     ManagementCall,
     send_management,
@@ -103,6 +105,61 @@ def _call_cancel_delete(
     )
 
 
+def _call_list_consents(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+) -> ManagementCall:
+    """Build the ``privacy.list_consents`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    return ManagementCall(
+        operation="privacy.list_consents",
+        method="GET",
+        path_template="/api/v1/account/consents",
+        path="/api/v1/account/consents",
+    )
+
+
+def _call_grant_scope_consent(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    body: models.GrantScopeConsent,
+) -> ManagementCall:
+    """Build the ``privacy.grant_scope_consent`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    return ManagementCall(
+        operation="privacy.grant_scope_consent",
+        method="POST",
+        path_template="/api/v1/account/consents/oidc-scopes",
+        path="/api/v1/account/consents/oidc-scopes",
+        body=body.to_wire(),
+    )
+
+
+def _call_withdraw_scope_consent(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    client_id: str,
+) -> ManagementCall:
+    """Build the ``privacy.withdraw_scope_consent`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    client_id = quote(client_id, safe="")
+    return ManagementCall(
+        operation="privacy.withdraw_scope_consent",
+        method="DELETE",
+        path_template="/api/v1/account/consents/oidc-scopes/{client_id}",
+        path=f"/api/v1/account/consents/oidc-scopes/{client_id}",
+    )
+
+
 class PrivacyApi:
     """The ``privacy`` namespace handle.
 
@@ -152,6 +209,36 @@ class PrivacyApi:
         send_management(
             self._client,
             _call_cancel_delete(self._client, self._scope, token),
+        )
+
+    def list_consents(self) -> builtins.list[models.ConsentView]:
+        """``GET /api/v1/account/consents``"""
+        raw = send_management(
+            self._client,
+            _call_list_consents(self._client, self._scope),
+        )
+        return [models.ConsentView.model_validate(item) for item in raw or []]
+
+    def grant_scope_consent(self, body: models.GrantScopeConsent) -> None:
+        """``POST /api/v1/account/consents/oidc-scopes``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_grant_scope_consent(self._client, self._scope, body),
+        )
+
+    def withdraw_scope_consent(self, client_id: str) -> None:
+        """``DELETE /api/v1/account/consents/oidc-scopes/{client_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        send_management(
+            self._client,
+            _call_withdraw_scope_consent(self._client, self._scope, client_id),
         )
 
 
@@ -204,4 +291,34 @@ class AsyncPrivacyApi:
         await send_management_async(
             self._client,
             _call_cancel_delete(self._client, self._scope, token),
+        )
+
+    async def list_consents(self) -> builtins.list[models.ConsentView]:
+        """``GET /api/v1/account/consents``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_consents(self._client, self._scope),
+        )
+        return [models.ConsentView.model_validate(item) for item in raw or []]
+
+    async def grant_scope_consent(self, body: models.GrantScopeConsent) -> None:
+        """``POST /api/v1/account/consents/oidc-scopes``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_grant_scope_consent(self._client, self._scope, body),
+        )
+
+    async def withdraw_scope_consent(self, client_id: str) -> None:
+        """``DELETE /api/v1/account/consents/oidc-scopes/{client_id}``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        await send_management_async(
+            self._client,
+            _call_withdraw_scope_consent(self._client, self._scope, client_id),
         )

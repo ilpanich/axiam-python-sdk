@@ -34,6 +34,8 @@ CLIENT_SECRET = "rp-secret-value"  # noqa: S105
 REDIRECT_URI = "https://app.example.com/auth/callback"
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 REQUEST_URI = "urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c"
+#: An RFC 7638 SHA-256 JWK thumbprint, base64url, no padding (RFC 9449 §10.1).
+DPOP_JKT = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
 
 
 def _client(**kwargs: Any) -> AxiamClient:
@@ -117,6 +119,70 @@ def test_a_public_client_omits_client_secret_rather_than_sending_an_empty_one() 
     route = respx.post(PAR_ENDPOINT).mock(return_value=_created())
     _push(_client())
     assert "client_secret" not in dict(parse_qsl(route.calls[0].request.content.decode()))
+
+
+# ---------------------------------------------------------------------------
+# RFC 9449 §10.1 — dpop_jkt (contract 1.42)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_dpop_jkt_is_absent_from_the_form_when_the_caller_supplies_none() -> None:
+    # Absent and empty are different requests: an empty thumbprint matches no
+    # key, so sending `dpop_jkt=` would bind the code to a key nobody holds.
+    route = respx.post(PAR_ENDPOINT).mock(return_value=_created())
+    _push()
+    assert "dpop_jkt" not in dict(parse_qsl(route.calls[0].request.content.decode()))
+
+
+@respx.mock
+def test_dpop_jkt_is_sent_verbatim_when_the_caller_supplies_one() -> None:
+    route = respx.post(PAR_ENDPOINT).mock(return_value=_created())
+    _push(dpop_jkt=DPOP_JKT)
+
+    form = dict(parse_qsl(route.calls[0].request.content.decode()))
+    assert form["dpop_jkt"] == DPOP_JKT
+    # It is a form parameter, not a query one: §26.1's push is form-encoded and
+    # the query carries only tenant_id.
+    assert "dpop_jkt" not in parse_qs(urlparse(str(route.calls[0].request.url)).query)
+
+
+@respx.mock
+def test_request_uri_cannot_be_pushed() -> None:
+    # RFC 9126 §2.1 — `request_uri` is the one authorization parameter a client
+    # MUST NOT push, and the server models it only so it can refuse it. There
+    # is deliberately no parameter here that could carry one, so a client of
+    # this SDK cannot chain one pushed request into another.
+    route = respx.post(PAR_ENDPOINT).mock(return_value=_created())
+    with pytest.raises(TypeError):
+        _push(request_uri=REQUEST_URI)
+    _push()
+    assert "request_uri" not in dict(parse_qsl(route.calls[0].request.content.decode()))
+
+
+@respx.mock
+async def test_async_par_sends_dpop_jkt() -> None:
+    route = respx.post(PAR_ENDPOINT).mock(return_value=_created())
+    client = AsyncAxiamClient(  # type: ignore[arg-type]
+        base_url=BASE_URL,
+        tenant_slug=TENANT_ID,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+    )
+    config = _config()
+    request = await client.oidc_begin(
+        configuration=config, redirect_uri=REDIRECT_URI, scope="openid"
+    )
+    await client.oidc_par(
+        request=request,
+        redirect_uri=REDIRECT_URI,
+        scope="openid",
+        dpop_jkt=DPOP_JKT,
+        configuration=config,
+        tenant_id=TENANT_ID,
+    )
+    form = dict(parse_qsl(route.calls[0].request.content.decode()))
+    assert form["dpop_jkt"] == DPOP_JKT
 
 
 @respx.mock

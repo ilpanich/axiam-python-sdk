@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RFC 8414 §2 discovery metadata (SDK contract 1.42, CONTRACT.md §21.5).**
+  `OidcConfiguration` gains `code_challenge_methods_supported` and
+  `token_endpoint_auth_signing_alg_values_supported`. AXIAM publishes `["S256"]`
+  and `["PS256", "ES256", "EdDSA"]`; both members were absent until the first
+  OpenID Foundation conformance run reported them NOT FOUND.
+
+  Both are modelled **optional** even though `openapi.json` marks them
+  required, which §21.5 is explicit about: RFC 8414 defines no default for
+  either, so absence does not mean "S256" — it means a conforming client cannot
+  establish that PKCE is available at all. A required field here would reject
+  both a pre-1.42 AXIAM document and every non-AXIAM OP that omits it, which is
+  why every neighbouring member of this model is optional too. The SDK does not
+  consult either member: §12 always sends `code_challenge_method=S256` and has
+  no `plain` fallback to negotiate away.
+
+- **`dpop_jkt` on `oidc_par` (RFC 9449 §10.1, CONTRACT.md §26.1).** Both
+  `AxiamClient.oidc_par` and `AsyncAxiamClient.oidc_par` take an optional
+  `dpop_jkt`, sent in the `POST /oauth2/par` form **only when supplied** —
+  absent and empty are different requests, and an empty thumbprint would bind
+  the authorization code to a key nobody holds. Pass the RFC 7638 SHA-256
+  thumbprint of the key the token request will prove possession of;
+  `axiam_sdk._dpop.jwk_thumbprint_s256` computes one from a JWK. Caller-supplied
+  rather than derived: this SDK verifies DPoP proofs, it does not mint them.
+
+  `request_uri`, which `PushedAuthorizationRequest` also gained server-side in
+  1.42, is deliberately **not** exposed. RFC 9126 §2.1 makes it the one
+  authorization parameter a client MUST NOT push; the server models it so it can
+  refuse it, and a client able to send one is a client able to chain one pushed
+  request into another.
+
 - **RFC 8705 §5 `mtls_endpoint_aliases` (SDK contract 1.40, CONTRACT.md §21.3
   rule 2).** `OidcConfiguration` gains an optional `mtls_endpoint_aliases`
   field (the new `MtlsEndpointAliases` model, exported from `axiam_sdk`), and
@@ -32,15 +62,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Re-vendored `CONTRACT.md`, `openapi.json` and `management-registry.json` from
-  `ilpanich/axiam` at SDK contract 1.40. The registry's 155 operations are
-  unchanged, so the generated §27 surface is unchanged; `openapi.json` gained
-  the `MtlsEndpointAliases` schema and one optional property on
-  `OidcDiscoveryDocument`.
+  `ilpanich/axiam` at SDK contract **1.42**, spanning two revisions (the
+  previous vendor was 1.40). The registry grows from 155 to **158 operations
+  across 24 namespaces**: `privacy.list_consents`,
+  `privacy.grant_scope_consent` and `privacy.withdraw_scope_consent`
+  (`GET/POST/DELETE /api/v1/account/consents[/oidc-scopes[/{client_id}]]`).
+  The §27 surface is regenerated, not hand-edited.
+
+  Also regenerated into the §27 models: `ClientAuthMethod` gains
+  `client_secret_basic`; `CreateOAuth2ClientRequest`,
+  `UpdateOAuth2ClientRequest` and `OAuth2ClientResponse` gain
+  `authn_request_params` and `browser_sso`; `SecuritySettings` gains `oidc`;
+  `SetOrgSettings` and `TenantSettingsOverride` gain `default_locale` and
+  `sensitive_scopes_enabled`; `User` and `UpdateUser` gain `address`,
+  `phone_number` and `phone_number_verified_at`; and the `Address`,
+  `AuthnRequestParamsMode`, `ConsentView`, `GrantScopeConsent`, `OidcPolicy`
+  and `UserInfoPostForm` schemas are new.
+
+  `proto/` is byte-identical upstream, so the gRPC stubs are untouched.
+
+- The earlier 1.40 re-vendor entry below is unchanged and still accurate for
+  that revision; this one supersedes its version and operation count.
 
   Additive and server-side: no deployment publishes `mtls_endpoint_aliases`
   until an operator sets `AXIAM__AUTH__OAUTH2_MTLS_BASE_URL`, so every existing
   consumer keeps working unchanged against every existing deployment. No public
   API was removed or renamed.
+
+### Unchanged (reviewed against the 1.42 server behaviour)
+
+Recorded because "we looked and nothing was needed" is the answer, and a later
+reader should not have to re-derive it.
+
+- **ID tokens no longer carry `tenant_id`, `org_id` or `email`** (OIDC Core
+  §5.4). `IdTokenClaims` types none of the three and keeps unrecognised claims
+  via `extra = "allow"` (§12.1), so nothing in this SDK reads them off an ID
+  token and nothing silently empties. The identifiers still arrive in the
+  access-token claims and from gRPC `GetUserInfo`.
+- **Refresh-token rotation now supersedes rather than revokes, with a 60 s
+  grace.** §9 rule 6 single-flight exists to stop the SDK making a *second*
+  wire call with an already-rotated token; a server-side tolerance does not
+  make replaying one correct, and no test here asserts the server's rejection.
+- **`/oauth2/authorize` is content-negotiated on `Accept`.** This SDK never
+  calls that endpoint server-side — it builds the URL and hands it to a browser
+  — so there is no request to add a header to and no error body to parse.
+- **`error_description` is now rendered as RFC 6749 §5.2 NQSCHAR.** Every
+  error-mapping assertion here runs against this repo's own mocks, and
+  dispatch is on the `error` field, never on the prose (§12.3 rule 3).
+- **DPoP `htu` canonicalisation.** `canonical_htu` is untouched: §21.7.2 check 6
+  is unchanged in 1.42 and requires `htu` to be compared with query and
+  fragment removed and *no further normalisation* — a normalising comparison is
+  where two unequal URIs become equal. The server's own comparison rule is not
+  this verifier's.
+- **DPoP single-use proofs at resource endpoints.** §21.7.2 check 8 already
+  required an SDK-side `jti` single-use check within the freshness window, and
+  `InMemoryJtiStore` already implements it.
+- **`client_secret_basic` is now advertised.** §5 rule 3 still forbids sending
+  an `Authorization: Basic` header to `/oauth2/*`; the enum member is a
+  registration value a management caller may set, not a change to this client's
+  own `client_secret_post` default.
+- **The `claims` request parameter is now honoured.** No SDK surface sends one,
+  and it is deliberately not added to `oidc_par`.
+- **Discovery now publishes `?tenant_id=` inside the advertised endpoint URLs.**
+  This SDK replaces rather than appends (`httpx.URL.copy_merge_params`, whose
+  `QueryParams.merge` overwrites the key), so it never doubled the parameter.
+  Two regression tests now pin that, including one that a tenant-scoped
+  `token_endpoint` keeps its unrelated query parameters (RFC 6749 §3.1/§3.2).
 
 ## [1.0.0-beta12] - 2026-09-06
 

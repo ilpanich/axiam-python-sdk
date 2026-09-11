@@ -475,6 +475,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request: AuthorizationRequest,
         redirect_uri: str,
         scope: str | list[str] | None = None,
+        dpop_jkt: str | None = None,
         tenant_id: str | None = None,
         configuration: OidcConfiguration | None = None,
     ) -> PushedAuthorizationRequest:
@@ -501,13 +502,24 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         eligibility exactly as ``oidc_exchange`` does. The safe recovery is a
         fresh push (§26.2 rule 4).
 
+        ``dpop_jkt`` (RFC 9449 §10.1) binds the authorization code this push
+        will produce to a DPoP key before the browser ever sees a redirect, so
+        the code cannot be exchanged by whoever intercepts it. Pass the RFC
+        7638 SHA-256 thumbprint of the public key the token request will prove
+        possession of; :func:`axiam_sdk._dpop.jwk_thumbprint_s256` computes it
+        from a JWK. It is caller-supplied rather than derived because this SDK
+        holds no DPoP key of its own (§21.9): it verifies proofs, it does not
+        mint them. Omitted from the form entirely when ``None``.
+
         Raises:
             AuthError: when the discovery document advertises no
                 ``pushed_authorization_request_endpoint``.
             OAuthProtocolError: on any ``error`` the server returns.
         """
         config = configuration or await self.oidc_discover()
-        form = self._par_form(request=request, redirect_uri=redirect_uri, scope=scope)
+        form = self._par_form(
+            request=request, redirect_uri=redirect_uri, scope=scope, dpop_jkt=dpop_jkt
+        )
         url = self._par_url(config, tenant_id)
         http_request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._session._send_async(http_request)

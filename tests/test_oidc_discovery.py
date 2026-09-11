@@ -227,3 +227,52 @@ def test_discovery_cache_is_per_client_instance_not_process_global(
     client_b.oidc_discover()
 
     assert route.call_count == 2, "distinct client instances must not share a discovery cache"
+
+
+# ---------------------------------------------------------------------
+# §21.5 / RFC 8414 §2 — the two members added in contract 1.42
+# ---------------------------------------------------------------------
+
+
+def test_discovery_parses_the_two_metadata_members_added_in_1_42(
+    respx_mock: respx.MockRouter,
+) -> None:
+    respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(
+            200,
+            json=discovery_document(
+                code_challenge_methods_supported=["S256"],
+                token_endpoint_auth_signing_alg_values_supported=["PS256", "ES256", "EdDSA"],
+            ),
+        )
+    )
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme")
+
+    configuration = client.oidc_discover()
+
+    assert configuration.code_challenge_methods_supported == ["S256"]
+    assert configuration.token_endpoint_auth_signing_alg_values_supported == [
+        "PS256",
+        "ES256",
+        "EdDSA",
+    ]
+
+
+def test_discovery_still_parses_a_document_that_omits_them(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # openapi.json marks both REQUIRED; this SDK models them optional on
+    # purpose (§21.5): RFC 8414 defines no default for either, so absence is
+    # information, not an error — and this document must still parse when it
+    # comes from a pre-1.42 AXIAM or from a non-AXIAM OP.
+    respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(200, json=discovery_document())
+    )
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme")
+
+    configuration = client.oidc_discover()
+
+    assert configuration.code_challenge_methods_supported is None
+    assert configuration.token_endpoint_auth_signing_alg_values_supported is None
+    # Absence is NOT read as "S256 is available".
+    assert configuration.token_endpoint == f"{BASE_URL}/oauth2/token"

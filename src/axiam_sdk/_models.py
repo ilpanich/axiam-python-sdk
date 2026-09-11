@@ -316,6 +316,32 @@ class OidcConfiguration(BaseModel):
     backchannel_logout_session_supported: bool | None = None
     """Whether those logout tokens carry ``sid``. AXIAM always sends it."""
 
+    code_challenge_methods_supported: list[str] | None = None
+    """RFC 8414 §2 / RFC 7636 §4.3 — the PKCE code-challenge methods the
+    authorization endpoint accepts (contract 1.42, §21.5).
+
+    AXIAM publishes ``["S256"]`` and refuses ``plain``. **Optional here even
+    though ``openapi.json`` marks it required**, and deliberately so: §21.5
+    spells out that RFC 8414 defines no default for this member, so its
+    absence does not mean ``S256`` — it means a conforming client cannot
+    establish that PKCE is available at all. Modelling it required would
+    reject both a pre-1.42 AXIAM document (it was absent until the first OIDF
+    conformance run reported it NOT FOUND) and every non-AXIAM OP that omits
+    it, which is the same reason every neighbouring member here is optional.
+
+    This SDK does not consult it: §12 always sends ``code_challenge_method=
+    S256`` and has no ``plain`` fallback to negotiate away (§12.2 rule 2).
+    """
+
+    token_endpoint_auth_signing_alg_values_supported: list[str] | None = None
+    """RFC 8414 §2 — the JWS algorithms the token endpoint accepts on a
+    ``private_key_jwt`` client assertion (contract 1.42, §21.5).
+
+    AXIAM publishes ``["PS256", "ES256", "EdDSA"]``. Optional for the same
+    reason as the member above, and additionally because the member is
+    meaningless to a deployment that registers no ``private_key_jwt`` client.
+    """
+
     mtls_endpoint_aliases: MtlsEndpointAliases | None = None
     """RFC 8705 §5 endpoint aliases for a deployment that terminates mutual
     TLS on a host other than the issuer's own (contract 1.40, §21.3 rule 2).
