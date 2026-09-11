@@ -452,3 +452,80 @@ async def test_async_login_client_credentials_happy_path(respx_mock: respx.MockR
 
     token_set = await client.login_client_credentials(tenant_id=TENANT_ID)
     assert token_set.access_token.get_secret_value() == "service-token"
+
+
+# ---------------------------------------------------------------------
+# The tenant is now published INSIDE the advertised endpoint URLs
+# ---------------------------------------------------------------------
+#
+# As of contract 1.42 the discovery document's token / revocation /
+# introspection / device-authorization / PAR / end-session URLs already carry
+# `?tenant_id=<uuid>` whenever the discovery request named a tenant or the
+# deployment sets `oauth2_default_tenant_id`. An SDK that APPENDS its own
+# copy therefore puts `tenant_id` on the wire twice, and the server reads
+# whichever one its query deserialiser happens to reach first.
+#
+# This SDK replaces rather than appends (`httpx.URL.copy_merge_params`, whose
+# `QueryParams.merge` overwrites the key), so it was never affected. These
+# tests exist to keep it that way: a refactor to `append_pair`-style building
+# fails here rather than in production against a tenant-scoped deployment.
+
+
+def test_a_tenant_scoped_token_endpoint_does_not_double_the_tenant_id(
+    respx_mock: respx.MockRouter,
+) -> None:
+    other_tenant = "22222222-2222-2222-2222-222222222222"
+    respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(
+            200,
+            json=discovery_document(
+                token_endpoint=f"{BASE_URL}/oauth2/token?tenant_id={other_tenant}"
+            ),
+        )
+    )
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(200, json=_token_response())
+    )
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    client.oidc_exchange(
+        code="auth-code-1",
+        code_verifier="verifier-value",
+        redirect_uri="https://app.test/cb",
+        nonce="nonce-value",
+        tenant_id=TENANT_ID,
+    )
+
+    sent = route.calls.last.request
+    # Exactly one tenant_id on the wire, and it is the RESOLVED one: that is
+    # the tenant the caller/session actually authenticated against, and a
+    # silent mismatch between the two is worse than a deterministic winner.
+    assert sent.url.params.get_list("tenant_id") == [TENANT_ID]
+
+
+def test_other_query_parameters_on_the_advertised_endpoint_are_preserved(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # RFC 6749 §3.1/§3.2 — a client MUST retain the endpoint's own query
+    # component. Dropping it to "clean up" the URL breaks a deployment that
+    # routes on it.
+    respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(
+            200,
+            json=discovery_document(token_endpoint=f"{BASE_URL}/oauth2/token?region=eu-west-1"),
+        )
+    )
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(200, json=_token_response())
+    )
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID)
+
+    sent = route.calls.last.request
+    assert sent.url.params.get_list("tenant_id") == [TENANT_ID]
+    assert sent.url.params["region"] == "eu-west-1"
