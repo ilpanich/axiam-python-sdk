@@ -33,7 +33,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 range silently would turn a statement that was true when written into a
 different claim without anyone editing it.
 
-§27 is the management API — 147 administrative operations across 24 namespaces,
+§27 is the management API — 158 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1175,6 +1175,37 @@ Three things that are easy to get wrong:
    it; the safe recovery is a fresh push. `oidc_par` is correspondingly never
    retried on a `5xx` or a transport failure — it is a POST that creates state.
 
+### Binding the code to a DPoP key — `dpop_jkt` (contract 1.42, RFC 9449 §10.1)
+
+`oidc_par` takes an optional `dpop_jkt`: the RFC 7638 SHA-256 thumbprint of the
+public key the eventual token request will prove possession of. Pushing it binds
+the authorization code to that key before the browser ever sees a redirect, so
+whoever intercepts the code cannot exchange it.
+
+```python
+from axiam_sdk._dpop import jwk_thumbprint_s256
+
+pushed = client.oidc_par(
+    request=request,
+    redirect_uri=uri,
+    scope="openid profile",
+    dpop_jkt=jwk_thumbprint_s256(my_public_jwk),
+    configuration=configuration,
+    tenant_id=tenant_id,
+)
+```
+
+It is caller-supplied rather than derived because this SDK holds no DPoP key of
+its own: per CONTRACT.md §21.9 it **verifies** proofs (`verify_dpop_proof`,
+`InMemoryJtiStore`) and does not mint them. Omit it and the parameter is left
+out of the form entirely — an empty `dpop_jkt` is a thumbprint that matches no
+key, which would bind the code to a key nobody holds.
+
+There is deliberately **no** way to push a `request_uri`. RFC 9126 §2.1 makes it
+the one authorization parameter a client MUST NOT push; AXIAM models it so it
+can refuse it, and a client able to send one is a client able to chain one
+pushed request into another.
+
 Worked example: [`examples/par_login.py`](examples/par_login.py).
 
 ## Device authorization grant (§14)
@@ -1403,7 +1434,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-147 administrative operations across 24 namespaces, reached as
+158 administrative operations across 24 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 
