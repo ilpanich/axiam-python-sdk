@@ -899,6 +899,7 @@ class _OidcMixin:
         request: AuthorizationRequest,
         redirect_uri: str,
         scope: str | Sequence[str] | None,
+        dpop_jkt: str | None = None,
     ) -> dict[str, str]:
         """Build the ``POST /oauth2/par`` form body (§26.1).
 
@@ -906,6 +907,16 @@ class _OidcMixin:
         second generator: two sources for ``state`` or the PKCE pair are two
         things that can disagree, and the ``code_verifier`` the caller must
         keep for ``oidc_exchange`` is the one they already hold.
+
+        ``dpop_jkt`` (RFC 9449 §10.1) is sent **only when the caller supplies
+        one**. An absent member and an empty one are different requests: the
+        empty string is a thumbprint that matches no key, and it would bind
+        the authorization code to a key nobody holds.
+
+        ``request_uri`` is deliberately **not** accepted here. RFC 9126 §2.1
+        makes it the one authorization parameter a client MUST NOT push; the
+        server models it so it can refuse it, and a client able to send it is
+        a client able to chain one pushed request into another.
         """
         form = {
             "client_id": self._require_oidc_client_id(),
@@ -917,6 +928,8 @@ class _OidcMixin:
             "code_challenge": compute_code_challenge(_expose_secret(request.code_verifier)),
             "code_challenge_method": CODE_CHALLENGE_METHOD_S256,
         }
+        if dpop_jkt is not None:
+            form["dpop_jkt"] = dpop_jkt
         self._append_client_secret(form)
         return form
 
