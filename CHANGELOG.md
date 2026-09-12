@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta13] - 2026-09-12
+
 ### Added
+
+- Accept an optional dpop_jkt on oidc_par (RFC 9449 §10.1)
+
+- Model the two RFC 8414 §2 discovery members added in 1.42
+
+- Prefer RFC 8705 §5 mtls_endpoint_aliases on mTLS calls
 
 - **RFC 8414 §2 discovery metadata (SDK contract 1.42, CONTRACT.md §21.5).**
   `OidcConfiguration` gains `code_challenge_methods_supported` and
@@ -61,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Record the 1.40 -> 1.42 re-sync in CHANGELOG and README
+
+- Pin that a tenant-scoped discovery endpoint is not doubled
+
+- Re-vendor CONTRACT/openapi/registry at 1.42 and regenerate §27
+
 - Re-vendored `CONTRACT.md`, `openapi.json` and `management-registry.json` from
   `ilpanich/axiam` at SDK contract **1.42**, spanning two revisions (the
   previous vendor was 1.40). The registry grows from 155 to **158 operations
@@ -99,30 +113,38 @@ reader should not have to re-derive it.
   via `extra = "allow"` (§12.1), so nothing in this SDK reads them off an ID
   token and nothing silently empties. The identifiers still arrive in the
   access-token claims and from gRPC `GetUserInfo`.
+
 - **Refresh-token rotation now supersedes rather than revokes, with a 60 s
   grace.** §9 rule 6 single-flight exists to stop the SDK making a *second*
   wire call with an already-rotated token; a server-side tolerance does not
   make replaying one correct, and no test here asserts the server's rejection.
+
 - **`/oauth2/authorize` is content-negotiated on `Accept`.** This SDK never
   calls that endpoint server-side — it builds the URL and hands it to a browser
   — so there is no request to add a header to and no error body to parse.
+
 - **`error_description` is now rendered as RFC 6749 §5.2 NQSCHAR.** Every
   error-mapping assertion here runs against this repo's own mocks, and
   dispatch is on the `error` field, never on the prose (§12.3 rule 3).
+
 - **DPoP `htu` canonicalisation.** `canonical_htu` is untouched: §21.7.2 check 6
   is unchanged in 1.42 and requires `htu` to be compared with query and
   fragment removed and *no further normalisation* — a normalising comparison is
   where two unequal URIs become equal. The server's own comparison rule is not
   this verifier's.
+
 - **DPoP single-use proofs at resource endpoints.** §21.7.2 check 8 already
   required an SDK-side `jti` single-use check within the freshness window, and
   `InMemoryJtiStore` already implements it.
+
 - **`client_secret_basic` is now advertised.** §5 rule 3 still forbids sending
   an `Authorization: Basic` header to `/oauth2/*`; the enum member is a
   registration value a management caller may set, not a change to this client's
   own `client_secret_post` default.
+
 - **The `claims` request parameter is now honoured.** No SDK surface sends one,
   and it is deliberately not added to `oidc_par`.
+
 - **Discovery now publishes `?tenant_id=` inside the advertised endpoint URLs.**
   This SDK replaces rather than appends (`httpx.URL.copy_merge_params`, whose
   `QueryParams.merge` overwrites the key), so it never doubled the parameter.
