@@ -3248,6 +3248,61 @@ class ServiceAccountResponse(ManagementModel):
     """``updated_at``."""
 
 
+class SessionResponse(ManagementModel):
+    """One of a user's sessions, as an administrator sees it."""
+
+    amr: list[str]
+    """RFC 8176 method references for that authentication."""
+
+    authenticated_at: str
+    """X7.2 — when the end user actually authenticated, which is not
+
+    `created_at` on a session produced by refresh rotation.
+    """
+
+    created_at: str
+    """``created_at``."""
+
+    expires_at: str
+    """``expires_at``."""
+
+    id: str
+    """``id``."""
+
+    ip_address: str | None = None
+    """``ip_address``."""
+
+    refresh_replay_at: str | None = None
+    """T-254 — when a refresh token of this session was last presented after it
+
+    had already been rotated. `None` if that has never happened.
+    """
+
+    refresh_replay_grace_accepted: int
+    """T-254 — replays accepted under the FAPI 2.0 §5.3.2.1-9 grace window.
+
+    Only ever non-zero for a client registered `profile: fapi2`.
+    """
+
+    refresh_replay_refused: int
+    """T-254 — replays refused because there was no window to accept them in.
+
+    Nothing a conformant client does.
+    """
+
+    refresh_replay_verdict: str
+    """T-254 — the badge: `none`, `fapi_grace_retry` or `refused`.
+
+
+    Derived from the two counters below rather than stored, so it cannot
+    disagree with them. A refusal outranks an accepted grace retry however
+    the counts compare.
+    """
+
+    user_agent: str | None = None
+    """``user_agent``."""
+
+
 class SetMtlsTrustAnchor(ManagementModel):
     """Body for `PUT .../ca-certificates/{id}/mtls-trust-anchor`."""
 
@@ -4391,6 +4446,7 @@ for _model in (
     SecuritySettings,
     ServiceAccountCreatedResponse,
     ServiceAccountResponse,
+    SessionResponse,
     SetMtlsTrustAnchor,
     SetOrgEmailConfig,
     SetOrgSettings,

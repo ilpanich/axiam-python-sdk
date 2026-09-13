@@ -183,6 +183,71 @@ async def test_async_retries_transient_then_succeeds(respx_mock: respx.Router) -
 
 
 # ---------------------------------------------------------------------------
+# §16 — AXIAM T-262: the contended-write answer
+# ---------------------------------------------------------------------------
+#
+# Since 2026-09-12 a write that loses an optimistic-concurrency race in the
+# datastore answers ``503 write_contention`` with ``Retry-After: 1`` instead of
+# ``500 internal_error``. Nothing in this SDK changes: §16.3 already retries
+# ``5xx`` on an eligible operation and §16.1 already treats the header as a
+# floor. That is exactly why the behaviour is pinned here — §16.7 exists
+# because two SDKs once shipped a retry helper that was exported, unit-tested
+# and green while no production path called it. Only a request count taken on
+# the wire distinguishes the two.
+
+
+def _contended(statuses: list[int]) -> tuple[object, list[int]]:
+    """A side effect replaying *statuses*, answering the server's real
+    ``write_contention`` body and header, and counting wire calls."""
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        status = statuses[min(calls[0] - 1, len(statuses) - 1)]
+        if status == 200:
+            return httpx.Response(200, json={"allowed": True, "reason_code": "allowed"})
+        return httpx.Response(
+            status,
+            headers={"Retry-After": "1"},
+            json={
+                "error": "write_contention",
+                "message": "the datastore is busy; retry this request",
+            },
+        )
+
+    return handler, calls
+
+
+@respx.mock
+def test_a_contended_write_answer_is_retried_and_succeeds(respx_mock: respx.Router) -> None:
+    """An eligible read-only operation survives the server's new 503."""
+    handler, calls = _contended([503, 200])
+    respx_mock.post(f"{BASE_URL}/api/v1/authz/check").mock(side_effect=handler)
+
+    assert _sync_client().check_access("read", RESOURCE).allowed is True
+    assert calls[0] == 2
+
+
+@respx.mock
+def test_a_non_idempotent_call_makes_exactly_one_attempt_against_the_same_503(
+    respx_mock: respx.Router,
+) -> None:
+    """The half that catches a retry wired at the transport layer rather than
+    at the operation layer (§16.7).
+
+    ``login`` changes state and consumes a credential, so a silent retry would
+    replay a spent one and turn a recoverable blip into a hard failure the
+    caller cannot interpret.
+    """
+    handler, calls = _contended([503])
+    respx_mock.post(f"{BASE_URL}/api/v1/auth/login").mock(side_effect=handler)
+
+    with pytest.raises(NetworkError):
+        _sync_client().login("someone@example.test", "password")
+    assert calls[0] == 1
+
+
+# ---------------------------------------------------------------------------
 # §17 — decision memo
 # ---------------------------------------------------------------------------
 

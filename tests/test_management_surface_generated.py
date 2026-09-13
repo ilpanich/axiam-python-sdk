@@ -848,6 +848,55 @@ async def test_users_list_roles_async() -> None:
         await client.users.list_roles(EXAMPLE_ID)
 
 
+def test_users_list_sessions() -> None:
+    """``users.list_sessions`` -- GET /api/v1/users/{user_id}/sessions."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/users/{EXAMPLE_ID}/sessions",
+            200,
+            [
+                {
+                    "amr": [],
+                    "authenticated_at": "example",
+                    "created_at": "example",
+                    "expires_at": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "refresh_replay_grace_accepted": 1,
+                    "refresh_replay_refused": 1,
+                    "refresh_replay_verdict": "example",
+                }
+            ],
+        )
+        client.users.list_sessions(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_users_list_sessions_async() -> None:
+    """``users.list_sessions`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/users/{EXAMPLE_ID}/sessions",
+            200,
+            [
+                {
+                    "amr": [],
+                    "authenticated_at": "example",
+                    "created_at": "example",
+                    "expires_at": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "refresh_replay_grace_accepted": 1,
+                    "refresh_replay_refused": 1,
+                    "refresh_replay_verdict": "example",
+                }
+            ],
+        )
+        await client.users.list_sessions(EXAMPLE_ID)
+
+
 def test_groups_list() -> None:
     """``groups.list`` -- GET /api/v1/groups."""
     with with_client() as (router, client):
@@ -7049,6 +7098,7 @@ EXERCISED = [
     "users.list",
     "users.list_mfa_methods",
     "users.list_roles",
+    "users.list_sessions",
     "users.reset_mfa",
     "users.unlock",
     "users.update",
@@ -7071,4 +7121,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 158
+    assert len(EXERCISED) == 159

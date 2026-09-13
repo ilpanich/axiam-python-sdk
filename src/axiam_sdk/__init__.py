@@ -63,6 +63,10 @@ from axiam_sdk._oidc import (
     uma_parse_challenge,
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
+
+# CONTRACT.md §10.4 (contract 1.44) — the optional session-revocation feed
+# poller. Off unless a caller hands one to a verifier.
+from axiam_sdk._revocation_feed import RevocationFeed, revocation_entry_for
 from axiam_sdk._webauthn import (
     WebauthnChallenge,
     WebauthnCredential,
@@ -88,6 +92,8 @@ from axiam_sdk._telemetry import (
 
 __all__ = [
     "ACCESS_TOKEN_TYPE",
+    "RevocationFeed",
+    "revocation_entry_for",
     "JWT_TOKEN_TYPE",
     # §17 decision memo, §19 telemetry hooks (D5).
     "DecisionMemo",

@@ -10,7 +10,7 @@
       "name": "Apache-2.0"
     },
     "version": "1.0.0-beta13",
-    "x-axiam-spec-digest": "sha256:a588caf033c1ff20ec29f75545daab832d4ab85ba0edf3a8fdfe6a3b229b1d22"
+    "x-axiam-spec-digest": "sha256:be3a0da45f7064b5945f5d3a903c101f18b8decaf839118cc3c0ecf1073da19d"
   },
   "paths": {
     "/.well-known/openid-configuration": {
@@ -10068,6 +10068,57 @@
         ]
       }
     },
+    "/api/v1/users/{user_id}/sessions": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "`GET /api/v1/users/{user_id}/sessions`",
+        "description": "List the sessions a user currently holds, with the T-254 refresh-replay\nmarker on each.",
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "Target user ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Cannot view another user's sessions"
+          },
+          "404": {
+            "description": "User not found"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/users/{user_id}/unlock": {
       "post": {
         "tags": [
@@ -11020,6 +11071,31 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/oauth2/revocations": {
+      "get": {
+        "tags": [
+          "oidc"
+        ],
+        "summary": "`GET /oauth2/revocations` -- sessions revoked within the last access-token\nlifetime, as unlinkable hashes (T-39, T-143).",
+        "description": "Mounted only where `AXIAM__AUTH__REVOCATION_FEED_ENABLED` is set; a\ndeployment that has not opted in does not serve this path at all.\n\nAn SDK route guard that polls this rejects a revoked session within one\npoll interval rather than within one access-token lifetime. It is a\nnarrowing of a residual window and **not** a control: a guard that cannot\nfetch the document, or that cannot interpret it, must behave exactly as it\ndoes today. See `sdks/CONTRACT.md` §10.4.",
+        "operationId": "revocations",
+        "responses": {
+          "200": {
+            "description": "Revocation feed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevocationFeedDocument"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified -- ETag matches If-None-Match"
           }
         }
       }
@@ -17329,6 +17405,40 @@
           }
         }
       },
+      "RevocationFeedDocument": {
+        "type": "object",
+        "description": "The session-revocation feed document (T-39, T-143).",
+        "required": [
+          "alg",
+          "issued_at",
+          "ttl",
+          "revoked"
+        ],
+        "properties": {
+          "alg": {
+            "type": "string",
+            "description": "The digest algorithm the entries are computed with. Always `SHA-256`.\nA client that does not recognise the value MUST treat the document as\nunusable and behave exactly as it does when the feed is unreachable —\nnever as though the list were empty, which is a guard that silently\nhonours no revocations at all."
+          },
+          "issued_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When this document was produced, as a Unix timestamp."
+          },
+          "revoked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Base64url-unpadded SHA-256 of each revoked session id, in no\nsecurity-significant order. Never a session id, a subject or a tenant."
+          },
+          "ttl": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long an entry is published for, in seconds: one access-token\nlifetime. After that every token naming the session has expired on its\nown `exp`, so the entry proves nothing and is dropped.",
+            "minimum": 0
+          }
+        }
+      },
       "RevokeRequest": {
         "type": "object",
         "description": "RFC 7009 token revocation request.\n\n`client_secret` is optional and the two RFC 7521 assertion parameters are\npresent because RFC 7009 §2.1 says this endpoint authenticates the client\n\"the same way as the token endpoint\" — and since SEC-093 it genuinely does.\nA client registered for `private_key_jwt` posts `client_assertion` here and\nno secret; one registered for `tls_client_auth` posts neither and is\nauthenticated by the certificate on the connection.",
@@ -17904,6 +18014,78 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "description": "One of a user's sessions, as an administrator sees it.",
+        "required": [
+          "id",
+          "created_at",
+          "expires_at",
+          "authenticated_at",
+          "amr",
+          "refresh_replay_verdict",
+          "refresh_replay_grace_accepted",
+          "refresh_replay_refused"
+        ],
+        "properties": {
+          "amr": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "RFC 8176 method references for that authentication."
+          },
+          "authenticated_at": {
+            "type": "string",
+            "description": "X7.2 — when the end user actually authenticated, which is not\n`created_at` on a session produced by refresh rotation."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ip_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_replay_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "T-254 — when a refresh token of this session was last presented after\nit had already been rotated. `None` if that has never happened."
+          },
+          "refresh_replay_grace_accepted": {
+            "type": "integer",
+            "format": "int32",
+            "description": "T-254 — replays accepted under the FAPI 2.0 §5.3.2.1-9 grace window.\nOnly ever non-zero for a client registered `profile: fapi2`.",
+            "minimum": 0
+          },
+          "refresh_replay_refused": {
+            "type": "integer",
+            "format": "int32",
+            "description": "T-254 — replays refused because there was no window to accept them in.\nNothing a conformant client does.",
+            "minimum": 0
+          },
+          "refresh_replay_verdict": {
+            "type": "string",
+            "description": "T-254 — the badge: `none`, `fapi_grace_retry` or `refused`.\n\nDerived from the two counters below rather than stored, so it cannot\ndisagree with them. A refusal outranks an accepted grace retry however\nthe counts compare."
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
