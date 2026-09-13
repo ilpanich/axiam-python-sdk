@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta14] - 2026-09-13
+
 ### Added
+
+- §10.4 revocation feed, §21.3.1 alias refusal, §16 T-262 tests
 
 - **CONTRACT.md §10.4 — an optional session-revocation feed poller (contract
   1.44).** `RevocationFeed`, handed to a verifier as
@@ -36,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercises that way is the failure §16.7 exists for.
 
 ### Changed
+
+- Re-vendor the final CONTRACT.md (1.44) from the axiam branch
 
 - **A malformed `mtls_endpoint_aliases` entry now raises instead of falling
   back to the top-level endpoint** (CONTRACT.md §21.3.1 vector C, contract
