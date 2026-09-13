@@ -232,6 +232,25 @@ def _call_list_roles(
     )
 
 
+def _call_list_sessions(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    user_id: str,
+) -> ManagementCall:
+    """Build the ``users.list_sessions`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    user_id = require_uuid(user_id, "user_id", "users.list_sessions")
+    return ManagementCall(
+        operation="users.list_sessions",
+        method="GET",
+        path_template="/api/v1/users/{user_id}/sessions",
+        path=f"/api/v1/users/{user_id}/sessions",
+    )
+
+
 class UsersApi:
     """The ``users`` namespace handle.
 
@@ -356,6 +375,14 @@ class UsersApi:
             _call_list_roles(self._client, self._scope, user_id),
         )
         return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    def list_sessions(self, user_id: str) -> builtins.list[models.SessionResponse]:
+        """``GET /api/v1/users/{user_id}/sessions``"""
+        raw = send_management(
+            self._client,
+            _call_list_sessions(self._client, self._scope, user_id),
+        )
+        return [models.SessionResponse.model_validate(item) for item in raw or []]
 
 
 class AsyncUsersApi:
@@ -485,3 +512,11 @@ class AsyncUsersApi:
             _call_list_roles(self._client, self._scope, user_id),
         )
         return [models.RoleAssignment.model_validate(item) for item in raw or []]
+
+    async def list_sessions(self, user_id: str) -> builtins.list[models.SessionResponse]:
+        """``GET /api/v1/users/{user_id}/sessions``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_sessions(self._client, self._scope, user_id),
+        )
+        return [models.SessionResponse.model_validate(item) for item in raw or []]

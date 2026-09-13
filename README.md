@@ -466,6 +466,52 @@ primitive §10.1 permits for integrators implementing their own policy. Its
 name states the omission: it checks **no** claims at all, and the SDK's own
 guards never call it.
 
+### The session-revocation feed (contract 1.44, CONTRACT.md §10.4, opt-in)
+
+§10.2 records the gap this narrows: local verification proves a token was issued
+and has not expired, never that the session behind it still exists. A logout or
+a role removal does not reach a token already in a caller's hands until it
+expires — up to fifteen minutes. The documented answer has been "route the
+decision through gRPC introspection instead", which is correct and costs a round
+trip **per request**.
+
+A deployment can publish `GET /oauth2/revocations`: the hashed ids of the
+sessions revoked within the last access-token lifetime. Attach a poller and a
+guard rejects a revoked session within **one poll interval** instead, for one
+cacheable fetch per interval:
+
+```python
+from axiam_sdk import JwksVerifier, RevocationFeed
+
+verifier = JwksVerifier(
+    "https://iam.example.com",
+    expected_issuer="https://iam.example.com",
+    revocation_feed=RevocationFeed("https://iam.example.com"),
+)
+```
+
+**It is not a control, and every property follows from that.** It is off unless
+you pass one. It is never fetched on the request path once warm —
+`verify_access_token` reads a cached set. And it **never fails closed**: an
+unreachable feed, a non-`200`, a body that does not parse, or an `alg` this
+build does not know all behave exactly as no feed at all — and specifically not
+as an empty list, which would assert that nothing has been revoked and is a
+guard silently honouring no revocations while appearing to honour them. Every
+§10.1 rule runs first and still decides; the feed can only ever turn an accept
+into a reject.
+
+A token with no `sid` — a client-credentials token, an RPT, a token exchange —
+is never matched against it. There is no session behind one, and hashing `jti`
+instead would match nothing while looking like it worked.
+
+The poll interval defaults to 30 seconds and is clamped to a 15-second floor;
+the cached set is bounded at `MAX_ENTRIES`, and a document larger than the bound
+is treated as unusable rather than truncated — a truncated set is a guard that
+admits some revoked sessions and reports none.
+
+`RevocationFeed` is thread-safe; share one instance across the guards that
+should poll once between them rather than once each.
+
 ### FastAPI dependency (§10) — `axiam-sdk[fastapi]`
 
 ```python
@@ -1723,6 +1769,25 @@ Three things this deliberately does **not** do:
 A client built without `client_cert=` keeps using the top-level endpoints even
 when the document publishes aliases: the alias exists for the handshake, and
 there is no handshake to make.
+
+##### A malformed alias is refused, never fallen back from (contract 1.43)
+
+An alias that is *present* and cannot carry a certificate raises `AuthError`
+rather than reverting to the top-level endpoint. Falling back looks like the
+safe answer and is the dangerous one: the caller asked to authenticate with a
+certificate, the operator published something unusable, and sending the
+certificate to the front-channel host authenticates nothing while appearing to
+work.
+
+Two defects, each a refusal on its own — **not an absolute URL**, and **a scheme
+weaker than the top-level endpoint the alias replaces**. The second compares
+like with like: an alias substitutes for exactly one endpoint, so `https` →
+`http` is a downgrade, while `http` → `http` is a development deployment and is
+accepted.
+
+A client with no `client_cert=` never reads the member at all, not even to
+validate it, so a deployment whose aliases are malformed cannot break the
+clients that never use them.
 
 ## Development
 

@@ -201,6 +201,51 @@ def uma_challenge_header(realm: str, as_uri: str, ticket: SecretStr | str) -> st
     return f'UMA realm="{realm}", as_uri="{as_uri}", ticket="{_expose_secret(ticket)}"'
 
 
+def assert_usable_mtls_alias(alias: str, replaces: str | None) -> None:
+    """Refuse an ``mtls_endpoint_aliases`` entry that cannot carry a client
+    certificate (CONTRACT.md §21.3.1 vector C, contract 1.43).
+
+    Falling back to the top-level endpoint looks like the safe answer and is
+    the dangerous one: the caller asked to authenticate with a certificate, the
+    operator published something unusable, and sending the certificate to the
+    front-channel host authenticates nothing while appearing to work.
+
+    Two defects, each a refusal on its own:
+
+    * **Not an absolute URL.** A relative alias resolves against nothing the
+      client holds, and the base that might seem obvious — the issuer's host —
+      is precisely the host the alias exists to name a different one from.
+    * **A scheme weaker than the endpoint it replaces.** An alias substitutes
+      for exactly one top-level endpoint, so that is what it is compared
+      against: ``https`` → ``http`` is a downgrade, while ``http`` → ``http``
+      is a development deployment, which AXIAM's own ``build_mtls_aliases``
+      supports and this suite's harness is.
+
+    Raises :class:`~axiam_sdk.AuthError`, not ``NetworkError``: nothing failed
+    in transport — the server published a document this client cannot use, the
+    same taxonomy as a document advertising no endpoint at all. It also matters
+    operationally, because §16.3 retries ``NetworkError`` and only
+    ``NetworkError``: a permanent, deterministic misconfiguration routed through
+    that type would be attempted three times and reported as a transient one.
+    """
+    parts = urlsplit(alias)
+    if not parts.scheme or not parts.netloc:
+        raise AuthError(
+            f"mtls_endpoint_aliases publishes {alias!r}, which is not an absolute URL. "
+            "Refusing rather than falling back to the top-level endpoint: this call "
+            "presents a client certificate, and sending it to the front-channel host "
+            "would authenticate nothing while appearing to work."
+        )
+    replaced_is_tls = replaces is not None and urlsplit(replaces).scheme == "https"
+    if replaced_is_tls and parts.scheme != "https":
+        raise AuthError(
+            f"mtls_endpoint_aliases publishes {alias!r}, whose scheme is "
+            f"{parts.scheme!r}, in place of an https endpoint. That is a downgrade, and "
+            "mutual TLS over cleartext is a contradiction; refusing rather than falling "
+            "back to the top-level endpoint."
+        )
+
+
 @dataclass(frozen=True)
 class UmaChallenger:
     """A configured ``WWW-Authenticate: UMA`` challenge emitter (§20.3, emit half).
@@ -995,7 +1040,12 @@ class _OidcMixin:
             code_verifier=request.code_verifier,
         )
 
-    def _mtls_alias(self, configuration: OidcConfiguration, name: _AliasableEndpoint) -> str | None:
+    def _mtls_alias(
+        self,
+        configuration: OidcConfiguration,
+        name: _AliasableEndpoint,
+        replaces: str | None,
+    ) -> str | None:
         """The RFC 8705 §5 alias for ``name``, or ``None`` when this call is
         not going over mutual TLS, the document publishes no aliases, or it
         publishes none for this endpoint (CONTRACT.md §21.3 rule 2).
@@ -1016,20 +1066,29 @@ class _OidcMixin:
           §12.4 rule 3 still compares a token's ``iss`` against
           ``configuration.issuer`` by exact string — including for a token
           minted at an alias endpoint.
+
+        An alias that IS present and cannot carry a certificate raises
+        (§21.3.1 vector C, contract 1.43) — see :func:`assert_usable_mtls_alias`.
         """
         if not self._session.presents_client_certificate:
+            # A client with no certificate does not read the member at all —
+            # not even to validate it. A deployment whose aliases are
+            # malformed must not break the clients that never use them.
             return None
         aliases = configuration.mtls_endpoint_aliases
         if aliases is None:
             return None
         alias: str | None = getattr(aliases, name)
+        if alias is None:
+            return None
+        assert_usable_mtls_alias(alias, replaces)
         return alias
 
     def _preferred_endpoint(
         self, configuration: OidcConfiguration, name: _AliasableEndpoint, top_level: str
     ) -> str:
         """An always-advertised endpoint, preferring its §21.3 rule 2 alias."""
-        return self._mtls_alias(configuration, name) or top_level
+        return self._mtls_alias(configuration, name, top_level) or top_level
 
     def _preferred_optional_endpoint(
         self,
@@ -1041,7 +1100,7 @@ class _OidcMixin:
         alias. ``None`` still means "this server does not support the feature"
         — the caller raises that, and never concatenates a URL onto the issuer.
         """
-        return self._mtls_alias(configuration, name) or top_level
+        return self._mtls_alias(configuration, name, top_level) or top_level
 
     def _token_endpoint_url(self, configuration: OidcConfiguration, tenant_id: str | None) -> str:
         """The token endpoint URL with the mandatory ``?tenant_id=<uuid>``

@@ -54,6 +54,7 @@ from jwt.exceptions import MissingRequiredClaimError, PyJWTError
 from jwt.types import Options
 
 from axiam_sdk._errors import AuthError
+from axiam_sdk._revocation_feed import RevocationFeed
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class JwksVerifier:
         expected_issuer: str | None = None,
         expected_audience: str | None = None,
         clock_skew_seconds: float = DEFAULT_CLOCK_SKEW_SECONDS,
+        revocation_feed: RevocationFeed | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -144,6 +146,14 @@ class JwksVerifier:
                 ``expected_issuer``; a guard fronting a user-facing resource
                 server should pass
                 :data:`RECOMMENDED_RESOURCE_SERVER_AUDIENCE`.
+            revocation_feed: CONTRACT.md §10.4 (contract 1.44) — the optional
+                session-revocation feed. **Unset by default**, and with it
+                unset this verifier behaves exactly as it did before 1.44: a
+                revoked session's access token verifies locally until it
+                expires, which is the §10.2 posture this narrows rather than
+                replaces. It is never a control — a feed that cannot be read
+                denies nothing, every §10.1 rule still decides first, and a
+                token with no ``sid`` is never matched against it.
             clock_skew_seconds: Leeway applied to BOTH ``exp`` and ``nbf``
                 (CONTRACT.md §10.1 rule 7), defaulting to the RECOMMENDED
                 :data:`DEFAULT_CLOCK_SKEW_SECONDS`. Bounded to
@@ -162,6 +172,7 @@ class JwksVerifier:
         self._expected_issuer = expected_issuer
         self._expected_audience = expected_audience
         self._clock_skew_seconds = clock_skew_seconds
+        self._revocation_feed = revocation_feed
         resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
         # The per-key LRU cache (opt-in via a separate constructor flag,
         # intentionally left at its default/disabled state here) has no
@@ -372,6 +383,18 @@ class JwksVerifier:
         if not isinstance(tenant_id, str) or tenant_id != expected_tenant_id:
             self._warn_once_if_comparand_looks_like_a_slug(tenant_id, expected_tenant_id)
             raise AuthError("token tenant_id does not match the configured tenant")
+
+        # CONTRACT.md §10.4 rules 4 and 6 (contract 1.44). Runs LAST: every
+        # §10.1 rule has already decided, and the feed can only turn an accept
+        # into a reject. A token with no `sid` names no session and is never
+        # matched — there is no fallback to `jti`, which would match nothing
+        # while looking like it worked.
+        if self._revocation_feed is not None:
+            sid = claims.get("sid")
+            if isinstance(sid, str) and sid and self._revocation_feed.is_revoked(sid):
+                raise AuthError(
+                    "the session behind this access token has been revoked (CONTRACT.md §10.4)"
+                )
 
         return claims
 

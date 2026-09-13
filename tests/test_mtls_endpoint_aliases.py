@@ -313,3 +313,77 @@ def test_the_issuer_does_not_move_with_the_endpoints(respx_mock: respx.MockRoute
     # token it obtains over mTLS.
     assert configuration.issuer == BASE_URL
     assert configuration.issuer != MTLS_BASE_URL
+
+
+# ── §21.3.1 vector C — a malformed alias is REFUSED, never fallen back from ──
+#
+# Contract 1.43 publishes three vectors every SDK pins. A and B are covered
+# above (`discovery_document_with_aliases()` is A; the "absence means no
+# separate host" and "partial object" tests are B). C is this block, and it is
+# where the obvious implementation is the wrong one.
+#
+# Falling back to the top-level endpoint looks like the safe answer and is the
+# dangerous one: the caller asked to authenticate with a certificate, the
+# operator published something that cannot carry one, and quietly presenting
+# the certificate to the front-channel host authenticates nothing while
+# appearing to work.
+
+
+def test_a_relative_alias_is_refused_rather_than_fallen_back_from(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # A relative alias resolves against nothing the client holds, and the base
+    # that might seem obvious — the issuer's host — is precisely the host the
+    # alias exists to name a different one from.
+    routes = _mount(
+        respx_mock,
+        discovery_document(mtls_endpoint_aliases={"token_endpoint": "/oauth2/token"}),
+    )
+    client = _client(mtls=True)
+
+    with pytest.raises(AuthError, match="mtls_endpoint_aliases"):
+        client.login_client_credentials(tenant_id=TENANT_ID)
+
+    # The proof that it refused rather than fell back: the conventional token
+    # endpoint was never called. A fallback would be a *successful* call here,
+    # which is exactly the outcome this vector exists to prevent.
+    assert _called(routes, f"{BASE_URL}/oauth2/token") == 0
+
+
+def test_an_alias_weaker_than_the_endpoint_it_replaces_is_refused(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # The comparison is against the top-level endpoint of the same name — not
+    # against `https`, and not against the issuer. An alias substitutes for
+    # exactly one endpoint, so that is what it is compared with; AXIAM's own
+    # `build_mtls_aliases` accepts an `http` alias for a local-development
+    # deployment whose endpoints are `http` too.
+    routes = _mount(
+        respx_mock,
+        discovery_document(
+            mtls_endpoint_aliases={"token_endpoint": "http://mtls.axiam.example.test/oauth2/token"}
+        ),
+    )
+    client = _client(mtls=True)
+
+    with pytest.raises(AuthError, match="downgrade"):
+        client.login_client_credentials(tenant_id=TENANT_ID)
+
+    assert _called(routes, f"{BASE_URL}/oauth2/token") == 0
+
+
+def test_a_malformed_alias_does_not_break_a_client_with_no_certificate(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # The non-regression that makes vector C safe to enforce. A client that
+    # presents no certificate does not read the member at all — not even to
+    # validate it — so a deployment whose aliases are malformed cannot break
+    # the clients that never use them.
+    routes = _mount(
+        respx_mock,
+        discovery_document(mtls_endpoint_aliases={"token_endpoint": "/oauth2/token"}),
+    )
+
+    _client(mtls=False).login_client_credentials(tenant_id=TENANT_ID)
+
+    assert _called(routes, f"{BASE_URL}/oauth2/token") == 1
