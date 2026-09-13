@@ -543,6 +543,43 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             mfa_required=False, mfa_setup_required=True, setup_token=SecretStr(token)
         )
 
+    def _handle_setup_register_finish_response(self, response: httpx.Response) -> LoginResult:
+        """Parse ``webauthn_setup_register_finish``'s response (CONTRACT.md
+        §24.4, §25.2 rule 2 — contract 1.45).
+
+        A ``200`` is the completed login — routed through
+        :meth:`_handle_login_response`'s own success branch, so adoption is
+        the identical call ``mfa_setup_confirm`` makes (§24.3's five rules,
+        applied verbatim per §25.2 rule 2). A ``403`` here is the tenant's
+        attestation policy refusing **this authenticator**, not a generic
+        permission problem, and §24.4 rule 1 requires the server's message
+        verbatim — it is the only way the person holding the key learns that
+        a different one would work, so it is read from the body and passed
+        through rather than folded into a fixed string. Everything else uses
+        the ordinary §2 status mapping.
+        """
+        if response.status_code == httpx.codes.OK:
+            return self._handle_login_response(response)
+        if response.status_code == httpx.codes.FORBIDDEN:
+            try:
+                wire = response.json()
+            except ValueError:
+                wire = None
+            message = wire.get("message") if isinstance(wire, dict) else None
+            raise error_from_http_status(
+                httpx.codes.FORBIDDEN,
+                message or "webauthn_setup_register_finish failed",
+                response=response,
+            )
+        # D-15: log the failure with status code only — never the request
+        # body, response body, or any token/credential value.
+        self._logger.warning(
+            "axiam_sdk: webauthn_setup_register_finish failed: status=%s", response.status_code
+        )
+        raise error_from_http_status(
+            response.status_code, "webauthn_setup_register_finish failed", response=response
+        )
+
     def _absorb_session_cookies(self) -> None:
         """Read the access/refresh tokens the server just set via
         Set-Cookie (already captured by the shared cookie jar), decode the
@@ -2049,6 +2086,67 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         # here as it does on a password login, so adoption is the same call.
         self._absorb_session_cookies()
         return result
+
+    def webauthn_setup_register_start(self, *, setup_token: SecretStr | str) -> WebauthnChallenge:
+        """``POST /api/v1/auth/webauthn/setup/register/start`` (CONTRACT.md
+        §24.1, §25.2 rule 2 — contract 1.45).
+
+        Enrols a passkey or security key as the account's **first** factor
+        during the forced enrolment ``login()`` demanded — the WebAuthn twin
+        of :meth:`mfa_setup_enroll`. Takes **no session**: the setup token
+        from ``login()``'s ``mfa_setup_required`` outcome is the only
+        credential, and it travels in the body. Unlike
+        :meth:`webauthn_register_start`, this does **not** call the
+        require-session guard and does **not** attach this client's own
+        session credential — even one already configured (§24.8).
+        """
+        self._ensure_open()
+        request = self._session._credential_free_request(
+            "POST",
+            self._WA_SETUP_REGISTER_START,
+            self._webauthn_setup_register_start_body(setup_token),
+        )
+        response = self._session._send_sync_credential_free(request)
+        return self._webauthn_challenge(response, "webauthn_setup_register_start")
+
+    def webauthn_setup_register_finish(
+        self,
+        *,
+        setup_token: SecretStr | str,
+        state_token: SecretStr | str,
+        credential_name: str,
+        response: dict[str, Any] | str,
+    ) -> LoginResult:
+        """``POST /api/v1/auth/webauthn/setup/register/finish`` (CONTRACT.md
+        §24.1, §25.2 rule 2 — contract 1.45).
+
+        Completes the login ``login()`` interrupted, exactly as
+        :meth:`mfa_setup_confirm` does for TOTP: adopts credentials on success
+        (§24.3's five rules apply verbatim, per §25.2 rule 2) and clears the
+        §17 decision memo because the subject changed. Takes no session, for
+        the same reason :meth:`webauthn_setup_register_start` does not — a
+        second credential on a call whose only credential is meant to be the
+        setup token invites a server that changes its mind about which to
+        trust.
+
+        A ``403`` here is the tenant's attestation policy refusing **this
+        authenticator** — an AAGUID that is not allow-listed, a missing FIDO
+        certification, a revoked status — and its message is surfaced
+        verbatim (§24.4 rule 1): it is the only way the person holding the
+        key learns that a different one would work.
+        """
+        self._ensure_open()
+        # §17.1 rule 9 / §24.3 rule 4: memo entries are keyed by subject, and
+        # this call changes the subject.
+        self._on_credential_change()
+        body = self._webauthn_setup_register_finish_body(
+            setup_token, state_token, credential_name, response
+        )
+        request = self._session._credential_free_request(
+            "POST", self._WA_SETUP_REGISTER_FINISH, body
+        )
+        http_response = self._session._send_sync_credential_free(request)
+        return self._handle_setup_register_finish_response(http_response)
 
     # ------------------------------------------------------------------
     # §25 Account lifecycle and MFA enrolment

@@ -699,6 +699,48 @@ def test_a_supplied_password_is_redacted_but_still_sent() -> None:
         assert sent["password"] == "hunter2hunter2"
 
 
+def test_sign_csr_returns_a_certificate_with_no_key_field_at_all() -> None:
+    """CONTRACT §27.5: ``certificates.sign_csr`` answers the plain ``Certificate``.
+
+    Not ``GeneratedCertificate`` -- there is no key to return, the caller
+    supplied the CSR and kept its own private half, and a mandatory key field
+    that is always absent is a type that lies about every value it holds.
+    This asserts the model itself carries no such field, on either client.
+    """
+    assert "private_key_pem" not in models.Certificate.model_fields
+    assert "private_key_pem" in models.GeneratedCertificate.model_fields
+
+    body = models.SignCertificateCsrRequest(
+        cert_type="User",
+        csr_pem="-----BEGIN CERTIFICATE REQUEST-----\nexample\n-----END CERTIFICATE REQUEST-----\n",
+        issuer_ca_id=EXAMPLE_ID,
+        validity_days=90,
+    )
+    response_body = {
+        "id": EXAMPLE_ID,
+        "tenant_id": TENANT_ID,
+        "issuer_ca_id": EXAMPLE_ID,
+        "cert_type": "User",
+        "key_algorithm": "Ed25519",
+        "subject": "CN=example",
+        "public_cert_pem": "-----BEGIN CERTIFICATE-----\nexample\n-----END CERTIFICATE-----\n",
+        "fingerprint": "example",
+        "status": "Active",
+        "not_before": "2026-08-26T00:00:00Z",
+        "not_after": "2026-08-26T00:00:00Z",
+        "created_at": "2026-08-26T00:00:00Z",
+        "metadata": {},
+    }
+
+    with with_client() as (router, client):
+        mount_json(router, "POST", "/api/v1/certificates/sign-csr", 201, response_body)
+        result = client.certificates.sign_csr(body)
+
+    assert isinstance(result, models.Certificate)
+    assert "private_key_pem" not in result.model_dump()
+    assert "private_key_pem" not in result.model_dump_json()
+
+
 # ---------------------------------------------------------------------------
 # §27.2 — handle rules
 # ---------------------------------------------------------------------------

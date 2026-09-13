@@ -3435,6 +3435,34 @@ class SignAuditBatchRequest(ManagementModel):
     """``entry_ids``."""
 
 
+class SignCertificateCsrRequest(ManagementModel):
+    """Body of `POST /api/v1/certificates/sign-csr`.
+
+    No `subject` and no `key_algorithm`: both are read out of the CSR, which
+    is the only place they can be stated without the row and the certificate
+    being able to disagree. No key is returned, so there is no key field
+    anywhere on this exchange.
+    """
+
+    cert_type: CertificateType
+    """``cert_type``."""
+
+    csr_pem: str
+    """PEM-encoded PKCS#10 request — a `BEGIN CERTIFICATE REQUEST` block. The
+
+    legacy OpenSSL `BEGIN NEW CERTIFICATE REQUEST` header is not accepted.
+    """
+
+    issuer_ca_id: str
+    """``issuer_ca_id``."""
+
+    metadata: Any | None = None
+    """``metadata``."""
+
+    validity_days: int
+    """Validity duration in days."""
+
+
 class SignIntermediateCsrRequest(ManagementModel):
     """Body of `POST .../tenants/{tenant_id}/signing-cas/sign-csr`.
 
@@ -4451,6 +4479,7 @@ for _model in (
     SetOrgEmailConfig,
     SetOrgSettings,
     SignAuditBatchRequest,
+    SignCertificateCsrRequest,
     SignIntermediateCsrRequest,
     SignedAuditBatch,
     SmtpConfig,

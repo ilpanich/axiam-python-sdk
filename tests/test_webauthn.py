@@ -401,6 +401,188 @@ def test_register_finish_returns_the_credential_and_adopts_nothing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# §24.1 / §25.2 rule 2 — webauthn_setup_register_start / _finish (contract 1.45)
+#
+# These take NO session: the setup token from `login()`'s `mfa_setup_required`
+# outcome is the only credential, and it travels in the body. Unlike the pair
+# above, they must not call the require-session guard and must not carry this
+# client's own session credential even when one happens to be configured.
+# ---------------------------------------------------------------------------
+
+
+SETUP_TOKEN = "setup-token-value-do-not-log"  # noqa: S105
+
+LOGIN_SUCCESS_BODY: dict[str, Any] = {
+    "user": {"id": "u1", "username": "alice", "email": "alice@example.com"},
+    "session_id": "s1",
+    "expires_in": 900,
+}
+
+
+def _login_success_response(body: dict[str, Any]) -> httpx.Response:
+    """A ``200 LoginSuccessResponse`` — tokens travel via ``Set-Cookie``, never
+    the body, exactly as ``mfa_setup_confirm``'s does."""
+    return httpx.Response(
+        200,
+        json=body,
+        headers=[
+            ("Set-Cookie", f"axiam_access={_access_token()}; Path=/; HttpOnly"),
+            ("Set-Cookie", "axiam_refresh=refresh-cookie; Path=/api/v1/auth/refresh; HttpOnly"),
+            ("Set-Cookie", "axiam_csrf=csrf-token-1; Path=/"),
+            ("X-CSRF-Token", "csrf-token-1"),
+        ],
+    )
+
+
+@respx.mock
+def test_setup_register_start_sends_only_the_setup_token() -> None:
+    route = respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    challenge = _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    assert challenge.challenge == CREATION_CHALLENGE
+    assert challenge.state_token.get_secret_value() == STATE_TOKEN
+    # No `user_id`: the account is named by the token, never by the caller.
+    assert json.loads(route.calls[0].request.content) == {"setup_token": SETUP_TOKEN}
+
+
+@respx.mock
+def test_setup_register_start_does_not_require_a_session() -> None:
+    route = respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    # No cookies seeded at all — unlike `webauthn_register_start`, this must
+    # not raise client-side.
+    _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_setup_register_finish_adopts_credentials_exactly_as_mfa_setup_confirm_does() -> None:
+    respx.post(f"{W}/setup/register/finish").mock(
+        return_value=_login_success_response(LOGIN_SUCCESS_BODY)
+    )
+    respx.post(f"{BASE_URL}/api/v1/authz/check").mock(
+        return_value=httpx.Response(200, json={"allowed": True})
+    )
+    client = _client(decision_memo_ttl_ms=60_000)
+    client.check_access(action="read", resource_id="doc:1")
+    assert len(client._decision_memo) > 0
+
+    result = client.webauthn_setup_register_finish(
+        setup_token=SETUP_TOKEN,
+        state_token=STATE_TOKEN,
+        credential_name="Alice's security key",
+        response=REGISTRATION_RESPONSE,
+    )
+    # §25.2 rule 2 / §24.3's five rules, applied verbatim: the memo is gone,
+    # the client is authenticated, and the CSRF token this very response set
+    # is captured — the same three things `mfa_setup_confirm` leaves behind.
+    assert len(client._decision_memo) == 0
+    assert result.mfa_required is False
+    assert client._session.cookie_value("axiam_access")
+    assert client._session._get_csrf_token() == "csrf-token-1"
+
+    # And it is echoed on the very next state-changing request, exactly as
+    # §24.3 rule 2 requires of a cookie-jar SDK's adoption.
+    probe = httpx.Request("POST", f"{BASE_URL}/api/v1/mfa/enroll")
+    client._session._prepare_request(probe)
+    assert probe.headers["X-CSRF-Token"] == "csrf-token-1"
+
+
+@respx.mock
+def test_setup_register_pair_sends_no_session_credential_even_when_one_is_configured() -> None:
+    start = respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    finish = respx.post(f"{W}/setup/register/finish").mock(
+        return_value=_login_success_response(LOGIN_SUCCESS_BODY)
+    )
+    # A client that already holds a full session — the unusual but real case
+    # the rule exists for, since the entire point of the setup token is to
+    # work without one at all.
+    client = _client()
+    client._session._cookies.set("axiam_access", "existing-access", domain="axiam.test")
+    client._session._cookies.set("axiam_refresh", "existing-refresh", domain="axiam.test")
+    client._session._csrf_token = "existing-csrf"  # noqa: S105
+
+    client.webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    client.webauthn_setup_register_finish(
+        setup_token=SETUP_TOKEN,
+        state_token=STATE_TOKEN,
+        credential_name="Alice's security key",
+        response=REGISTRATION_RESPONSE,
+    )
+
+    for route in (start, finish):
+        sent = route.calls[0].request
+        assert "Authorization" not in sent.headers
+        assert "Cookie" not in sent.headers
+        assert "X-CSRF-Token" not in sent.headers
+
+
+@respx.mock
+def test_setup_register_finish_403_surfaces_the_policy_message_verbatim() -> None:
+    respx.post(f"{W}/setup/register/finish").mock(
+        return_value=httpx.Response(403, json={"message": "AAGUID not allow-listed"})
+    )
+    with pytest.raises(AuthzError, match="AAGUID not allow-listed"):
+        _client().webauthn_setup_register_finish(
+            setup_token=SETUP_TOKEN,
+            state_token=STATE_TOKEN,
+            credential_name="key",
+            response=REGISTRATION_RESPONSE,
+        )
+
+
+@respx.mock
+def test_setup_register_start_401_on_an_invalid_or_wrong_purpose_token() -> None:
+    respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(401, json={"message": "invalid or expired setup token"})
+    )
+    with pytest.raises(AuthError):
+        _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+
+
+@respx.mock
+def test_setup_register_start_400_when_the_account_already_has_a_factor() -> None:
+    respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(400, json={"message": "account already has a factor"})
+    )
+    with pytest.raises(Exception):  # noqa: B017 - a validation-shaped 400, taxonomy is §2's
+        _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+
+
+@respx.mock
+def test_setup_register_start_503_is_not_retried() -> None:
+    route = respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(503, json={"message": "FIDO metadata unavailable"})
+    )
+    with pytest.raises(Exception):  # noqa: B017 - any taxonomy error; the count is the point
+        _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_setup_and_state_tokens_never_serialize() -> None:
+    respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    challenge = _client().webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    surfaces = "".join([repr(challenge), str(challenge), challenge.model_dump_json()])
+    assert SETUP_TOKEN not in surfaces
+    assert STATE_TOKEN not in surfaces
+
+
+# ---------------------------------------------------------------------------
 # §24.4 — error taxonomy
 # ---------------------------------------------------------------------------
 
@@ -678,3 +860,58 @@ async def test_async_register_finish_also_refuses_without_a_session() -> None:
             response=REGISTRATION_RESPONSE,
         )
     assert route.call_count == 0
+
+
+@respx.mock
+async def test_async_setup_register_finish_adopts_the_session_with_no_prior_one() -> None:
+    respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    respx.post(f"{W}/setup/register/finish").mock(
+        return_value=_login_success_response(LOGIN_SUCCESS_BODY)
+    )
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme")  # type: ignore[arg-type]
+
+    challenge = await client.webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    assert challenge.state_token.get_secret_value() == STATE_TOKEN
+
+    result = await client.webauthn_setup_register_finish(
+        setup_token=SETUP_TOKEN,
+        state_token=challenge.state_token,
+        credential_name="Alice's security key",
+        response=REGISTRATION_RESPONSE,
+    )
+    assert result.mfa_required is False
+    assert client._session.cookie_value("axiam_access")
+
+
+@respx.mock
+async def test_async_setup_register_pair_sends_no_session_credential_either() -> None:
+    start = respx.post(f"{W}/setup/register/start").mock(
+        return_value=httpx.Response(
+            200, json={"challenge": CREATION_CHALLENGE, "state_token": STATE_TOKEN}
+        )
+    )
+    finish = respx.post(f"{W}/setup/register/finish").mock(
+        return_value=_login_success_response(LOGIN_SUCCESS_BODY)
+    )
+    client = _async_signed_in(
+        AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme")  # type: ignore[arg-type]
+    )
+    client._session._csrf_token = "existing-csrf"  # noqa: S105
+
+    await client.webauthn_setup_register_start(setup_token=SETUP_TOKEN)
+    await client.webauthn_setup_register_finish(
+        setup_token=SETUP_TOKEN,
+        state_token=STATE_TOKEN,
+        credential_name="Alice's security key",
+        response=REGISTRATION_RESPONSE,
+    )
+
+    for route in (start, finish):
+        sent = route.calls[0].request
+        assert "Authorization" not in sent.headers
+        assert "Cookie" not in sent.headers
+        assert "X-CSRF-Token" not in sent.headers
