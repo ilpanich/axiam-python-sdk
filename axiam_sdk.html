@@ -29,6 +29,24 @@
                     <a class="variable" href="#ACCESS_TOKEN_TYPE">ACCESS_TOKEN_TYPE</a>
             </li>
             <li>
+                    <a class="class" href="#RevocationFeed">RevocationFeed</a>
+                            <ul class="memberlist">
+                        <li>
+                                <a class="function" href="#RevocationFeed.__init__">RevocationFeed</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#RevocationFeed.is_revoked">is_revoked</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#RevocationFeed.refresh">refresh</a>
+                        </li>
+                </ul>
+
+            </li>
+            <li>
+                    <a class="function" href="#revocation_entry_for">revocation_entry_for</a>
+            </li>
+            <li>
                     <a class="variable" href="#JWT_TOKEN_TYPE">JWT_TOKEN_TYPE</a>
             </li>
             <li>
@@ -1456,106 +1474,112 @@ imported from here.</p>
 </span><span id="L-63"><a href="#L-63"><span class="linenos"> 63</span></a>    <span class="n">uma_parse_challenge</span><span class="p">,</span>
 </span><span id="L-64"><a href="#L-64"><span class="linenos"> 64</span></a><span class="p">)</span>
 </span><span id="L-65"><a href="#L-65"><span class="linenos"> 65</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._oidc_state</span><span class="w"> </span><span class="kn">import</span> <span class="n">MemoryOidcStateStore</span><span class="p">,</span> <span class="n">OidcStateEntry</span><span class="p">,</span> <span class="n">OidcStateStore</span>
-</span><span id="L-66"><a href="#L-66"><span class="linenos"> 66</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._webauthn</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-</span><span id="L-67"><a href="#L-67"><span class="linenos"> 67</span></a>    <span class="n">WebauthnChallenge</span><span class="p">,</span>
-</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a>    <span class="n">WebauthnCredential</span><span class="p">,</span>
-</span><span id="L-69"><a href="#L-69"><span class="linenos"> 69</span></a>    <span class="n">WebauthnFailure</span><span class="p">,</span>
-</span><span id="L-70"><a href="#L-70"><span class="linenos"> 70</span></a>    <span class="n">WebauthnLoginResult</span><span class="p">,</span>
-</span><span id="L-71"><a href="#L-71"><span class="linenos"> 71</span></a>    <span class="n">WebauthnWorkspace</span><span class="p">,</span>
-</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a>    <span class="n">classify_webauthn_error</span><span class="p">,</span>
-</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a>    <span class="n">webauthn_error_message</span><span class="p">,</span>
-</span><span id="L-74"><a href="#L-74"><span class="linenos"> 74</span></a>    <span class="n">webauthn_request_json</span><span class="p">,</span>
-</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a><span class="p">)</span>
-</span><span id="L-76"><a href="#L-76"><span class="linenos"> 76</span></a>
-</span><span id="L-77"><a href="#L-77"><span class="linenos"> 77</span></a><span class="n">__version__</span> <span class="o">=</span> <span class="s2">"1.0.0b13"</span>
-</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>
-</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._decision_memo</span><span class="w"> </span><span class="kn">import</span> <span class="n">DecisionMemo</span>
-</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a>    <span class="n">Refresh</span><span class="p">,</span>
-</span><span id="L-82"><a href="#L-82"><span class="linenos"> 82</span></a>    <span class="n">RequestEnd</span><span class="p">,</span>
-</span><span id="L-83"><a href="#L-83"><span class="linenos"> 83</span></a>    <span class="n">RequestStart</span><span class="p">,</span>
-</span><span id="L-84"><a href="#L-84"><span class="linenos"> 84</span></a>    <span class="n">Retry</span><span class="p">,</span>
-</span><span id="L-85"><a href="#L-85"><span class="linenos"> 85</span></a>    <span class="n">TelemetryEvent</span><span class="p">,</span>
-</span><span id="L-86"><a href="#L-86"><span class="linenos"> 86</span></a>    <span class="n">TelemetryHook</span><span class="p">,</span>
-</span><span id="L-87"><a href="#L-87"><span class="linenos"> 87</span></a><span class="p">)</span>
-</span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a>
-</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
-</span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a>    <span class="s2">"ACCESS_TOKEN_TYPE"</span><span class="p">,</span>
-</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a>    <span class="s2">"JWT_TOKEN_TYPE"</span><span class="p">,</span>
-</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>    <span class="c1"># §17 decision memo, §19 telemetry hooks (D5).</span>
-</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a>    <span class="s2">"DecisionMemo"</span><span class="p">,</span>
-</span><span id="L-94"><a href="#L-94"><span class="linenos"> 94</span></a>    <span class="s2">"TelemetryEvent"</span><span class="p">,</span>
-</span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a>    <span class="s2">"TelemetryHook"</span><span class="p">,</span>
-</span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a>    <span class="s2">"RequestStart"</span><span class="p">,</span>
-</span><span id="L-97"><a href="#L-97"><span class="linenos"> 97</span></a>    <span class="s2">"RequestEnd"</span><span class="p">,</span>
-</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a>    <span class="s2">"Retry"</span><span class="p">,</span>
-</span><span id="L-99"><a href="#L-99"><span class="linenos"> 99</span></a>    <span class="s2">"Refresh"</span><span class="p">,</span>
-</span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a>    <span class="s2">"__version__"</span><span class="p">,</span>
-</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a>    <span class="s2">"AxiamClient"</span><span class="p">,</span>
-</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a>    <span class="s2">"AsyncAxiamClient"</span><span class="p">,</span>
-</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a>    <span class="s2">"LoginResult"</span><span class="p">,</span>
-</span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a>    <span class="s2">"User"</span><span class="p">,</span>
-</span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>    <span class="s2">"AccessCheck"</span><span class="p">,</span>
-</span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>    <span class="s2">"AccessResult"</span><span class="p">,</span>
-</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>    <span class="s2">"DeviceAuthorization"</span><span class="p">,</span>
-</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>    <span class="s2">"ExchangedToken"</span><span class="p">,</span>
-</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>    <span class="s2">"RequestedPermission"</span><span class="p">,</span>
-</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>    <span class="s2">"RequestingPartyToken"</span><span class="p">,</span>
-</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>    <span class="s2">"ResourceSet"</span><span class="p">,</span>
-</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>    <span class="s2">"RptPermission"</span><span class="p">,</span>
-</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>    <span class="s2">"UmaChallenge"</span><span class="p">,</span>
-</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>    <span class="s2">"UmaChallenger"</span><span class="p">,</span>
-</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>    <span class="s2">"uma_parse_challenge"</span><span class="p">,</span>
-</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>    <span class="s2">"uma_challenge_header"</span><span class="p">,</span>
-</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>    <span class="s2">"UMA_TICKET_GRANT_TYPE"</span><span class="p">,</span>
-</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>    <span class="s2">"UMA_PROTECTION_SCOPE"</span><span class="p">,</span>
-</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>    <span class="s2">"UMA_CLAIM_TOKEN_FORMAT"</span><span class="p">,</span>
-</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>    <span class="s2">"ReasonCode"</span><span class="p">,</span>
-</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>    <span class="s2">"VerifiedLogoutToken"</span><span class="p">,</span>
-</span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>    <span class="s2">"BatchCheckResult"</span><span class="p">,</span>
-</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>    <span class="s2">"UserInfo"</span><span class="p">,</span>
-</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a>    <span class="s2">"AuthError"</span><span class="p">,</span>
-</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a>    <span class="s2">"AuthzError"</span><span class="p">,</span>
-</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>    <span class="s2">"NetworkError"</span><span class="p">,</span>
-</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>    <span class="s2">"OAuthProtocolError"</span><span class="p">,</span>
-</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>    <span class="s2">"OidcConfiguration"</span><span class="p">,</span>
-</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>    <span class="s2">"MtlsEndpointAliases"</span><span class="p">,</span>
-</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>    <span class="s2">"IdTokenClaims"</span><span class="p">,</span>
-</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>    <span class="s2">"AuthorizationRequest"</span><span class="p">,</span>
-</span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>    <span class="s2">"OidcTokenSet"</span><span class="p">,</span>
-</span><span id="L-133"><a href="#L-133"><span class="linenos">133</span></a>    <span class="s2">"IntrospectionResult"</span><span class="p">,</span>
-</span><span id="L-134"><a href="#L-134"><span class="linenos">134</span></a>    <span class="s2">"SsoStartResult"</span><span class="p">,</span>
-</span><span id="L-135"><a href="#L-135"><span class="linenos">135</span></a>    <span class="s2">"SsoCompleteResult"</span><span class="p">,</span>
-</span><span id="L-136"><a href="#L-136"><span class="linenos">136</span></a>    <span class="c1"># Contract 1.38's public "Sign in with X" surface. `protocol` -- not</span>
-</span><span id="L-137"><a href="#L-137"><span class="linenos">137</span></a>    <span class="c1"># `provider_kind` -- selects which start operation to call (§12.1 note 10),</span>
-</span><span id="L-138"><a href="#L-138"><span class="linenos">138</span></a>    <span class="c1"># so the three discriminants are exported to compare against.</span>
-</span><span id="L-139"><a href="#L-139"><span class="linenos">139</span></a>    <span class="s2">"FederationProvider"</span><span class="p">,</span>
-</span><span id="L-140"><a href="#L-140"><span class="linenos">140</span></a>    <span class="s2">"FederationProviderList"</span><span class="p">,</span>
-</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a>    <span class="s2">"PROTOCOL_OIDC_CONNECT"</span><span class="p">,</span>
-</span><span id="L-142"><a href="#L-142"><span class="linenos">142</span></a>    <span class="s2">"PROTOCOL_OAUTH2"</span><span class="p">,</span>
-</span><span id="L-143"><a href="#L-143"><span class="linenos">143</span></a>    <span class="s2">"PROTOCOL_SAML"</span><span class="p">,</span>
-</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a>    <span class="s2">"HANDOFF_QUERY_PARAM"</span><span class="p">,</span>
-</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a>    <span class="s2">"HANDOFF_CODE_TTL_SECONDS"</span><span class="p">,</span>
-</span><span id="L-146"><a href="#L-146"><span class="linenos">146</span></a>    <span class="s2">"OidcStateStore"</span><span class="p">,</span>
-</span><span id="L-147"><a href="#L-147"><span class="linenos">147</span></a>    <span class="s2">"OidcStateEntry"</span><span class="p">,</span>
-</span><span id="L-148"><a href="#L-148"><span class="linenos">148</span></a>    <span class="s2">"MemoryOidcStateStore"</span><span class="p">,</span>
-</span><span id="L-149"><a href="#L-149"><span class="linenos">149</span></a>    <span class="c1"># §24 WebAuthn / passkeys. The relying-party layer is on both clients; the</span>
-</span><span id="L-150"><a href="#L-150"><span class="linenos">150</span></a>    <span class="c1"># helpers below are §24.6a's JSON bridge and §24.6b rule 5's error</span>
-</span><span id="L-151"><a href="#L-151"><span class="linenos">151</span></a>    <span class="c1"># classification, both of which work with no authenticator present.</span>
-</span><span id="L-152"><a href="#L-152"><span class="linenos">152</span></a>    <span class="s2">"WebauthnChallenge"</span><span class="p">,</span>
-</span><span id="L-153"><a href="#L-153"><span class="linenos">153</span></a>    <span class="s2">"WebauthnCredential"</span><span class="p">,</span>
-</span><span id="L-154"><a href="#L-154"><span class="linenos">154</span></a>    <span class="s2">"WebauthnFailure"</span><span class="p">,</span>
-</span><span id="L-155"><a href="#L-155"><span class="linenos">155</span></a>    <span class="s2">"WebauthnLoginResult"</span><span class="p">,</span>
-</span><span id="L-156"><a href="#L-156"><span class="linenos">156</span></a>    <span class="s2">"WebauthnWorkspace"</span><span class="p">,</span>
-</span><span id="L-157"><a href="#L-157"><span class="linenos">157</span></a>    <span class="s2">"classify_webauthn_error"</span><span class="p">,</span>
-</span><span id="L-158"><a href="#L-158"><span class="linenos">158</span></a>    <span class="s2">"webauthn_error_message"</span><span class="p">,</span>
-</span><span id="L-159"><a href="#L-159"><span class="linenos">159</span></a>    <span class="s2">"webauthn_request_json"</span><span class="p">,</span>
-</span><span id="L-160"><a href="#L-160"><span class="linenos">160</span></a>    <span class="c1"># §25 account lifecycle and MFA enrolment.</span>
-</span><span id="L-161"><a href="#L-161"><span class="linenos">161</span></a>    <span class="s2">"MfaEnrollment"</span><span class="p">,</span>
-</span><span id="L-162"><a href="#L-162"><span class="linenos">162</span></a>    <span class="s2">"PasswordResetContext"</span><span class="p">,</span>
-</span><span id="L-163"><a href="#L-163"><span class="linenos">163</span></a>    <span class="c1"># §26 pushed authorization requests (RFC 9126).</span>
-</span><span id="L-164"><a href="#L-164"><span class="linenos">164</span></a>    <span class="s2">"PushedAuthorizationRequest"</span><span class="p">,</span>
-</span><span id="L-165"><a href="#L-165"><span class="linenos">165</span></a><span class="p">]</span>
+</span><span id="L-66"><a href="#L-66"><span class="linenos"> 66</span></a>
+</span><span id="L-67"><a href="#L-67"><span class="linenos"> 67</span></a><span class="c1"># CONTRACT.md §10.4 (contract 1.44) — the optional session-revocation feed</span>
+</span><span id="L-68"><a href="#L-68"><span class="linenos"> 68</span></a><span class="c1"># poller. Off unless a caller hands one to a verifier.</span>
+</span><span id="L-69"><a href="#L-69"><span class="linenos"> 69</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._revocation_feed</span><span class="w"> </span><span class="kn">import</span> <span class="n">RevocationFeed</span><span class="p">,</span> <span class="n">revocation_entry_for</span>
+</span><span id="L-70"><a href="#L-70"><span class="linenos"> 70</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._webauthn</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="L-71"><a href="#L-71"><span class="linenos"> 71</span></a>    <span class="n">WebauthnChallenge</span><span class="p">,</span>
+</span><span id="L-72"><a href="#L-72"><span class="linenos"> 72</span></a>    <span class="n">WebauthnCredential</span><span class="p">,</span>
+</span><span id="L-73"><a href="#L-73"><span class="linenos"> 73</span></a>    <span class="n">WebauthnFailure</span><span class="p">,</span>
+</span><span id="L-74"><a href="#L-74"><span class="linenos"> 74</span></a>    <span class="n">WebauthnLoginResult</span><span class="p">,</span>
+</span><span id="L-75"><a href="#L-75"><span class="linenos"> 75</span></a>    <span class="n">WebauthnWorkspace</span><span class="p">,</span>
+</span><span id="L-76"><a href="#L-76"><span class="linenos"> 76</span></a>    <span class="n">classify_webauthn_error</span><span class="p">,</span>
+</span><span id="L-77"><a href="#L-77"><span class="linenos"> 77</span></a>    <span class="n">webauthn_error_message</span><span class="p">,</span>
+</span><span id="L-78"><a href="#L-78"><span class="linenos"> 78</span></a>    <span class="n">webauthn_request_json</span><span class="p">,</span>
+</span><span id="L-79"><a href="#L-79"><span class="linenos"> 79</span></a><span class="p">)</span>
+</span><span id="L-80"><a href="#L-80"><span class="linenos"> 80</span></a>
+</span><span id="L-81"><a href="#L-81"><span class="linenos"> 81</span></a><span class="n">__version__</span> <span class="o">=</span> <span class="s2">"1.0.0b14"</span>
+</span><span id="L-82"><a href="#L-82"><span class="linenos"> 82</span></a>
+</span><span id="L-83"><a href="#L-83"><span class="linenos"> 83</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._decision_memo</span><span class="w"> </span><span class="kn">import</span> <span class="n">DecisionMemo</span>
+</span><span id="L-84"><a href="#L-84"><span class="linenos"> 84</span></a><span class="kn">from</span><span class="w"> </span><span class="nn">axiam_sdk._telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="L-85"><a href="#L-85"><span class="linenos"> 85</span></a>    <span class="n">Refresh</span><span class="p">,</span>
+</span><span id="L-86"><a href="#L-86"><span class="linenos"> 86</span></a>    <span class="n">RequestEnd</span><span class="p">,</span>
+</span><span id="L-87"><a href="#L-87"><span class="linenos"> 87</span></a>    <span class="n">RequestStart</span><span class="p">,</span>
+</span><span id="L-88"><a href="#L-88"><span class="linenos"> 88</span></a>    <span class="n">Retry</span><span class="p">,</span>
+</span><span id="L-89"><a href="#L-89"><span class="linenos"> 89</span></a>    <span class="n">TelemetryEvent</span><span class="p">,</span>
+</span><span id="L-90"><a href="#L-90"><span class="linenos"> 90</span></a>    <span class="n">TelemetryHook</span><span class="p">,</span>
+</span><span id="L-91"><a href="#L-91"><span class="linenos"> 91</span></a><span class="p">)</span>
+</span><span id="L-92"><a href="#L-92"><span class="linenos"> 92</span></a>
+</span><span id="L-93"><a href="#L-93"><span class="linenos"> 93</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>
+</span><span id="L-94"><a href="#L-94"><span class="linenos"> 94</span></a>    <span class="s2">"ACCESS_TOKEN_TYPE"</span><span class="p">,</span>
+</span><span id="L-95"><a href="#L-95"><span class="linenos"> 95</span></a>    <span class="s2">"RevocationFeed"</span><span class="p">,</span>
+</span><span id="L-96"><a href="#L-96"><span class="linenos"> 96</span></a>    <span class="s2">"revocation_entry_for"</span><span class="p">,</span>
+</span><span id="L-97"><a href="#L-97"><span class="linenos"> 97</span></a>    <span class="s2">"JWT_TOKEN_TYPE"</span><span class="p">,</span>
+</span><span id="L-98"><a href="#L-98"><span class="linenos"> 98</span></a>    <span class="c1"># §17 decision memo, §19 telemetry hooks (D5).</span>
+</span><span id="L-99"><a href="#L-99"><span class="linenos"> 99</span></a>    <span class="s2">"DecisionMemo"</span><span class="p">,</span>
+</span><span id="L-100"><a href="#L-100"><span class="linenos">100</span></a>    <span class="s2">"TelemetryEvent"</span><span class="p">,</span>
+</span><span id="L-101"><a href="#L-101"><span class="linenos">101</span></a>    <span class="s2">"TelemetryHook"</span><span class="p">,</span>
+</span><span id="L-102"><a href="#L-102"><span class="linenos">102</span></a>    <span class="s2">"RequestStart"</span><span class="p">,</span>
+</span><span id="L-103"><a href="#L-103"><span class="linenos">103</span></a>    <span class="s2">"RequestEnd"</span><span class="p">,</span>
+</span><span id="L-104"><a href="#L-104"><span class="linenos">104</span></a>    <span class="s2">"Retry"</span><span class="p">,</span>
+</span><span id="L-105"><a href="#L-105"><span class="linenos">105</span></a>    <span class="s2">"Refresh"</span><span class="p">,</span>
+</span><span id="L-106"><a href="#L-106"><span class="linenos">106</span></a>    <span class="s2">"__version__"</span><span class="p">,</span>
+</span><span id="L-107"><a href="#L-107"><span class="linenos">107</span></a>    <span class="s2">"AxiamClient"</span><span class="p">,</span>
+</span><span id="L-108"><a href="#L-108"><span class="linenos">108</span></a>    <span class="s2">"AsyncAxiamClient"</span><span class="p">,</span>
+</span><span id="L-109"><a href="#L-109"><span class="linenos">109</span></a>    <span class="s2">"LoginResult"</span><span class="p">,</span>
+</span><span id="L-110"><a href="#L-110"><span class="linenos">110</span></a>    <span class="s2">"User"</span><span class="p">,</span>
+</span><span id="L-111"><a href="#L-111"><span class="linenos">111</span></a>    <span class="s2">"AccessCheck"</span><span class="p">,</span>
+</span><span id="L-112"><a href="#L-112"><span class="linenos">112</span></a>    <span class="s2">"AccessResult"</span><span class="p">,</span>
+</span><span id="L-113"><a href="#L-113"><span class="linenos">113</span></a>    <span class="s2">"DeviceAuthorization"</span><span class="p">,</span>
+</span><span id="L-114"><a href="#L-114"><span class="linenos">114</span></a>    <span class="s2">"ExchangedToken"</span><span class="p">,</span>
+</span><span id="L-115"><a href="#L-115"><span class="linenos">115</span></a>    <span class="s2">"RequestedPermission"</span><span class="p">,</span>
+</span><span id="L-116"><a href="#L-116"><span class="linenos">116</span></a>    <span class="s2">"RequestingPartyToken"</span><span class="p">,</span>
+</span><span id="L-117"><a href="#L-117"><span class="linenos">117</span></a>    <span class="s2">"ResourceSet"</span><span class="p">,</span>
+</span><span id="L-118"><a href="#L-118"><span class="linenos">118</span></a>    <span class="s2">"RptPermission"</span><span class="p">,</span>
+</span><span id="L-119"><a href="#L-119"><span class="linenos">119</span></a>    <span class="s2">"UmaChallenge"</span><span class="p">,</span>
+</span><span id="L-120"><a href="#L-120"><span class="linenos">120</span></a>    <span class="s2">"UmaChallenger"</span><span class="p">,</span>
+</span><span id="L-121"><a href="#L-121"><span class="linenos">121</span></a>    <span class="s2">"uma_parse_challenge"</span><span class="p">,</span>
+</span><span id="L-122"><a href="#L-122"><span class="linenos">122</span></a>    <span class="s2">"uma_challenge_header"</span><span class="p">,</span>
+</span><span id="L-123"><a href="#L-123"><span class="linenos">123</span></a>    <span class="s2">"UMA_TICKET_GRANT_TYPE"</span><span class="p">,</span>
+</span><span id="L-124"><a href="#L-124"><span class="linenos">124</span></a>    <span class="s2">"UMA_PROTECTION_SCOPE"</span><span class="p">,</span>
+</span><span id="L-125"><a href="#L-125"><span class="linenos">125</span></a>    <span class="s2">"UMA_CLAIM_TOKEN_FORMAT"</span><span class="p">,</span>
+</span><span id="L-126"><a href="#L-126"><span class="linenos">126</span></a>    <span class="s2">"ReasonCode"</span><span class="p">,</span>
+</span><span id="L-127"><a href="#L-127"><span class="linenos">127</span></a>    <span class="s2">"VerifiedLogoutToken"</span><span class="p">,</span>
+</span><span id="L-128"><a href="#L-128"><span class="linenos">128</span></a>    <span class="s2">"BatchCheckResult"</span><span class="p">,</span>
+</span><span id="L-129"><a href="#L-129"><span class="linenos">129</span></a>    <span class="s2">"UserInfo"</span><span class="p">,</span>
+</span><span id="L-130"><a href="#L-130"><span class="linenos">130</span></a>    <span class="s2">"AuthError"</span><span class="p">,</span>
+</span><span id="L-131"><a href="#L-131"><span class="linenos">131</span></a>    <span class="s2">"AuthzError"</span><span class="p">,</span>
+</span><span id="L-132"><a href="#L-132"><span class="linenos">132</span></a>    <span class="s2">"NetworkError"</span><span class="p">,</span>
+</span><span id="L-133"><a href="#L-133"><span class="linenos">133</span></a>    <span class="s2">"OAuthProtocolError"</span><span class="p">,</span>
+</span><span id="L-134"><a href="#L-134"><span class="linenos">134</span></a>    <span class="s2">"OidcConfiguration"</span><span class="p">,</span>
+</span><span id="L-135"><a href="#L-135"><span class="linenos">135</span></a>    <span class="s2">"MtlsEndpointAliases"</span><span class="p">,</span>
+</span><span id="L-136"><a href="#L-136"><span class="linenos">136</span></a>    <span class="s2">"IdTokenClaims"</span><span class="p">,</span>
+</span><span id="L-137"><a href="#L-137"><span class="linenos">137</span></a>    <span class="s2">"AuthorizationRequest"</span><span class="p">,</span>
+</span><span id="L-138"><a href="#L-138"><span class="linenos">138</span></a>    <span class="s2">"OidcTokenSet"</span><span class="p">,</span>
+</span><span id="L-139"><a href="#L-139"><span class="linenos">139</span></a>    <span class="s2">"IntrospectionResult"</span><span class="p">,</span>
+</span><span id="L-140"><a href="#L-140"><span class="linenos">140</span></a>    <span class="s2">"SsoStartResult"</span><span class="p">,</span>
+</span><span id="L-141"><a href="#L-141"><span class="linenos">141</span></a>    <span class="s2">"SsoCompleteResult"</span><span class="p">,</span>
+</span><span id="L-142"><a href="#L-142"><span class="linenos">142</span></a>    <span class="c1"># Contract 1.38's public "Sign in with X" surface. `protocol` -- not</span>
+</span><span id="L-143"><a href="#L-143"><span class="linenos">143</span></a>    <span class="c1"># `provider_kind` -- selects which start operation to call (§12.1 note 10),</span>
+</span><span id="L-144"><a href="#L-144"><span class="linenos">144</span></a>    <span class="c1"># so the three discriminants are exported to compare against.</span>
+</span><span id="L-145"><a href="#L-145"><span class="linenos">145</span></a>    <span class="s2">"FederationProvider"</span><span class="p">,</span>
+</span><span id="L-146"><a href="#L-146"><span class="linenos">146</span></a>    <span class="s2">"FederationProviderList"</span><span class="p">,</span>
+</span><span id="L-147"><a href="#L-147"><span class="linenos">147</span></a>    <span class="s2">"PROTOCOL_OIDC_CONNECT"</span><span class="p">,</span>
+</span><span id="L-148"><a href="#L-148"><span class="linenos">148</span></a>    <span class="s2">"PROTOCOL_OAUTH2"</span><span class="p">,</span>
+</span><span id="L-149"><a href="#L-149"><span class="linenos">149</span></a>    <span class="s2">"PROTOCOL_SAML"</span><span class="p">,</span>
+</span><span id="L-150"><a href="#L-150"><span class="linenos">150</span></a>    <span class="s2">"HANDOFF_QUERY_PARAM"</span><span class="p">,</span>
+</span><span id="L-151"><a href="#L-151"><span class="linenos">151</span></a>    <span class="s2">"HANDOFF_CODE_TTL_SECONDS"</span><span class="p">,</span>
+</span><span id="L-152"><a href="#L-152"><span class="linenos">152</span></a>    <span class="s2">"OidcStateStore"</span><span class="p">,</span>
+</span><span id="L-153"><a href="#L-153"><span class="linenos">153</span></a>    <span class="s2">"OidcStateEntry"</span><span class="p">,</span>
+</span><span id="L-154"><a href="#L-154"><span class="linenos">154</span></a>    <span class="s2">"MemoryOidcStateStore"</span><span class="p">,</span>
+</span><span id="L-155"><a href="#L-155"><span class="linenos">155</span></a>    <span class="c1"># §24 WebAuthn / passkeys. The relying-party layer is on both clients; the</span>
+</span><span id="L-156"><a href="#L-156"><span class="linenos">156</span></a>    <span class="c1"># helpers below are §24.6a's JSON bridge and §24.6b rule 5's error</span>
+</span><span id="L-157"><a href="#L-157"><span class="linenos">157</span></a>    <span class="c1"># classification, both of which work with no authenticator present.</span>
+</span><span id="L-158"><a href="#L-158"><span class="linenos">158</span></a>    <span class="s2">"WebauthnChallenge"</span><span class="p">,</span>
+</span><span id="L-159"><a href="#L-159"><span class="linenos">159</span></a>    <span class="s2">"WebauthnCredential"</span><span class="p">,</span>
+</span><span id="L-160"><a href="#L-160"><span class="linenos">160</span></a>    <span class="s2">"WebauthnFailure"</span><span class="p">,</span>
+</span><span id="L-161"><a href="#L-161"><span class="linenos">161</span></a>    <span class="s2">"WebauthnLoginResult"</span><span class="p">,</span>
+</span><span id="L-162"><a href="#L-162"><span class="linenos">162</span></a>    <span class="s2">"WebauthnWorkspace"</span><span class="p">,</span>
+</span><span id="L-163"><a href="#L-163"><span class="linenos">163</span></a>    <span class="s2">"classify_webauthn_error"</span><span class="p">,</span>
+</span><span id="L-164"><a href="#L-164"><span class="linenos">164</span></a>    <span class="s2">"webauthn_error_message"</span><span class="p">,</span>
+</span><span id="L-165"><a href="#L-165"><span class="linenos">165</span></a>    <span class="s2">"webauthn_request_json"</span><span class="p">,</span>
+</span><span id="L-166"><a href="#L-166"><span class="linenos">166</span></a>    <span class="c1"># §25 account lifecycle and MFA enrolment.</span>
+</span><span id="L-167"><a href="#L-167"><span class="linenos">167</span></a>    <span class="s2">"MfaEnrollment"</span><span class="p">,</span>
+</span><span id="L-168"><a href="#L-168"><span class="linenos">168</span></a>    <span class="s2">"PasswordResetContext"</span><span class="p">,</span>
+</span><span id="L-169"><a href="#L-169"><span class="linenos">169</span></a>    <span class="c1"># §26 pushed authorization requests (RFC 9126).</span>
+</span><span id="L-170"><a href="#L-170"><span class="linenos">170</span></a>    <span class="s2">"PushedAuthorizationRequest"</span><span class="p">,</span>
+</span><span id="L-171"><a href="#L-171"><span class="linenos">171</span></a><span class="p">]</span>
 </span></pre></div>
 
 
@@ -1570,6 +1594,291 @@ imported from here.</p>
     <a class="headerlink" href="#ACCESS_TOKEN_TYPE"></a>
     
     
+
+                </section>
+                <section id="RevocationFeed">
+                            <input id="RevocationFeed-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr class">
+            
+    <span class="def">class</span>
+    <span class="name">RevocationFeed</span>:
+
+                <label class="view-source-button" for="RevocationFeed-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#RevocationFeed"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="RevocationFeed-100"><a href="#RevocationFeed-100"><span class="linenos">100</span></a><span class="k">class</span><span class="w"> </span><span class="nc">RevocationFeed</span><span class="p">:</span>
+</span><span id="RevocationFeed-101"><a href="#RevocationFeed-101"><span class="linenos">101</span></a><span class="w">    </span><span class="sd">"""A poller for one deployment's revocation feed.</span>
+</span><span id="RevocationFeed-102"><a href="#RevocationFeed-102"><span class="linenos">102</span></a>
+</span><span id="RevocationFeed-103"><a href="#RevocationFeed-103"><span class="linenos">103</span></a><span class="sd">    Share one instance across the guards that should poll once between them,</span>
+</span><span id="RevocationFeed-104"><a href="#RevocationFeed-104"><span class="linenos">104</span></a><span class="sd">    rather than once each. Thread-safe.</span>
+</span><span id="RevocationFeed-105"><a href="#RevocationFeed-105"><span class="linenos">105</span></a><span class="sd">    """</span>
+</span><span id="RevocationFeed-106"><a href="#RevocationFeed-106"><span class="linenos">106</span></a>
+</span><span id="RevocationFeed-107"><a href="#RevocationFeed-107"><span class="linenos">107</span></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+</span><span id="RevocationFeed-108"><a href="#RevocationFeed-108"><span class="linenos">108</span></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="RevocationFeed-109"><a href="#RevocationFeed-109"><span class="linenos">109</span></a>        <span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="RevocationFeed-110"><a href="#RevocationFeed-110"><span class="linenos">110</span></a>        <span class="o">*</span><span class="p">,</span>
+</span><span id="RevocationFeed-111"><a href="#RevocationFeed-111"><span class="linenos">111</span></a>        <span class="n">poll_interval_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">DEFAULT_POLL_INTERVAL_SECONDS</span><span class="p">,</span>
+</span><span id="RevocationFeed-112"><a href="#RevocationFeed-112"><span class="linenos">112</span></a>        <span class="n">client</span><span class="p">:</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="RevocationFeed-113"><a href="#RevocationFeed-113"><span class="linenos">113</span></a>        <span class="n">now</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">,</span>
+</span><span id="RevocationFeed-114"><a href="#RevocationFeed-114"><span class="linenos">114</span></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-115"><a href="#RevocationFeed-115"><span class="linenos">115</span></a><span class="w">        </span><span class="sd">"""Build a poller against ``{base_url}/oauth2/revocations``.</span>
+</span><span id="RevocationFeed-116"><a href="#RevocationFeed-116"><span class="linenos">116</span></a>
+</span><span id="RevocationFeed-117"><a href="#RevocationFeed-117"><span class="linenos">117</span></a><span class="sd">        Args:</span>
+</span><span id="RevocationFeed-118"><a href="#RevocationFeed-118"><span class="linenos">118</span></a><span class="sd">            base_url: The AXIAM server's base URL;</span>
+</span><span id="RevocationFeed-119"><a href="#RevocationFeed-119"><span class="linenos">119</span></a><span class="sd">                :data:`REVOCATION_FEED_PATH` is appended after stripping any</span>
+</span><span id="RevocationFeed-120"><a href="#RevocationFeed-120"><span class="linenos">120</span></a><span class="sd">                trailing slash.</span>
+</span><span id="RevocationFeed-121"><a href="#RevocationFeed-121"><span class="linenos">121</span></a><span class="sd">            poll_interval_seconds: How often a guard's first call after this</span>
+</span><span id="RevocationFeed-122"><a href="#RevocationFeed-122"><span class="linenos">122</span></a><span class="sd">                many seconds refetches the document. Raised to</span>
+</span><span id="RevocationFeed-123"><a href="#RevocationFeed-123"><span class="linenos">123</span></a><span class="sd">                :data:`MIN_POLL_INTERVAL_SECONDS` if lower — the server caches</span>
+</span><span id="RevocationFeed-124"><a href="#RevocationFeed-124"><span class="linenos">124</span></a><span class="sd">                the feed for that long, so polling faster costs requests and</span>
+</span><span id="RevocationFeed-125"><a href="#RevocationFeed-125"><span class="linenos">125</span></a><span class="sd">                buys no freshness.</span>
+</span><span id="RevocationFeed-126"><a href="#RevocationFeed-126"><span class="linenos">126</span></a><span class="sd">            client: An ``httpx.Client`` to fetch through, for callers that</span>
+</span><span id="RevocationFeed-127"><a href="#RevocationFeed-127"><span class="linenos">127</span></a><span class="sd">                pin a transport, a proxy or a CA bundle. A per-call client</span>
+</span><span id="RevocationFeed-128"><a href="#RevocationFeed-128"><span class="linenos">128</span></a><span class="sd">                with a bounded timeout is used when omitted.</span>
+</span><span id="RevocationFeed-129"><a href="#RevocationFeed-129"><span class="linenos">129</span></a><span class="sd">            now: The monotonic clock, injected so tests can pin staleness</span>
+</span><span id="RevocationFeed-130"><a href="#RevocationFeed-130"><span class="linenos">130</span></a><span class="sd">                without sleeping.</span>
+</span><span id="RevocationFeed-131"><a href="#RevocationFeed-131"><span class="linenos">131</span></a><span class="sd">        """</span>
+</span><span id="RevocationFeed-132"><a href="#RevocationFeed-132"><span class="linenos">132</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_feed_url</span> <span class="o">=</span> <span class="n">base_url</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">"/"</span><span class="p">)</span> <span class="o">+</span> <span class="n">REVOCATION_FEED_PATH</span>
+</span><span id="RevocationFeed-133"><a href="#RevocationFeed-133"><span class="linenos">133</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_poll_interval</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">poll_interval_seconds</span><span class="p">,</span> <span class="n">MIN_POLL_INTERVAL_SECONDS</span><span class="p">)</span>
+</span><span id="RevocationFeed-134"><a href="#RevocationFeed-134"><span class="linenos">134</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+</span><span id="RevocationFeed-135"><a href="#RevocationFeed-135"><span class="linenos">135</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_now</span> <span class="o">=</span> <span class="n">now</span>
+</span><span id="RevocationFeed-136"><a href="#RevocationFeed-136"><span class="linenos">136</span></a>        <span class="c1"># ``None`` means "never successfully fetched", which is NOT the same as</span>
+</span><span id="RevocationFeed-137"><a href="#RevocationFeed-137"><span class="linenos">137</span></a>        <span class="c1"># an empty set — and is why this is not a bare ``set``.</span>
+</span><span id="RevocationFeed-138"><a href="#RevocationFeed-138"><span class="linenos">138</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-139"><a href="#RevocationFeed-139"><span class="linenos">139</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_last_attempt</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-140"><a href="#RevocationFeed-140"><span class="linenos">140</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+</span><span id="RevocationFeed-141"><a href="#RevocationFeed-141"><span class="linenos">141</span></a>
+</span><span id="RevocationFeed-142"><a href="#RevocationFeed-142"><span class="linenos">142</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">is_revoked</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sid</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+</span><span id="RevocationFeed-143"><a href="#RevocationFeed-143"><span class="linenos">143</span></a><span class="w">        </span><span class="sd">"""Has this session been revoked, as far as this poller knows?</span>
+</span><span id="RevocationFeed-144"><a href="#RevocationFeed-144"><span class="linenos">144</span></a>
+</span><span id="RevocationFeed-145"><a href="#RevocationFeed-145"><span class="linenos">145</span></a><span class="sd">        ``False`` whenever the answer is not a confident yes — a feed never</span>
+</span><span id="RevocationFeed-146"><a href="#RevocationFeed-146"><span class="linenos">146</span></a><span class="sd">        fetched, unreachable, malformed, or simply not listing this session.</span>
+</span><span id="RevocationFeed-147"><a href="#RevocationFeed-147"><span class="linenos">147</span></a><span class="sd">        The caller admits the request in all of those cases, which is §10.4</span>
+</span><span id="RevocationFeed-148"><a href="#RevocationFeed-148"><span class="linenos">148</span></a><span class="sd">        rule 3 and is the whole reason the feature is safe to turn on.</span>
+</span><span id="RevocationFeed-149"><a href="#RevocationFeed-149"><span class="linenos">149</span></a><span class="sd">        """</span>
+</span><span id="RevocationFeed-150"><a href="#RevocationFeed-150"><span class="linenos">150</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_refresh_if_stale</span><span class="p">()</span>
+</span><span id="RevocationFeed-151"><a href="#RevocationFeed-151"><span class="linenos">151</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">:</span>
+</span><span id="RevocationFeed-152"><a href="#RevocationFeed-152"><span class="linenos">152</span></a>            <span class="n">entries</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span>
+</span><span id="RevocationFeed-153"><a href="#RevocationFeed-153"><span class="linenos">153</span></a>        <span class="k">return</span> <span class="n">entries</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">revocation_entry_for</span><span class="p">(</span><span class="n">sid</span><span class="p">)</span> <span class="ow">in</span> <span class="n">entries</span>
+</span><span id="RevocationFeed-154"><a href="#RevocationFeed-154"><span class="linenos">154</span></a>
+</span><span id="RevocationFeed-155"><a href="#RevocationFeed-155"><span class="linenos">155</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">refresh</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-156"><a href="#RevocationFeed-156"><span class="linenos">156</span></a><span class="w">        </span><span class="sd">"""Fetch now, whatever the interval says. For tests, and for warming."""</span>
+</span><span id="RevocationFeed-157"><a href="#RevocationFeed-157"><span class="linenos">157</span></a>        <span class="n">fetched</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_once</span><span class="p">()</span>
+</span><span id="RevocationFeed-158"><a href="#RevocationFeed-158"><span class="linenos">158</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">:</span>
+</span><span id="RevocationFeed-159"><a href="#RevocationFeed-159"><span class="linenos">159</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_last_attempt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_now</span><span class="p">()</span>
+</span><span id="RevocationFeed-160"><a href="#RevocationFeed-160"><span class="linenos">160</span></a>            <span class="k">if</span> <span class="n">fetched</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-161"><a href="#RevocationFeed-161"><span class="linenos">161</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span> <span class="o">=</span> <span class="n">fetched</span>
+</span><span id="RevocationFeed-162"><a href="#RevocationFeed-162"><span class="linenos">162</span></a>            <span class="c1"># On failure the previous set is deliberately left in place: a blip</span>
+</span><span id="RevocationFeed-163"><a href="#RevocationFeed-163"><span class="linenos">163</span></a>            <span class="c1"># must not un-revoke a session the guard already knows about.</span>
+</span><span id="RevocationFeed-164"><a href="#RevocationFeed-164"><span class="linenos">164</span></a>
+</span><span id="RevocationFeed-165"><a href="#RevocationFeed-165"><span class="linenos">165</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">_refresh_if_stale</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-166"><a href="#RevocationFeed-166"><span class="linenos">166</span></a><span class="w">        </span><span class="sd">"""Refetch if the poll interval has elapsed since the last *attempt*.</span>
+</span><span id="RevocationFeed-167"><a href="#RevocationFeed-167"><span class="linenos">167</span></a>
+</span><span id="RevocationFeed-168"><a href="#RevocationFeed-168"><span class="linenos">168</span></a><span class="sd">        Attempt, not success: a feed that is down must not be retried on every</span>
+</span><span id="RevocationFeed-169"><a href="#RevocationFeed-169"><span class="linenos">169</span></a><span class="sd">        request, which would put the request path back on the network — the</span>
+</span><span id="RevocationFeed-170"><a href="#RevocationFeed-170"><span class="linenos">170</span></a><span class="sd">        cost §10.4 exists to avoid.</span>
+</span><span id="RevocationFeed-171"><a href="#RevocationFeed-171"><span class="linenos">171</span></a><span class="sd">        """</span>
+</span><span id="RevocationFeed-172"><a href="#RevocationFeed-172"><span class="linenos">172</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">:</span>
+</span><span id="RevocationFeed-173"><a href="#RevocationFeed-173"><span class="linenos">173</span></a>            <span class="n">last</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_attempt</span>
+</span><span id="RevocationFeed-174"><a href="#RevocationFeed-174"><span class="linenos">174</span></a>            <span class="n">due</span> <span class="o">=</span> <span class="n">last</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_now</span><span class="p">()</span> <span class="o">-</span> <span class="n">last</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_poll_interval</span>
+</span><span id="RevocationFeed-175"><a href="#RevocationFeed-175"><span class="linenos">175</span></a>        <span class="k">if</span> <span class="n">due</span><span class="p">:</span>
+</span><span id="RevocationFeed-176"><a href="#RevocationFeed-176"><span class="linenos">176</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">refresh</span><span class="p">()</span>
+</span><span id="RevocationFeed-177"><a href="#RevocationFeed-177"><span class="linenos">177</span></a>
+</span><span id="RevocationFeed-178"><a href="#RevocationFeed-178"><span class="linenos">178</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">_fetch_once</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-179"><a href="#RevocationFeed-179"><span class="linenos">179</span></a><span class="w">        </span><span class="sd">"""One fetch. ``None`` for every kind of failure, which the caller</span>
+</span><span id="RevocationFeed-180"><a href="#RevocationFeed-180"><span class="linenos">180</span></a><span class="sd">        treats identically — see the module docstring on why "unusable" must</span>
+</span><span id="RevocationFeed-181"><a href="#RevocationFeed-181"><span class="linenos">181</span></a><span class="sd">        not collapse into "empty"."""</span>
+</span><span id="RevocationFeed-182"><a href="#RevocationFeed-182"><span class="linenos">182</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="RevocationFeed-183"><a href="#RevocationFeed-183"><span class="linenos">183</span></a>            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed-184"><a href="#RevocationFeed-184"><span class="linenos">184</span></a>                <span class="n">response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_feed_url</span><span class="p">)</span>
+</span><span id="RevocationFeed-185"><a href="#RevocationFeed-185"><span class="linenos">185</span></a>            <span class="k">else</span><span class="p">:</span>
+</span><span id="RevocationFeed-186"><a href="#RevocationFeed-186"><span class="linenos">186</span></a>                <span class="n">response</span> <span class="o">=</span> <span class="n">httpx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_feed_url</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+</span><span id="RevocationFeed-187"><a href="#RevocationFeed-187"><span class="linenos">187</span></a>            <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">status_code</span> <span class="o">!=</span> <span class="mi">200</span><span class="p">:</span>
+</span><span id="RevocationFeed-188"><a href="#RevocationFeed-188"><span class="linenos">188</span></a>                <span class="k">return</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-189"><a href="#RevocationFeed-189"><span class="linenos">189</span></a>            <span class="n">document</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">json</span><span class="p">()</span>
+</span><span id="RevocationFeed-190"><a href="#RevocationFeed-190"><span class="linenos">190</span></a>        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+</span><span id="RevocationFeed-191"><a href="#RevocationFeed-191"><span class="linenos">191</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-192"><a href="#RevocationFeed-192"><span class="linenos">192</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">document</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+</span><span id="RevocationFeed-193"><a href="#RevocationFeed-193"><span class="linenos">193</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-194"><a href="#RevocationFeed-194"><span class="linenos">194</span></a>        <span class="k">if</span> <span class="n">document</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"alg"</span><span class="p">)</span> <span class="o">!=</span> <span class="n">_SUPPORTED_ALG</span><span class="p">:</span>
+</span><span id="RevocationFeed-195"><a href="#RevocationFeed-195"><span class="linenos">195</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-196"><a href="#RevocationFeed-196"><span class="linenos">196</span></a>        <span class="n">revoked</span> <span class="o">=</span> <span class="n">document</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"revoked"</span><span class="p">)</span>
+</span><span id="RevocationFeed-197"><a href="#RevocationFeed-197"><span class="linenos">197</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">revoked</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">revoked</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">MAX_ENTRIES</span><span class="p">:</span>
+</span><span id="RevocationFeed-198"><a href="#RevocationFeed-198"><span class="linenos">198</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="RevocationFeed-199"><a href="#RevocationFeed-199"><span class="linenos">199</span></a>        <span class="k">return</span> <span class="p">{</span><span class="n">entry</span> <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">revoked</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">entry</span><span class="p">,</span> <span class="nb">str</span><span class="p">)}</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>A poller for one deployment's revocation feed.</p>
+
+<p>Share one instance across the guards that should poll once between them,
+rather than once each. Thread-safe.</p>
+</div>
+
+
+                            <div id="RevocationFeed.__init__" class="classattr">
+                                        <input id="RevocationFeed.__init__-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+            
+        <span class="name">RevocationFeed</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">poll_interval_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>,</span><span class="param">	<span class="n">client</span><span class="p">:</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">now</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="o">&lt;</span><span class="n">built</span><span class="o">-</span><span class="ow">in</span> <span class="n">function</span> <span class="n">monotonic</span><span class="o">&gt;</span></span>)</span>
+
+                <label class="view-source-button" for="RevocationFeed.__init__-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#RevocationFeed.__init__"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="RevocationFeed.__init__-107"><a href="#RevocationFeed.__init__-107"><span class="linenos">107</span></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+</span><span id="RevocationFeed.__init__-108"><a href="#RevocationFeed.__init__-108"><span class="linenos">108</span></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-109"><a href="#RevocationFeed.__init__-109"><span class="linenos">109</span></a>        <span class="n">base_url</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-110"><a href="#RevocationFeed.__init__-110"><span class="linenos">110</span></a>        <span class="o">*</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-111"><a href="#RevocationFeed.__init__-111"><span class="linenos">111</span></a>        <span class="n">poll_interval_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">DEFAULT_POLL_INTERVAL_SECONDS</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-112"><a href="#RevocationFeed.__init__-112"><span class="linenos">112</span></a>        <span class="n">client</span><span class="p">:</span> <span class="n">httpx</span><span class="o">.</span><span class="n">Client</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-113"><a href="#RevocationFeed.__init__-113"><span class="linenos">113</span></a>        <span class="n">now</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">,</span>
+</span><span id="RevocationFeed.__init__-114"><a href="#RevocationFeed.__init__-114"><span class="linenos">114</span></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed.__init__-115"><a href="#RevocationFeed.__init__-115"><span class="linenos">115</span></a><span class="w">        </span><span class="sd">"""Build a poller against ``{base_url}/oauth2/revocations``.</span>
+</span><span id="RevocationFeed.__init__-116"><a href="#RevocationFeed.__init__-116"><span class="linenos">116</span></a>
+</span><span id="RevocationFeed.__init__-117"><a href="#RevocationFeed.__init__-117"><span class="linenos">117</span></a><span class="sd">        Args:</span>
+</span><span id="RevocationFeed.__init__-118"><a href="#RevocationFeed.__init__-118"><span class="linenos">118</span></a><span class="sd">            base_url: The AXIAM server's base URL;</span>
+</span><span id="RevocationFeed.__init__-119"><a href="#RevocationFeed.__init__-119"><span class="linenos">119</span></a><span class="sd">                :data:`REVOCATION_FEED_PATH` is appended after stripping any</span>
+</span><span id="RevocationFeed.__init__-120"><a href="#RevocationFeed.__init__-120"><span class="linenos">120</span></a><span class="sd">                trailing slash.</span>
+</span><span id="RevocationFeed.__init__-121"><a href="#RevocationFeed.__init__-121"><span class="linenos">121</span></a><span class="sd">            poll_interval_seconds: How often a guard's first call after this</span>
+</span><span id="RevocationFeed.__init__-122"><a href="#RevocationFeed.__init__-122"><span class="linenos">122</span></a><span class="sd">                many seconds refetches the document. Raised to</span>
+</span><span id="RevocationFeed.__init__-123"><a href="#RevocationFeed.__init__-123"><span class="linenos">123</span></a><span class="sd">                :data:`MIN_POLL_INTERVAL_SECONDS` if lower — the server caches</span>
+</span><span id="RevocationFeed.__init__-124"><a href="#RevocationFeed.__init__-124"><span class="linenos">124</span></a><span class="sd">                the feed for that long, so polling faster costs requests and</span>
+</span><span id="RevocationFeed.__init__-125"><a href="#RevocationFeed.__init__-125"><span class="linenos">125</span></a><span class="sd">                buys no freshness.</span>
+</span><span id="RevocationFeed.__init__-126"><a href="#RevocationFeed.__init__-126"><span class="linenos">126</span></a><span class="sd">            client: An ``httpx.Client`` to fetch through, for callers that</span>
+</span><span id="RevocationFeed.__init__-127"><a href="#RevocationFeed.__init__-127"><span class="linenos">127</span></a><span class="sd">                pin a transport, a proxy or a CA bundle. A per-call client</span>
+</span><span id="RevocationFeed.__init__-128"><a href="#RevocationFeed.__init__-128"><span class="linenos">128</span></a><span class="sd">                with a bounded timeout is used when omitted.</span>
+</span><span id="RevocationFeed.__init__-129"><a href="#RevocationFeed.__init__-129"><span class="linenos">129</span></a><span class="sd">            now: The monotonic clock, injected so tests can pin staleness</span>
+</span><span id="RevocationFeed.__init__-130"><a href="#RevocationFeed.__init__-130"><span class="linenos">130</span></a><span class="sd">                without sleeping.</span>
+</span><span id="RevocationFeed.__init__-131"><a href="#RevocationFeed.__init__-131"><span class="linenos">131</span></a><span class="sd">        """</span>
+</span><span id="RevocationFeed.__init__-132"><a href="#RevocationFeed.__init__-132"><span class="linenos">132</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_feed_url</span> <span class="o">=</span> <span class="n">base_url</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">"/"</span><span class="p">)</span> <span class="o">+</span> <span class="n">REVOCATION_FEED_PATH</span>
+</span><span id="RevocationFeed.__init__-133"><a href="#RevocationFeed.__init__-133"><span class="linenos">133</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_poll_interval</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">poll_interval_seconds</span><span class="p">,</span> <span class="n">MIN_POLL_INTERVAL_SECONDS</span><span class="p">)</span>
+</span><span id="RevocationFeed.__init__-134"><a href="#RevocationFeed.__init__-134"><span class="linenos">134</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+</span><span id="RevocationFeed.__init__-135"><a href="#RevocationFeed.__init__-135"><span class="linenos">135</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_now</span> <span class="o">=</span> <span class="n">now</span>
+</span><span id="RevocationFeed.__init__-136"><a href="#RevocationFeed.__init__-136"><span class="linenos">136</span></a>        <span class="c1"># ``None`` means "never successfully fetched", which is NOT the same as</span>
+</span><span id="RevocationFeed.__init__-137"><a href="#RevocationFeed.__init__-137"><span class="linenos">137</span></a>        <span class="c1"># an empty set — and is why this is not a bare ``set``.</span>
+</span><span id="RevocationFeed.__init__-138"><a href="#RevocationFeed.__init__-138"><span class="linenos">138</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="RevocationFeed.__init__-139"><a href="#RevocationFeed.__init__-139"><span class="linenos">139</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_last_attempt</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="RevocationFeed.__init__-140"><a href="#RevocationFeed.__init__-140"><span class="linenos">140</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>Build a poller against <code>{base_url}/oauth2/revocations</code>.</p>
+
+<p>Args:
+    base_url: The AXIAM server's base URL;
+        <code>REVOCATION_FEED_PATH</code> is appended after stripping any
+        trailing slash.
+    poll_interval_seconds: How often a guard's first call after this
+        many seconds refetches the document. Raised to
+        <code>MIN_POLL_INTERVAL_SECONDS</code> if lower — the server caches
+        the feed for that long, so polling faster costs requests and
+        buys no freshness.
+    client: An <code>httpx.Client</code> to fetch through, for callers that
+        pin a transport, a proxy or a CA bundle. A per-call client
+        with a bounded timeout is used when omitted.
+    now: The monotonic clock, injected so tests can pin staleness
+        without sleeping.</p>
+</div>
+
+
+                            </div>
+                            <div id="RevocationFeed.is_revoked" class="classattr">
+                                        <input id="RevocationFeed.is_revoked-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">is_revoked</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">sid</span><span class="p">:</span> <span class="nb">str</span></span><span class="return-annotation">) -> <span class="nb">bool</span>:</span></span>
+
+                <label class="view-source-button" for="RevocationFeed.is_revoked-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#RevocationFeed.is_revoked"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="RevocationFeed.is_revoked-142"><a href="#RevocationFeed.is_revoked-142"><span class="linenos">142</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">is_revoked</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sid</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+</span><span id="RevocationFeed.is_revoked-143"><a href="#RevocationFeed.is_revoked-143"><span class="linenos">143</span></a><span class="w">        </span><span class="sd">"""Has this session been revoked, as far as this poller knows?</span>
+</span><span id="RevocationFeed.is_revoked-144"><a href="#RevocationFeed.is_revoked-144"><span class="linenos">144</span></a>
+</span><span id="RevocationFeed.is_revoked-145"><a href="#RevocationFeed.is_revoked-145"><span class="linenos">145</span></a><span class="sd">        ``False`` whenever the answer is not a confident yes — a feed never</span>
+</span><span id="RevocationFeed.is_revoked-146"><a href="#RevocationFeed.is_revoked-146"><span class="linenos">146</span></a><span class="sd">        fetched, unreachable, malformed, or simply not listing this session.</span>
+</span><span id="RevocationFeed.is_revoked-147"><a href="#RevocationFeed.is_revoked-147"><span class="linenos">147</span></a><span class="sd">        The caller admits the request in all of those cases, which is §10.4</span>
+</span><span id="RevocationFeed.is_revoked-148"><a href="#RevocationFeed.is_revoked-148"><span class="linenos">148</span></a><span class="sd">        rule 3 and is the whole reason the feature is safe to turn on.</span>
+</span><span id="RevocationFeed.is_revoked-149"><a href="#RevocationFeed.is_revoked-149"><span class="linenos">149</span></a><span class="sd">        """</span>
+</span><span id="RevocationFeed.is_revoked-150"><a href="#RevocationFeed.is_revoked-150"><span class="linenos">150</span></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_refresh_if_stale</span><span class="p">()</span>
+</span><span id="RevocationFeed.is_revoked-151"><a href="#RevocationFeed.is_revoked-151"><span class="linenos">151</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">:</span>
+</span><span id="RevocationFeed.is_revoked-152"><a href="#RevocationFeed.is_revoked-152"><span class="linenos">152</span></a>            <span class="n">entries</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span>
+</span><span id="RevocationFeed.is_revoked-153"><a href="#RevocationFeed.is_revoked-153"><span class="linenos">153</span></a>        <span class="k">return</span> <span class="n">entries</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">revocation_entry_for</span><span class="p">(</span><span class="n">sid</span><span class="p">)</span> <span class="ow">in</span> <span class="n">entries</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>Has this session been revoked, as far as this poller knows?</p>
+
+<p><code>False</code> whenever the answer is not a confident yes — a feed never
+fetched, unreachable, malformed, or simply not listing this session.
+The caller admits the request in all of those cases, which is §10.4
+rule 3 and is the whole reason the feature is safe to turn on.</p>
+</div>
+
+
+                            </div>
+                            <div id="RevocationFeed.refresh" class="classattr">
+                                        <input id="RevocationFeed.refresh-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">refresh</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span></span><span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+
+                <label class="view-source-button" for="RevocationFeed.refresh-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#RevocationFeed.refresh"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="RevocationFeed.refresh-155"><a href="#RevocationFeed.refresh-155"><span class="linenos">155</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">refresh</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed.refresh-156"><a href="#RevocationFeed.refresh-156"><span class="linenos">156</span></a><span class="w">        </span><span class="sd">"""Fetch now, whatever the interval says. For tests, and for warming."""</span>
+</span><span id="RevocationFeed.refresh-157"><a href="#RevocationFeed.refresh-157"><span class="linenos">157</span></a>        <span class="n">fetched</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_once</span><span class="p">()</span>
+</span><span id="RevocationFeed.refresh-158"><a href="#RevocationFeed.refresh-158"><span class="linenos">158</span></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">:</span>
+</span><span id="RevocationFeed.refresh-159"><a href="#RevocationFeed.refresh-159"><span class="linenos">159</span></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_last_attempt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_now</span><span class="p">()</span>
+</span><span id="RevocationFeed.refresh-160"><a href="#RevocationFeed.refresh-160"><span class="linenos">160</span></a>            <span class="k">if</span> <span class="n">fetched</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="RevocationFeed.refresh-161"><a href="#RevocationFeed.refresh-161"><span class="linenos">161</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span> <span class="o">=</span> <span class="n">fetched</span>
+</span><span id="RevocationFeed.refresh-162"><a href="#RevocationFeed.refresh-162"><span class="linenos">162</span></a>            <span class="c1"># On failure the previous set is deliberately left in place: a blip</span>
+</span><span id="RevocationFeed.refresh-163"><a href="#RevocationFeed.refresh-163"><span class="linenos">163</span></a>            <span class="c1"># must not un-revoke a session the guard already knows about.</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>Fetch now, whatever the interval says. For tests, and for warming.</p>
+</div>
+
+
+                            </div>
+                </section>
+                <section id="revocation_entry_for">
+                            <input id="revocation_entry_for-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">revocation_entry_for</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">sid</span><span class="p">:</span> <span class="nb">str</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
+
+                <label class="view-source-button" for="revocation_entry_for-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#revocation_entry_for"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="revocation_entry_for-89"><a href="#revocation_entry_for-89"><span class="linenos">89</span></a><span class="k">def</span><span class="w"> </span><span class="nf">revocation_entry_for</span><span class="p">(</span><span class="n">sid</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+</span><span id="revocation_entry_for-90"><a href="#revocation_entry_for-90"><span class="linenos">90</span></a><span class="w">    </span><span class="sd">"""The feed entry for a ``sid``, as the server computes it.</span>
+</span><span id="revocation_entry_for-91"><a href="#revocation_entry_for-91"><span class="linenos">91</span></a>
+</span><span id="revocation_entry_for-92"><a href="#revocation_entry_for-92"><span class="linenos">92</span></a><span class="sd">    Base64url without padding over the claim's **exact string** — never a</span>
+</span><span id="revocation_entry_for-93"><a href="#revocation_entry_for-93"><span class="linenos">93</span></a><span class="sd">    parsed and re-rendered UUID, or the answer depends on this SDK's parser</span>
+</span><span id="revocation_entry_for-94"><a href="#revocation_entry_for-94"><span class="linenos">94</span></a><span class="sd">    rather than on the feed.</span>
+</span><span id="revocation_entry_for-95"><a href="#revocation_entry_for-95"><span class="linenos">95</span></a><span class="sd">    """</span>
+</span><span id="revocation_entry_for-96"><a href="#revocation_entry_for-96"><span class="linenos">96</span></a>    <span class="n">digest</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="n">sid</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">"utf-8"</span><span class="p">))</span><span class="o">.</span><span class="n">digest</span><span class="p">()</span>
+</span><span id="revocation_entry_for-97"><a href="#revocation_entry_for-97"><span class="linenos">97</span></a>    <span class="k">return</span> <span class="n">base64</span><span class="o">.</span><span class="n">urlsafe_b64encode</span><span class="p">(</span><span class="n">digest</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">"ascii"</span><span class="p">)</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">"="</span><span class="p">)</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>The feed entry for a <code>sid</code>, as the server computes it.</p>
+
+<p>Base64url without padding over the claim's <strong>exact string</strong> — never a
+parsed and re-rendered UUID, or the answer depends on this SDK's parser
+rather than on the feed.</p>
+</div>
+
 
                 </section>
                 <section id="JWT_TOKEN_TYPE">
@@ -2342,7 +2651,7 @@ failing. That silence is the standing objection to automatic retry.</p>
                 <section id="__version__">
                     <div class="attr variable">
             <span class="name">__version__</span>        =
-<span class="default_value">&#39;1.0.0b13&#39;</span>
+<span class="default_value">&#39;1.0.0b14&#39;</span>
 
         
     </div>
@@ -12090,45 +12399,45 @@ them beyond the token's own expiry — which is why that expiry is short.</p>
 
     </div>
     <a class="headerlink" href="#UmaChallenger"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="UmaChallenger-205"><a href="#UmaChallenger-205"><span class="linenos">205</span></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="UmaChallenger-206"><a href="#UmaChallenger-206"><span class="linenos">206</span></a><span class="k">class</span><span class="w"> </span><span class="nc">UmaChallenger</span><span class="p">:</span>
-</span><span id="UmaChallenger-207"><a href="#UmaChallenger-207"><span class="linenos">207</span></a><span class="w">    </span><span class="sd">"""A configured ``WWW-Authenticate: UMA`` challenge emitter (§20.3, emit half).</span>
-</span><span id="UmaChallenger-208"><a href="#UmaChallenger-208"><span class="linenos">208</span></a>
-</span><span id="UmaChallenger-209"><a href="#UmaChallenger-209"><span class="linenos">209</span></a><span class="sd">    Hand one to :func:`axiam_sdk.fastapi.require_access` (or Django's</span>
-</span><span id="UmaChallenger-210"><a href="#UmaChallenger-210"><span class="linenos">210</span></a><span class="sd">    ``@require_access``) and a denial stops being a bare 403: the guard mints a</span>
-</span><span id="UmaChallenger-211"><a href="#UmaChallenger-211"><span class="linenos">211</span></a><span class="sd">    fresh permission ticket for the pairs the caller lacked and returns it in</span>
-</span><span id="UmaChallenger-212"><a href="#UmaChallenger-212"><span class="linenos">212</span></a><span class="sd">    the header, so a UMA-aware client knows where to go for authority instead of</span>
-</span><span id="UmaChallenger-213"><a href="#UmaChallenger-213"><span class="linenos">213</span></a><span class="sd">    only being told "no".</span>
-</span><span id="UmaChallenger-214"><a href="#UmaChallenger-214"><span class="linenos">214</span></a>
-</span><span id="UmaChallenger-215"><a href="#UmaChallenger-215"><span class="linenos">215</span></a><span class="sd">    **Opt-in, and deliberately so.** Emitting a challenge means minting a</span>
-</span><span id="UmaChallenger-216"><a href="#UmaChallenger-216"><span class="linenos">216</span></a><span class="sd">    credential — a wire call to the Protection API, and a live ticket, produced</span>
-</span><span id="UmaChallenger-217"><a href="#UmaChallenger-217"><span class="linenos">217</span></a><span class="sd">    on a path the caller did not explicitly request. A guard that did that on</span>
-</span><span id="UmaChallenger-218"><a href="#UmaChallenger-218"><span class="linenos">218</span></a><span class="sd">    every denial by default would turn each unauthorized request into a</span>
-</span><span id="UmaChallenger-219"><a href="#UmaChallenger-219"><span class="linenos">219</span></a><span class="sd">    Protection API call, which is a denial-of-service amplifier pointed at your</span>
-</span><span id="UmaChallenger-220"><a href="#UmaChallenger-220"><span class="linenos">220</span></a><span class="sd">    own authorization server.</span>
-</span><span id="UmaChallenger-221"><a href="#UmaChallenger-221"><span class="linenos">221</span></a>
-</span><span id="UmaChallenger-222"><a href="#UmaChallenger-222"><span class="linenos">222</span></a><span class="sd">    **Failure is not escalation.** If minting fails — the PAT expired, the</span>
-</span><span id="UmaChallenger-223"><a href="#UmaChallenger-223"><span class="linenos">223</span></a><span class="sd">    Protection API is down, the resource declares none of the requested scopes —</span>
-</span><span id="UmaChallenger-224"><a href="#UmaChallenger-224"><span class="linenos">224</span></a><span class="sd">    the denial still surfaces as an ordinary 403 without a challenge. A caller</span>
-</span><span id="UmaChallenger-225"><a href="#UmaChallenger-225"><span class="linenos">225</span></a><span class="sd">    who was going to be refused is refused either way; letting a Protection API</span>
-</span><span id="UmaChallenger-226"><a href="#UmaChallenger-226"><span class="linenos">226</span></a><span class="sd">    outage turn a deny into a 500 would hand the outage a second consequence,</span>
-</span><span id="UmaChallenger-227"><a href="#UmaChallenger-227"><span class="linenos">227</span></a><span class="sd">    and letting it turn into an allow would be a security bug.</span>
-</span><span id="UmaChallenger-228"><a href="#UmaChallenger-228"><span class="linenos">228</span></a>
-</span><span id="UmaChallenger-229"><a href="#UmaChallenger-229"><span class="linenos">229</span></a><span class="sd">    :param realm: The protection realm to name in the header.</span>
-</span><span id="UmaChallenger-230"><a href="#UmaChallenger-230"><span class="linenos">230</span></a><span class="sd">    :param as_uri: The authorization server to send the caller to — normally</span>
-</span><span id="UmaChallenger-231"><a href="#UmaChallenger-231"><span class="linenos">231</span></a><span class="sd">        this deployment's issuer, read from discovery rather than concatenated</span>
-</span><span id="UmaChallenger-232"><a href="#UmaChallenger-232"><span class="linenos">232</span></a><span class="sd">        by hand.</span>
-</span><span id="UmaChallenger-233"><a href="#UmaChallenger-233"><span class="linenos">233</span></a><span class="sd">    :param pat: A Protection API Token: a *client-credentials* token carrying</span>
-</span><span id="UmaChallenger-234"><a href="#UmaChallenger-234"><span class="linenos">234</span></a><span class="sd">        the ``uma_protection`` scope (§20.2 rule 1). A user token cannot stand</span>
-</span><span id="UmaChallenger-235"><a href="#UmaChallenger-235"><span class="linenos">235</span></a><span class="sd">        in — a minted ticket is bound to the ``client_id`` that minted it.</span>
-</span><span id="UmaChallenger-236"><a href="#UmaChallenger-236"><span class="linenos">236</span></a><span class="sd">    :param client: The client whose ``uma_request_ticket`` mints the ticket.</span>
-</span><span id="UmaChallenger-237"><a href="#UmaChallenger-237"><span class="linenos">237</span></a><span class="sd">        Async guards need the async client; sync guards the sync one.</span>
-</span><span id="UmaChallenger-238"><a href="#UmaChallenger-238"><span class="linenos">238</span></a><span class="sd">    """</span>
-</span><span id="UmaChallenger-239"><a href="#UmaChallenger-239"><span class="linenos">239</span></a>
-</span><span id="UmaChallenger-240"><a href="#UmaChallenger-240"><span class="linenos">240</span></a>    <span class="n">realm</span><span class="p">:</span> <span class="nb">str</span>
-</span><span id="UmaChallenger-241"><a href="#UmaChallenger-241"><span class="linenos">241</span></a>    <span class="n">as_uri</span><span class="p">:</span> <span class="nb">str</span>
-</span><span id="UmaChallenger-242"><a href="#UmaChallenger-242"><span class="linenos">242</span></a>    <span class="n">pat</span><span class="p">:</span> <span class="n">SecretStr</span> <span class="o">|</span> <span class="nb">str</span>
-</span><span id="UmaChallenger-243"><a href="#UmaChallenger-243"><span class="linenos">243</span></a>    <span class="n">client</span><span class="p">:</span> <span class="n">Any</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="UmaChallenger-250"><a href="#UmaChallenger-250"><span class="linenos">250</span></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="UmaChallenger-251"><a href="#UmaChallenger-251"><span class="linenos">251</span></a><span class="k">class</span><span class="w"> </span><span class="nc">UmaChallenger</span><span class="p">:</span>
+</span><span id="UmaChallenger-252"><a href="#UmaChallenger-252"><span class="linenos">252</span></a><span class="w">    </span><span class="sd">"""A configured ``WWW-Authenticate: UMA`` challenge emitter (§20.3, emit half).</span>
+</span><span id="UmaChallenger-253"><a href="#UmaChallenger-253"><span class="linenos">253</span></a>
+</span><span id="UmaChallenger-254"><a href="#UmaChallenger-254"><span class="linenos">254</span></a><span class="sd">    Hand one to :func:`axiam_sdk.fastapi.require_access` (or Django's</span>
+</span><span id="UmaChallenger-255"><a href="#UmaChallenger-255"><span class="linenos">255</span></a><span class="sd">    ``@require_access``) and a denial stops being a bare 403: the guard mints a</span>
+</span><span id="UmaChallenger-256"><a href="#UmaChallenger-256"><span class="linenos">256</span></a><span class="sd">    fresh permission ticket for the pairs the caller lacked and returns it in</span>
+</span><span id="UmaChallenger-257"><a href="#UmaChallenger-257"><span class="linenos">257</span></a><span class="sd">    the header, so a UMA-aware client knows where to go for authority instead of</span>
+</span><span id="UmaChallenger-258"><a href="#UmaChallenger-258"><span class="linenos">258</span></a><span class="sd">    only being told "no".</span>
+</span><span id="UmaChallenger-259"><a href="#UmaChallenger-259"><span class="linenos">259</span></a>
+</span><span id="UmaChallenger-260"><a href="#UmaChallenger-260"><span class="linenos">260</span></a><span class="sd">    **Opt-in, and deliberately so.** Emitting a challenge means minting a</span>
+</span><span id="UmaChallenger-261"><a href="#UmaChallenger-261"><span class="linenos">261</span></a><span class="sd">    credential — a wire call to the Protection API, and a live ticket, produced</span>
+</span><span id="UmaChallenger-262"><a href="#UmaChallenger-262"><span class="linenos">262</span></a><span class="sd">    on a path the caller did not explicitly request. A guard that did that on</span>
+</span><span id="UmaChallenger-263"><a href="#UmaChallenger-263"><span class="linenos">263</span></a><span class="sd">    every denial by default would turn each unauthorized request into a</span>
+</span><span id="UmaChallenger-264"><a href="#UmaChallenger-264"><span class="linenos">264</span></a><span class="sd">    Protection API call, which is a denial-of-service amplifier pointed at your</span>
+</span><span id="UmaChallenger-265"><a href="#UmaChallenger-265"><span class="linenos">265</span></a><span class="sd">    own authorization server.</span>
+</span><span id="UmaChallenger-266"><a href="#UmaChallenger-266"><span class="linenos">266</span></a>
+</span><span id="UmaChallenger-267"><a href="#UmaChallenger-267"><span class="linenos">267</span></a><span class="sd">    **Failure is not escalation.** If minting fails — the PAT expired, the</span>
+</span><span id="UmaChallenger-268"><a href="#UmaChallenger-268"><span class="linenos">268</span></a><span class="sd">    Protection API is down, the resource declares none of the requested scopes —</span>
+</span><span id="UmaChallenger-269"><a href="#UmaChallenger-269"><span class="linenos">269</span></a><span class="sd">    the denial still surfaces as an ordinary 403 without a challenge. A caller</span>
+</span><span id="UmaChallenger-270"><a href="#UmaChallenger-270"><span class="linenos">270</span></a><span class="sd">    who was going to be refused is refused either way; letting a Protection API</span>
+</span><span id="UmaChallenger-271"><a href="#UmaChallenger-271"><span class="linenos">271</span></a><span class="sd">    outage turn a deny into a 500 would hand the outage a second consequence,</span>
+</span><span id="UmaChallenger-272"><a href="#UmaChallenger-272"><span class="linenos">272</span></a><span class="sd">    and letting it turn into an allow would be a security bug.</span>
+</span><span id="UmaChallenger-273"><a href="#UmaChallenger-273"><span class="linenos">273</span></a>
+</span><span id="UmaChallenger-274"><a href="#UmaChallenger-274"><span class="linenos">274</span></a><span class="sd">    :param realm: The protection realm to name in the header.</span>
+</span><span id="UmaChallenger-275"><a href="#UmaChallenger-275"><span class="linenos">275</span></a><span class="sd">    :param as_uri: The authorization server to send the caller to — normally</span>
+</span><span id="UmaChallenger-276"><a href="#UmaChallenger-276"><span class="linenos">276</span></a><span class="sd">        this deployment's issuer, read from discovery rather than concatenated</span>
+</span><span id="UmaChallenger-277"><a href="#UmaChallenger-277"><span class="linenos">277</span></a><span class="sd">        by hand.</span>
+</span><span id="UmaChallenger-278"><a href="#UmaChallenger-278"><span class="linenos">278</span></a><span class="sd">    :param pat: A Protection API Token: a *client-credentials* token carrying</span>
+</span><span id="UmaChallenger-279"><a href="#UmaChallenger-279"><span class="linenos">279</span></a><span class="sd">        the ``uma_protection`` scope (§20.2 rule 1). A user token cannot stand</span>
+</span><span id="UmaChallenger-280"><a href="#UmaChallenger-280"><span class="linenos">280</span></a><span class="sd">        in — a minted ticket is bound to the ``client_id`` that minted it.</span>
+</span><span id="UmaChallenger-281"><a href="#UmaChallenger-281"><span class="linenos">281</span></a><span class="sd">    :param client: The client whose ``uma_request_ticket`` mints the ticket.</span>
+</span><span id="UmaChallenger-282"><a href="#UmaChallenger-282"><span class="linenos">282</span></a><span class="sd">        Async guards need the async client; sync guards the sync one.</span>
+</span><span id="UmaChallenger-283"><a href="#UmaChallenger-283"><span class="linenos">283</span></a><span class="sd">    """</span>
+</span><span id="UmaChallenger-284"><a href="#UmaChallenger-284"><span class="linenos">284</span></a>
+</span><span id="UmaChallenger-285"><a href="#UmaChallenger-285"><span class="linenos">285</span></a>    <span class="n">realm</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="UmaChallenger-286"><a href="#UmaChallenger-286"><span class="linenos">286</span></a>    <span class="n">as_uri</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="UmaChallenger-287"><a href="#UmaChallenger-287"><span class="linenos">287</span></a>    <span class="n">pat</span><span class="p">:</span> <span class="n">SecretStr</span> <span class="o">|</span> <span class="nb">str</span>
+</span><span id="UmaChallenger-288"><a href="#UmaChallenger-288"><span class="linenos">288</span></a>    <span class="n">client</span><span class="p">:</span> <span class="n">Any</span>
 </span></pre></div>
 
 
