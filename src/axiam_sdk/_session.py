@@ -354,6 +354,58 @@ class _Session:
         self._capture_csrf(response)
         return response
 
+    def _credential_free_request(
+        self, method: str, path: str, json_body: dict[str, Any]
+    ) -> httpx.Request:
+        """Build a request that carries none of this session's own state
+        (CONTRACT.md §24.1, contract 1.45): the ``webauthn/setup/register/*``
+        pair, whose only credential is the setup token already inside
+        ``json_body``.
+
+        Built as a bare ``httpx.Request`` rather than through
+        ``Client.build_request()`` — the client's cookie-jar merge
+        (Assumption A1's *shared* jar between the sync and async clients)
+        happens inside ``build_request()`` itself, so there is no way to opt
+        one call out of it once that method has run. A caller who already
+        holds a session when it calls one of these two — an unusual case,
+        since the entire point of the setup token is to work without one —
+        must not have that session's cookie ride along beside it (§24.8).
+
+        ``X-Tenant-ID`` is still set by hand: §5 rule 2 admits no exceptions,
+        and it is not a credential — it names a workspace, not a principal.
+
+        Joins against ``httpx.URL(self.base_url)`` rather than
+        ``self.sync_client.base_url`` so a purely async caller does not pay
+        for a sync connection pool it will never use (the reason
+        :attr:`sync_client` is a lazily-built property in the first place).
+        """
+        url = httpx.URL(self.base_url).join(path)
+        request = httpx.Request(method, url, json=json_body)
+        request.headers["X-Tenant-ID"] = self.tenant_slug
+        return request
+
+    def _send_sync_credential_free(self, request: httpx.Request) -> httpx.Response:
+        """Send a :meth:`_credential_free_request`, sync.
+
+        Deliberately does not go through :meth:`_send_sync`: that choke
+        point's ``_prepare_request`` step is where this SDK's *own* session
+        state (the CSRF echo) is attached to an outgoing request, and a
+        credential-free call must carry none of it. The response's own
+        ``Set-Cookie``/``X-CSRF-Token`` are still captured exactly as
+        :meth:`_send_sync` captures them — what comes back on a successful
+        ``finish`` is a brand-new session to adopt, not a continuation of
+        whatever session existed before the call.
+        """
+        response = self.sync_client.send(request)
+        self._capture_csrf(response)
+        return response
+
+    async def _send_async_credential_free(self, request: httpx.Request) -> httpx.Response:
+        """Async twin of :meth:`_send_sync_credential_free`."""
+        response = await self.async_client.send(request)
+        self._capture_csrf(response)
+        return response
+
     def cookie_value(self, name: str) -> str | None:
         """Read a named cookie's current value out of the shared jar.
 

@@ -277,6 +277,11 @@ class _WebauthnMixin:
     _WA_AUTH_FINISH = "/api/v1/auth/webauthn/authenticate/finish"
     _WA_DISCOVERABLE_START = "/api/v1/auth/webauthn/authenticate/discoverable/start"
     _WA_DISCOVERABLE_FINISH = "/api/v1/auth/webauthn/authenticate/discoverable/finish"
+    # Contract 1.45 (§24.1, §25.2 rule 2): the WebAuthn twin of
+    # `mfa_setup_enroll` / `mfa_setup_confirm`. Take no session -- the setup
+    # token in the body is the only credential.
+    _WA_SETUP_REGISTER_START = "/api/v1/auth/webauthn/setup/register/start"
+    _WA_SETUP_REGISTER_FINISH = "/api/v1/auth/webauthn/setup/register/finish"
 
     def _webauthn_discoverable_body(self, workspace: WebauthnWorkspace | None) -> dict[str, Any]:
         """Build the discoverable ``start`` body (§24.1).
@@ -336,6 +341,34 @@ class _WebauthnMixin:
         return {
             "state_token": _expose(state_token),
             "response": coerce_authenticator_response(response, operation),
+        }
+
+    @staticmethod
+    def _webauthn_setup_register_start_body(setup_token: SecretStr | str) -> dict[str, Any]:
+        """Build the ``setup/register/start`` body (§24.1, contract 1.45).
+
+        The setup token is the only field and the only credential — there is
+        no ``user_id`` here to invent, because the account is named by the
+        token, never by the caller.
+        """
+        return {"setup_token": _expose(setup_token)}
+
+    @staticmethod
+    def _webauthn_setup_register_finish_body(
+        setup_token: SecretStr | str,
+        state_token: SecretStr | str,
+        credential_name: str,
+        response: dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        """Build the ``setup/register/finish`` body (§24.1, contract 1.45) —
+        ``register/finish``'s body plus the setup token, for the same reason
+        ``mfa_setup_confirm`` carries one: there is no session to identify the
+        account with."""
+        return {
+            "setup_token": _expose(setup_token),
+            "state_token": _expose(state_token),
+            "credential_name": credential_name,
+            "response": coerce_authenticator_response(response, "webauthn_setup_register_finish"),
         }
 
     def _require_webauthn_session(self, operation: str) -> None:

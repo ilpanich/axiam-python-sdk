@@ -33,7 +33,7 @@ range because they landed after this SDK already claimed §1–§13: widening th
 range silently would turn a statement that was true when written into a
 different claim without anyone editing it.
 
-§27 is the management API — 158 administrative operations across 24 namespaces,
+§27 is the management API — 160 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1480,7 +1480,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-158 administrative operations across 24 namespaces, reached as
+160 administrative operations across 24 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 

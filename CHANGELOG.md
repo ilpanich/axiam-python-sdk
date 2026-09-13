@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`certificates.sign_csr` — an end-entity certificate from a caller-supplied
+  CSR** (CONTRACT.md §27, contract 1.45). `client.certificates.sign_csr(models.SignCertificateCsrRequest(...))`
+  on both clients, `POST /api/v1/certificates/sign-csr`, generated straight
+  from the re-vendored registry — the operation count moves **159 → 160**
+  across the same 24 namespaces.
+
+  The response is the existing `Certificate`, **not** `GeneratedCertificate`:
+  there is no key to return, the caller supplied the CSR and kept its own
+  private half, and AXIAM never sees it. `SignCertificateCsrRequest` carries
+  no `subject`/`key_algorithm` either — both are read out of the CSR
+  server-side, the only place they can be stated without the row and the
+  certificate disagreeing. A model round-trip test in
+  `tests/management/test_semantics.py` pins that `Certificate` has no
+  `private_key_pem` field at all, so §27.5's sensitive-fields table staying
+  silent about this operation is a property of the type, not an oversight.
+
+- **`webauthn_setup_register_start` / `webauthn_setup_register_finish` — a
+  passkey or security key as the first factor at forced MFA enrolment**
+  (CONTRACT.md §24.1, §25.2 rule 2, contract 1.45). The WebAuthn twin of
+  `mfa_setup_enroll` / `mfa_setup_confirm`, on both clients:
+  `POST /api/v1/auth/webauthn/setup/register/start` and `.../finish`, taking
+  the `setup_token` a `login()` `mfa_setup_required` outcome carries. A
+  tenant that enforces MFA no longer means every newly-created user has to
+  own a TOTP app to get past their first sign-in.
+
+  Both calls take **no session** — the setup token is the only credential and
+  it travels in the body — and neither attaches this client's own session
+  credential, even when one is already configured: they go through a new
+  credential-free request path (`_Session._credential_free_request` /
+  `_send_sync_credential_free` / `_send_async_credential_free`) that never
+  touches `Client.build_request()`'s cookie-jar merge, rather than the shared
+  `_send_sync`/`_send_async` choke point every other call uses.
+  `webauthn_setup_register_finish` adopts credentials **exactly** as
+  `mfa_setup_confirm` does on a `200` — the same success path, so cookies are
+  absorbed, the §17 decision memo is cleared, and the org/tenant claims are
+  cached identically — and, on a `403`, surfaces the tenant's
+  attestation-policy message verbatim instead of a fixed string (§24.4 rule
+  1), because it is the only way the person holding the key learns that a
+  different one would work. A `503` from `start` is not retried, the same
+  posture `webauthn_register_start` already has.
+
+  Tests in `tests/test_webauthn.py` (sync and async) cover the happy path,
+  the `401`/`400`/`403`/`503` statuses, that neither call requires or sends a
+  session credential — asserted on the transport, with a fully-configured
+  session seeded first, so the assertion is meaningful rather than
+  vacuously true — and that `setup_register_finish`'s adoption is
+  indistinguishable from `mfa_setup_confirm`'s: the memo is cleared, the
+  access cookie is present, and the CSRF token this response set is captured
+  and echoed on the very next state-changing request.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` (1.44 → 1.45), `openapi.json` and
+  `management-registry.json` from `ilpanich/axiam@3d5b279`. `proto/axiam/v1/`
+  did not change upstream and was re-verified as already identical rather
+  than re-copied. The README's §27 operation count moves to **160** in both
+  places it is stated.
+
 ## [1.0.0-beta14] - 2026-09-13
 
 ### Added

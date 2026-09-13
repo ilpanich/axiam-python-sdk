@@ -75,6 +75,25 @@ def _call_generate(
     )
 
 
+def _call_sign_csr(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    body: models.SignCertificateCsrRequest,
+) -> ManagementCall:
+    """Build the ``certificates.sign_csr`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    return ManagementCall(
+        operation="certificates.sign_csr",
+        method="POST",
+        path_template="/api/v1/certificates/sign-csr",
+        path="/api/v1/certificates/sign-csr",
+        body=body.to_wire(),
+    )
+
+
 def _call_get(
     client: _AxiamClientBase,
     scope: NamespaceScope,
@@ -162,6 +181,18 @@ class CertificatesApi:
         )
         return models.GeneratedCertificate.model_validate(raw)
 
+    def sign_csr(self, body: models.SignCertificateCsrRequest) -> models.Certificate:
+        """``POST /api/v1/certificates/sign-csr``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        raw = send_management(
+            self._client,
+            _call_sign_csr(self._client, self._scope, body),
+        )
+        return models.Certificate.model_validate(raw)
+
     def get(self, id: str) -> models.Certificate:
         """``GET /api/v1/certificates/{id}``"""
         raw = send_management(
@@ -230,6 +261,18 @@ class AsyncCertificatesApi:
             _call_generate(self._client, self._scope, body),
         )
         return models.GeneratedCertificate.model_validate(raw)
+
+    async def sign_csr(self, body: models.SignCertificateCsrRequest) -> models.Certificate:
+        """``POST /api/v1/certificates/sign-csr``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        raw = await send_management_async(
+            self._client,
+            _call_sign_csr(self._client, self._scope, body),
+        )
+        return models.Certificate.model_validate(raw)
 
     async def get(self, id: str) -> models.Certificate:
         """``GET /api/v1/certificates/{id}``"""

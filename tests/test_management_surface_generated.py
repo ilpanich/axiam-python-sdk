@@ -3180,6 +3180,75 @@ async def test_certificates_generate_async() -> None:
         )
 
 
+def test_certificates_sign_csr() -> None:
+    """``certificates.sign_csr`` -- POST /api/v1/certificates/sign-csr."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/certificates/sign-csr",
+            201,
+            {
+                "cert_type": "User",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "key_algorithm": "Rsa4096",
+                "metadata": {},
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "public_cert_pem": "example",
+                "status": "Active",
+                "subject": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        client.certificates.sign_csr(
+            models.SignCertificateCsrRequest(
+                cert_type="User",
+                csr_pem="example",
+                issuer_ca_id="11111111-1111-4111-8111-111111111111",
+                validity_days=1,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_certificates_sign_csr_async() -> None:
+    """``certificates.sign_csr`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/certificates/sign-csr",
+            201,
+            {
+                "cert_type": "User",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "key_algorithm": "Rsa4096",
+                "metadata": {},
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "public_cert_pem": "example",
+                "status": "Active",
+                "subject": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        await client.certificates.sign_csr(
+            models.SignCertificateCsrRequest(
+                cert_type="User",
+                csr_pem="example",
+                issuer_ca_id="11111111-1111-4111-8111-111111111111",
+                validity_days=1,
+            )
+        )
+
+
 def test_certificates_get() -> None:
     """``certificates.get`` -- GET /api/v1/certificates/{id}."""
     with with_client() as (router, client):
@@ -6967,6 +7036,7 @@ EXERCISED = [
     "certificates.get",
     "certificates.list",
     "certificates.revoke",
+    "certificates.sign_csr",
     "email_config.delete_org",
     "email_config.delete_tenant",
     "email_config.get_org",
@@ -7121,4 +7191,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 159
+    assert len(EXERCISED) == 160
