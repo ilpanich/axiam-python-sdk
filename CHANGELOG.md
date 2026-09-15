@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta15] - 2026-09-15
+
 ### Added
+
+- Sign-csr certificates, passkey-first-factor setup (contract 1.45) (#81)
 
 - **`certificates.sign_csr` — an end-entity certificate from a caller-supplied
   CSR** (CONTRACT.md §27, contract 1.45). `client.certificates.sign_csr(models.SignCertificateCsrRequest(...))`
@@ -60,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and echoed on the very next state-changing request.
 
 ### Changed
+
+- Re-vendor CONTRACT.md at 1.46
 
 - Re-vendored `CONTRACT.md` (1.44 → 1.45), `openapi.json` and
   `management-registry.json` from `ilpanich/axiam@3d5b279`. `proto/axiam/v1/`
