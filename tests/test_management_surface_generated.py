@@ -4371,6 +4371,7 @@ def test_oauth2_clients_list() -> None:
             {
                 "items": [
                     {
+                        "allowed_resources": [],
                         "authn_request_params": "ignore",
                         "browser_sso": True,
                         "client_id": "example",
@@ -4379,6 +4380,7 @@ def test_oauth2_clients_list() -> None:
                         "dpop_require_nonce": True,
                         "grant_types": [],
                         "id": "11111111-1111-4111-8111-111111111111",
+                        "managed_by": "admin",
                         "name": "example",
                         "profile": "standard",
                         "redirect_uris": [],
@@ -4412,6 +4414,7 @@ async def test_oauth2_clients_list_async() -> None:
             {
                 "items": [
                     {
+                        "allowed_resources": [],
                         "authn_request_params": "ignore",
                         "browser_sso": True,
                         "client_id": "example",
@@ -4420,6 +4423,7 @@ async def test_oauth2_clients_list_async() -> None:
                         "dpop_require_nonce": True,
                         "grant_types": [],
                         "id": "11111111-1111-4111-8111-111111111111",
+                        "managed_by": "admin",
                         "name": "example",
                         "profile": "standard",
                         "redirect_uris": [],
@@ -4451,7 +4455,6 @@ def test_oauth2_clients_create() -> None:
             201,
             {
                 "client_id": "example",
-                "client_secret": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
@@ -4480,7 +4483,6 @@ async def test_oauth2_clients_create_async() -> None:
             201,
             {
                 "client_id": "example",
-                "client_secret": "example",
                 "created_at": "2026-08-26T00:00:00Z",
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
@@ -4507,6 +4509,7 @@ def test_oauth2_clients_get() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "allowed_resources": [],
                 "authn_request_params": "ignore",
                 "browser_sso": True,
                 "client_id": "example",
@@ -4515,6 +4518,7 @@ def test_oauth2_clients_get() -> None:
                 "dpop_require_nonce": True,
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
+                "managed_by": "admin",
                 "name": "example",
                 "profile": "standard",
                 "redirect_uris": [],
@@ -4540,6 +4544,7 @@ async def test_oauth2_clients_get_async() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "allowed_resources": [],
                 "authn_request_params": "ignore",
                 "browser_sso": True,
                 "client_id": "example",
@@ -4548,6 +4553,7 @@ async def test_oauth2_clients_get_async() -> None:
                 "dpop_require_nonce": True,
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
+                "managed_by": "admin",
                 "name": "example",
                 "profile": "standard",
                 "redirect_uris": [],
@@ -4572,6 +4578,7 @@ def test_oauth2_clients_update() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "allowed_resources": [],
                 "authn_request_params": "ignore",
                 "browser_sso": True,
                 "client_id": "example",
@@ -4580,6 +4587,7 @@ def test_oauth2_clients_update() -> None:
                 "dpop_require_nonce": True,
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
+                "managed_by": "admin",
                 "name": "example",
                 "profile": "standard",
                 "redirect_uris": [],
@@ -4605,6 +4613,7 @@ async def test_oauth2_clients_update_async() -> None:
             f"/api/v1/oauth2-clients/{EXAMPLE_ID}",
             200,
             {
+                "allowed_resources": [],
                 "authn_request_params": "ignore",
                 "browser_sso": True,
                 "client_id": "example",
@@ -4613,6 +4622,7 @@ async def test_oauth2_clients_update_async() -> None:
                 "dpop_require_nonce": True,
                 "grant_types": [],
                 "id": "11111111-1111-4111-8111-111111111111",
+                "managed_by": "admin",
                 "name": "example",
                 "profile": "standard",
                 "redirect_uris": [],

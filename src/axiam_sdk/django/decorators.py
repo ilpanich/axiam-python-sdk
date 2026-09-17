@@ -48,13 +48,20 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from asgiref.sync import iscoroutinefunction
+from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
+from axiam_sdk._mcp import (
+    McpGuardChallenges,
+    challenge_for_401,
+    challenge_for_403,
+    mcp_guard_challenges,
+)
 from axiam_sdk._models import RequestedPermission
 from axiam_sdk._oidc import UmaChallenger, uma_challenge_header
-from axiam_sdk.django.middleware import AxiamUser
+from axiam_sdk.django.middleware import AxiamUser, _extract_token
 
 #: Standardized 401 JSON error body shape (CONTRACT.md §10/§11) — mirrors
 #: ``axiam_sdk.django.middleware``'s own ``_error_response`` shape.
@@ -68,12 +75,37 @@ _AUTHZ_UNAVAILABLE_STATUS = 503
 _View = TypeVar("_View", bound=Callable[..., Any])
 
 
-def _missing_middleware_response() -> JsonResponse:
+def _settings_mcp_challenges(operation: str, scope: str | None = None) -> McpGuardChallenges | None:
+    """CONTRACT.md §28.5 — this module's decorators have no verifier object
+    of their own (they read only ``request.axiam_user``, already verified by
+    :class:`~axiam_sdk.django.middleware.AxiamAuthMiddleware`), so they build
+    their §28 challenges straight from the same two Django settings the
+    middleware itself reads: ``AXIAM_RESOURCE_METADATA_URL`` and
+    ``AXIAM_EXPECTED_AUDIENCE``. ``None`` when §28 is not configured, which
+    is how it stays byte-for-byte off."""
+    return mcp_guard_challenges(
+        getattr(settings, "AXIAM_EXPECTED_AUDIENCE", None),
+        getattr(settings, "AXIAM_RESOURCE_METADATA_URL", None),
+        operation,
+        scope,
+    )
+
+
+def _missing_middleware_response(
+    request: HttpRequest, challenges: McpGuardChallenges | None
+) -> JsonResponse:
     """Standardized 401 JSON response for a view guarded by one of this
     module's decorators when ``request.axiam_user`` is absent — either
     :class:`~axiam_sdk.django.middleware.AxiamAuthMiddleware` is not
-    installed, or the request never passed its authentication check."""
-    return JsonResponse(
+    installed, or the request never passed its authentication check.
+
+    CONTRACT.md §28.5 rule 4: every 401 this module's decorators emit
+    carries the ``WWW-Authenticate`` challenge, when configured — this is
+    "§11's require_auth/authentication_failed 401" rule 4 names. Re-extracts
+    credential presence from ``request`` independently of whatever the
+    middleware already decided, exactly as the middleware's own 401 does.
+    """
+    response = JsonResponse(
         {
             "error": "authentication_failed",
             "message": (
@@ -83,6 +115,10 @@ def _missing_middleware_response() -> JsonResponse:
         },
         status=_AUTH_FAILED_STATUS,
     )
+    if challenges is not None:
+        credential_presented = _extract_token(request) is not None
+        response["WWW-Authenticate"] = challenge_for_401(challenges, credential_presented)
+    return response
 
 
 def _authenticated_user(request: HttpRequest) -> AxiamUser | None:
@@ -140,22 +176,39 @@ def require_auth(view: _View) -> _View:
             ...
     """
 
+    challenges = _settings_mcp_challenges("require_auth")
+
     def _guard(request: HttpRequest, *_args: Any, **_kwargs: Any) -> HttpResponse | None:
         """Return the standardized 401 response when unauthenticated, else
         ``None`` to let the view proceed."""
         if _authenticated_user(request) is None:
-            return _missing_middleware_response()
+            return _missing_middleware_response(request, challenges)
         return None
 
     return _wrap(view, _guard)
 
 
-def _denied(action: str, resource_id: str, challenger: UmaChallenger | None) -> JsonResponse:
-    """Build the 403, minting a §20.3 challenge when one was configured.
+def _denied(
+    action: str,
+    resource_id: str,
+    challenger: UmaChallenger | None,
+    challenges: McpGuardChallenges | None,
+    reason_code: str | None,
+) -> JsonResponse:
+    """Build the 403, minting a §20.3 challenge when one was configured,
+    else falling back to a CONTRACT.md §28.5 rule 5 challenge when this
+    denial is a scope-named ``no_grant``.
 
-    Only ever reached on a path that has already decided to refuse, so minting
-    cannot change the outcome — at worst it fails and the caller gets the plain
-    403 they would have got anyway.
+    Only ever reached on a path that has already decided to refuse, so
+    minting cannot change the outcome — at worst it fails and the caller
+    gets the plain 403 they would have got anyway.
+
+    Where both a §20.3 UMA challenger and §28 are configured, the UMA
+    challenge wins: it is per-view opt-in and carries a live ticket for the
+    exact authority just refused, where §28.5 rule 5's is the generic "ask
+    for this scope" hint. The body is the unchanged §11.2.5 shape either
+    way — ``insufficient_scope`` appears only in the header, never in the
+    body.
     """
     response = JsonResponse(
         {
@@ -164,27 +217,33 @@ def _denied(action: str, resource_id: str, challenger: UmaChallenger | None) -> 
         },
         status=_AUTHZ_DENIED_STATUS,
     )
-    if challenger is None:
-        return response
 
-    try:
-        # §20.2: the UMA scope is the AXIAM *action*, which is what makes the
-        # ticket ask for exactly the authority this check just refused — and
-        # what keeps a deny rule vetoing the resulting RPT the same way it
-        # vetoed the check.
-        ticket = challenger.client.uma_request_ticket(
-            challenger.pat,
-            [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
-        )
-    except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
-        # Deliberately broad and deliberately silent: any failure to mint leaves
-        # the denial exactly as it was. Not logged either, because a Protection
-        # API failure message can echo a credential and §11.2.8 keeps those out
-        # of this path.
-        return response
+    if challenger is not None:
+        try:
+            # §20.2: the UMA scope is the AXIAM *action*, which is what makes
+            # the ticket ask for exactly the authority this check just
+            # refused — and what keeps a deny rule vetoing the resulting RPT
+            # the same way it vetoed the check.
+            ticket = challenger.client.uma_request_ticket(
+                challenger.pat,
+                [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
+            )
+        except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
+            # Deliberately broad and deliberately silent: any failure to mint
+            # leaves the denial exactly as it was. Not logged either, because
+            # a Protection API failure message can echo a credential and
+            # §11.2.8 keeps those out of this path.
+            ticket = None
+        if ticket is not None:
+            # Additive: the body above is the unchanged §11.2.5 shape.
+            response["WWW-Authenticate"] = uma_challenge_header(
+                challenger.realm, challenger.as_uri, ticket
+            )
+            return response
 
-    # Additive: the body above is the unchanged §11.2.5 shape.
-    response["WWW-Authenticate"] = uma_challenge_header(challenger.realm, challenger.as_uri, ticket)
+    mcp_challenge = challenge_for_403(challenges, reason_code)
+    if mcp_challenge is not None:
+        response["WWW-Authenticate"] = mcp_challenge
     return response
 
 
@@ -233,6 +292,11 @@ def require_access(
     denial; see :class:`~axiam_sdk.UmaChallenger` for why both matter.
     """
 
+    # CONTRACT.md §28.5 rule 5: built here, from this decorator's own
+    # `scope` argument, so a scope outside RFC 6750's syntax fails at
+    # decoration time rather than on the first denial.
+    challenges = _settings_mcp_challenges("require_access", scope)
+
     def decorator(view: _View) -> _View:
         """Bind ``action``/``resource_param``/``scope`` to a guard wrapping
         ``view`` (see :func:`require_access`'s docstring for the pipeline)."""
@@ -243,7 +307,7 @@ def require_access(
             on any failure, or ``None`` to let the view proceed."""
             user = _authenticated_user(request)
             if user is None:
-                return _missing_middleware_response()
+                return _missing_middleware_response(request, challenges)
 
             raw = kwargs.get(resource_param)
             try:
@@ -263,7 +327,9 @@ def require_access(
                     action, resource_id, scope=scope, subject_id=user.user_id
                 )
             except AuthzError:
-                return _denied(action, resource_id, uma_challenge)
+                # A transport-produced denial carries no `reason_code` —
+                # never eligible for the §28.5 rule 5 challenge.
+                return _denied(action, resource_id, uma_challenge, challenges, None)
             except (AuthError, NetworkError):
                 # §11.2.5: fail closed — a transport failure while calling
                 # the authz endpoint is "couldn't decide", never a silent
@@ -277,7 +343,7 @@ def require_access(
                 )
 
             if not result.allowed:
-                return _denied(action, resource_id, uma_challenge)
+                return _denied(action, resource_id, uma_challenge, challenges, result.reason_code)
             return None
 
         return _wrap(view, _guard)
@@ -302,7 +368,13 @@ def require_role(*roles: str) -> Callable[[_View], _View]:
         @require_role("admin", "auditor")
         def reset_view(request):
             ...
+
+    CONTRACT.md §28.5: this decorator's own 401 carries the same challenge
+    every other 401 does; a role failure (403) is not a scope failure, so it
+    never carries one (§28.5 rule 5).
     """
+
+    challenges = _settings_mcp_challenges("require_role")
 
     def decorator(view: _View) -> _View:
         """Bind ``roles`` to a guard wrapping ``view`` (see
@@ -313,7 +385,7 @@ def require_role(*roles: str) -> Callable[[_View], _View]:
             let the view proceed."""
             user = _authenticated_user(request)
             if user is None:
-                return _missing_middleware_response()
+                return _missing_middleware_response(request, challenges)
             if not any(role in user.roles for role in roles):
                 return JsonResponse(
                     {

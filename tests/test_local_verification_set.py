@@ -784,15 +784,22 @@ def test_the_guard_verifies_the_caller_token_and_no_other(keypair, valid_claims)
 
 def test_the_guard_signature_exposes_no_second_credential() -> None:
     """The shape of SEC-085: PHP's guard reached a stateful session through the
-    client it held. Keep the guard's parameters free of anything like that."""
+    client it held. Keep the guard's parameters free of anything like that.
+
+    ``challenges`` (CONTRACT.md §28.5) is not that shape: it is a precomputed,
+    immutable set of ``WWW-Authenticate`` header strings carrying no token, no
+    session and no client — nothing rule 8 could be routed through — so its
+    addition here does not reopen SEC-085's hole.
+    """
     import inspect as _inspect
 
     from axiam_sdk.fastapi import _authenticate
 
     params = set(_inspect.signature(_authenticate).parameters)
-    assert params == {"request", "verifier", "configured_tenant"}, (
-        "the guard must take only the request, a verifier and the configured "
-        f"tenant; a client/session parameter would make rule 8 violable: {params}"
+    assert params == {"request", "verifier", "configured_tenant", "challenges"}, (
+        "the guard must take only the request, a verifier, the configured "
+        "tenant and its precomputed §28 challenges; a client/session "
+        f"parameter would make rule 8 violable: {params}"
     )
 
 

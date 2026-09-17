@@ -73,6 +73,22 @@ round-trip. Deny/error paths never log or echo the token (§11.2.8).
 ``require_role`` is a local, no-round-trip check against the already-
 verified identity's ``roles`` (§11.2.9) — it is NOT a substitute for
 ``require_access``'s authoritative, resource-level server check.
+
+CONTRACT.md §28 — MCP resource-server helpers (RFC 9728 + RFC 6750):
+:func:`serve_protected_resource_metadata` registers the unauthenticated
+metadata route; :func:`~axiam_sdk.protected_resource_metadata` and
+:func:`~axiam_sdk.bearer_challenge` (re-exported from ``axiam_sdk``, since
+they perform no I/O and depend on no framework) build the document and the
+challenge value. Passing ``resource_metadata_url`` to :class:`JwksVerifier`
+is what turns §28 on for every guard built from it — with it unset, every
+guard in this module is byte-for-byte what it was before §28 existed.
+Because this module is a **dependency-only** integration (D-09) with no
+ASGI-middleware variant, there is no global guard to exempt the metadata
+route from: a route registered via :func:`serve_protected_resource_metadata`
+carries no ``Depends(...)`` at all, so it is unauthenticated by construction
+rather than by an explicit path exemption — the ASGI-middleware exemption
+CONTRACT.md §28.3 rule 2 describes applies to :mod:`axiam_sdk.django`, whose
+``AxiamAuthMiddleware`` guards every request globally.
 """
 
 from __future__ import annotations
@@ -83,15 +99,22 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
 from axiam_sdk._jwks import JwksVerifier
+from axiam_sdk._mcp import (
+    McpGuardChallenges,
+    ProtectedResourceMetadata,
+    challenge_for_401,
+    challenge_for_403,
+)
 from axiam_sdk._models import OidcTokenSet, RequestedPermission
 from axiam_sdk._oidc import UmaChallenger, uma_challenge_header
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
+from axiam_sdk.management._errors import FieldError, ValidationError
 
 #: Standardized "missing credentials" / "invalid or expired token" / tenant
 #: mismatch failures all surface as 401 (CONTRACT.md §10, mirrors
@@ -137,7 +160,19 @@ class _Credential:
     from_cookie: bool
 
 
-def _extract_token(request: Request) -> _Credential:
+def _mcp_headers(
+    challenges: McpGuardChallenges | None, *, credential_presented: bool
+) -> dict[str, str] | None:
+    """§28.5 rule 4 — the ``WWW-Authenticate`` header every 401 this module's
+    guards emit carries, when §28 is configured (``challenges`` is not
+    ``None``). ``None`` (no header at all) when it is not — which is how
+    §28 being off stays byte-for-byte identical to §28 being absent."""
+    if challenges is None:
+        return None
+    return {"WWW-Authenticate": challenge_for_401(challenges, credential_presented)}
+
+
+def _extract_token(request: Request, challenges: McpGuardChallenges | None) -> _Credential:
     """Extract the bearer token from ``Authorization: Bearer <token>``,
     falling back to the ``axiam_access`` session cookie.
 
@@ -145,6 +180,12 @@ def _extract_token(request: Request) -> _Credential:
     (lines 109-125): Bearer header first, cookie fallback second, standardized
     401 with no token value on failure — this exact ordering is a Shared
     Pattern (19-PATTERNS.md) also used by the Django middleware.
+
+    Both failure branches below are "no credential" in CONTRACT.md §28.4's
+    terms — RFC 6750 §3's "no authentication information at all" — so both
+    carry the ``no_credential`` challenge vector, never ``invalid_token``: a
+    header naming an unsupported scheme is not "authentication information",
+    it is the absence of any this guard reads.
     """
     header = request.headers.get("authorization")
     if header:
@@ -152,7 +193,9 @@ def _extract_token(request: Request) -> _Credential:
         if scheme.lower() == "bearer" and credentials.strip():
             return _Credential(credentials.strip(), from_cookie=False)
         raise HTTPException(
-            status_code=_AUTH_FAILED_STATUS, detail="missing authentication credentials"
+            status_code=_AUTH_FAILED_STATUS,
+            detail="missing authentication credentials",
+            headers=_mcp_headers(challenges, credential_presented=False),
         )
 
     cookie = request.cookies.get("axiam_access")
@@ -160,7 +203,9 @@ def _extract_token(request: Request) -> _Credential:
         return _Credential(cookie, from_cookie=True)
 
     raise HTTPException(
-        status_code=_AUTH_FAILED_STATUS, detail="missing authentication credentials"
+        status_code=_AUTH_FAILED_STATUS,
+        detail="missing authentication credentials",
+        headers=_mcp_headers(challenges, credential_presented=False),
     )
 
 
@@ -182,7 +227,10 @@ def _assert_csrf_valid(request: Request) -> None:
 
 
 async def _authenticate(
-    request: Request, verifier: JwksVerifier, configured_tenant: str
+    request: Request,
+    verifier: JwksVerifier,
+    configured_tenant: str,
+    challenges: McpGuardChallenges | None,
 ) -> AxiamUser:
     """The shared extract/CSRF/§10.1-verify authentication pipeline
     (CONTRACT.md §10) underlying both :func:`require_authenticated_user` and
@@ -204,8 +252,17 @@ async def _authenticate(
        signature-only primitive is never used here.
     4. Returns :class:`AxiamUser` on success; raises ``HTTPException`` 401 on
        any authentication failure, never including the raw token value.
+
+    ``challenges`` is CONTRACT.md §28.5's precomputed challenge set — built
+    once by the calling guard factory, ``None`` when ``resource_metadata_url``
+    is unset on ``verifier``. Every 401 this function raises carries the
+    ``WWW-Authenticate`` header when it is not ``None`` (§28.5 rule 4): a
+    credential was presented and rejected, so both 401s below are
+    ``invalid_token`` — expired, wrong tenant, wrong audience, bad signature,
+    a malformed claim, all indistinguishably, because every distinction a 401
+    draws for an unauthenticated stranger is an oracle (CONTRACT.md §28.4).
     """
-    credential = _extract_token(request)
+    credential = _extract_token(request, challenges)
 
     if credential.from_cookie and request.method.upper() not in _SAFE_METHODS:
         _assert_csrf_valid(request)
@@ -221,7 +278,9 @@ async def _authenticate(
         claims = verifier.verify_access_token(token, expected_tenant_id=configured_tenant)
     except Exception as exc:
         raise HTTPException(
-            status_code=_AUTH_FAILED_STATUS, detail="invalid or expired token"
+            status_code=_AUTH_FAILED_STATUS,
+            detail="invalid or expired token",
+            headers=_mcp_headers(challenges, credential_presented=True),
         ) from exc
 
     tenant_id = claims["tenant_id"]
@@ -239,7 +298,11 @@ async def _authenticate(
 
     subject = claims.get("sub")
     if not subject:
-        raise HTTPException(status_code=_AUTH_FAILED_STATUS, detail="invalid or expired token")
+        raise HTTPException(
+            status_code=_AUTH_FAILED_STATUS,
+            detail="invalid or expired token",
+            headers=_mcp_headers(challenges, credential_presented=True),
+        )
 
     return AxiamUser(user_id=subject, tenant_id=tenant_id, roles=roles)
 
@@ -272,13 +335,19 @@ def require_authenticated_user(
     for the exact steps. Returns :class:`AxiamUser` on success; raises
     ``HTTPException`` 401 on any authentication failure, never including the
     raw token value.
+
+    CONTRACT.md §28.5: every 401 this dependency raises carries a
+    ``WWW-Authenticate`` challenge when ``verifier`` was built with
+    ``resource_metadata_url`` set — precomputed here, at factory-construction
+    time, from ``verifier.mcp_challenges(...)``.
     """
+    challenges = verifier.mcp_challenges("require_authenticated_user")
 
     async def _dependency(request: Request) -> AxiamUser:
         """The actual ``Depends(...)``-injected coroutine — delegates
         entirely to :func:`_authenticate` (see :func:`require_authenticated_user`'s
         docstring for the pipeline it runs)."""
-        return await _authenticate(request, verifier, configured_tenant)
+        return await _authenticate(request, verifier, configured_tenant, challenges)
 
     return _dependency
 
@@ -407,11 +476,16 @@ def require_access(
             "require_access requires exactly one of resource_id, resource_param, or resolver"
         )
 
+    # CONTRACT.md §28.5 rule 5: built here, from this route's own `scope`
+    # argument, so a scope outside RFC 6750's syntax fails at route setup
+    # rather than on the first denial.
+    challenges = verifier.mcp_challenges("require_access", scope)
+
     async def _dependency(request: Request) -> AxiamUser:
         """The actual ``Depends(...)``-injected coroutine — authenticate,
         resolve the resource, then perform the authorization check (see
         :func:`require_access`'s docstring for the full pipeline)."""
-        user = await _authenticate(request, verifier, configured_tenant)
+        user = await _authenticate(request, verifier, configured_tenant, challenges)
         target_resource_id = _resolve_resource_id(
             request,
             resource_id=resource_id,
@@ -424,7 +498,12 @@ def require_access(
                 action, target_resource_id, scope=scope, subject_id=user.user_id
             )
         except AuthzError as exc:
-            raise await _denied(action, target_resource_id, uma_challenge) from exc
+            # A transport-produced denial carries no `reason_code` — never
+            # eligible for the §28.5 rule 5 challenge (an unrecognised code
+            # leaves the outcome alone, and an absent one is the same).
+            raise await _denied(
+                action, target_resource_id, uma_challenge, challenges, None
+            ) from exc
         except (AuthError, NetworkError) as exc:
             # §11.2.5: fail closed — a transport failure while calling the
             # authz endpoint is "couldn't decide", never a silent allow.
@@ -437,50 +516,77 @@ def require_access(
             ) from exc
 
         if not result.allowed:
-            raise await _denied(action, target_resource_id, uma_challenge)
+            raise await _denied(
+                action, target_resource_id, uma_challenge, challenges, result.reason_code
+            )
         return user
 
     return _dependency
 
 
-async def _denied(action: str, resource_id: str, challenger: UmaChallenger | None) -> HTTPException:
-    """Build the 403, minting a §20.3 challenge when one was configured.
+async def _denied(
+    action: str,
+    resource_id: str,
+    challenger: UmaChallenger | None,
+    challenges: McpGuardChallenges | None,
+    reason_code: str | None,
+) -> HTTPException:
+    """Build the 403, minting a §20.3 challenge when one was configured,
+    else falling back to a CONTRACT.md §28.5 rule 5 challenge when this
+    denial is a scope-named ``no_grant``.
 
-    Only ever reached on a path that has already decided to refuse, so minting
-    cannot change the outcome — at worst it fails and the caller gets the plain
-    403 they would have got anyway.
+    Only ever reached on a path that has already decided to refuse, so
+    minting cannot change the outcome — at worst it fails and the caller
+    gets the plain 403 they would have got anyway.
+
+    Where a route carries both a §20.3 UMA challenger and a §28
+    ``resource_metadata_url``, the UMA challenge wins: it is per-route
+    opt-in and carries a live ticket for the exact authority just refused,
+    where §28.5 rule 5's is the generic "ask for this scope" hint. The body
+    is the unchanged §11.2.5 shape either way — ``insufficient_scope``
+    appears only in the header, never in the body.
     """
     detail = {
         "error": "authorization_denied",
         "message": f"caller lacks permission for action {action!r}",
     }
-    if challenger is None:
-        return HTTPException(status_code=_AUTHZ_DENIED_STATUS, detail=detail)
 
-    try:
-        # §20.2: the UMA scope is the AXIAM *action*, which is what makes the
-        # ticket ask for exactly the authority this check just refused — and
-        # what keeps a deny rule vetoing the resulting RPT the same way it
-        # vetoed the check.
-        ticket = await challenger.client.uma_request_ticket(
-            challenger.pat,
-            [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
+    if challenger is not None:
+        try:
+            # §20.2: the UMA scope is the AXIAM *action*, which is what makes
+            # the ticket ask for exactly the authority this check just
+            # refused — and what keeps a deny rule vetoing the resulting RPT
+            # the same way it vetoed the check.
+            ticket = await challenger.client.uma_request_ticket(
+                challenger.pat,
+                [RequestedPermission(resource_id=resource_id, resource_scopes=[action])],
+            )
+        except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
+            # Deliberately broad and deliberately silent: any failure to mint
+            # leaves the denial exactly as it was. Not logged either, because
+            # a Protection API failure message can echo a credential and
+            # §11.2.8 keeps those out of this path.
+            ticket = None
+        if ticket is not None:
+            return HTTPException(
+                status_code=_AUTHZ_DENIED_STATUS,
+                detail=detail,
+                # Additive: the body above is the unchanged §11.2.5 shape.
+                headers={
+                    "WWW-Authenticate": uma_challenge_header(
+                        challenger.realm, challenger.as_uri, ticket
+                    )
+                },
+            )
+
+    mcp_challenge = challenge_for_403(challenges, reason_code)
+    if mcp_challenge is not None:
+        return HTTPException(
+            status_code=_AUTHZ_DENIED_STATUS,
+            detail=detail,
+            headers={"WWW-Authenticate": mcp_challenge},
         )
-    except Exception:  # noqa: BLE001 - see UmaChallenger's "failure is not escalation"
-        # Deliberately broad and deliberately silent: any failure to mint leaves
-        # the denial exactly as it was. Not logged either, because a Protection
-        # API failure message can echo a credential and §11.2.8 keeps those out
-        # of this path.
-        return HTTPException(status_code=_AUTHZ_DENIED_STATUS, detail=detail)
-
-    return HTTPException(
-        status_code=_AUTHZ_DENIED_STATUS,
-        detail=detail,
-        # Additive: the body above is the unchanged §11.2.5 shape.
-        headers={
-            "WWW-Authenticate": uma_challenge_header(challenger.realm, challenger.as_uri, ticket)
-        },
-    )
+    return HTTPException(status_code=_AUTHZ_DENIED_STATUS, detail=detail)
 
 
 def require_role(
@@ -502,13 +608,18 @@ def require_role(
         @app.delete("/admin/reset")
         async def reset(user: AxiamUser = Depends(require_role(verifier, "acme", "admin"))):
             ...
+
+    CONTRACT.md §28.5: this guard's own 401 carries the same challenge every
+    other 401 does; a role failure (403) is not a scope failure, so it never
+    carries one (§28.5 rule 5).
     """
+    challenges = verifier.mcp_challenges("require_role")
 
     async def _dependency(request: Request) -> AxiamUser:
         """The actual ``Depends(...)``-injected coroutine — authenticate,
         then check the verified identity's roles locally (see
         :func:`require_role`'s docstring)."""
-        user = await _authenticate(request, verifier, configured_tenant)
+        user = await _authenticate(request, verifier, configured_tenant, challenges)
         if not any(role in user.roles for role in roles):
             raise HTTPException(
                 status_code=_AUTHZ_DENIED_STATUS,
@@ -520,6 +631,119 @@ def require_role(
         return user
 
     return _dependency
+
+
+def serve_protected_resource_metadata(
+    app: FastAPI | APIRouter,
+    metadata: ProtectedResourceMetadata,
+    verifier: JwksVerifier | None = None,
+) -> ProtectedResourceMetadata:
+    """``serve_protected_resource_metadata(app, metadata)`` (CONTRACT.md
+    §28.3) — register the one ``GET`` route that serves the RFC 9728
+    protected-resource metadata document, on the FastAPI application or
+    router given, and return the same ``metadata`` value so a guard's
+    ``resource_metadata_url`` can be fed from it.
+
+    **The path is derived, not chosen, and exactly one route is
+    registered.** The root form is not also registered for a resource that
+    has a path: a deployment fronting two resources would then have two
+    helpers competing for the same root path and registration order would
+    decide the loser. A deployment fronting several resources calls this
+    once per resource, and the derived paths cannot collide because each
+    comes from its own resource.
+
+    The response is ``200`` with ``Content-Type: application/json``, the
+    document as its body, ``Cache-Control: public, max-age=3600`` and
+    ``Access-Control-Allow-Origin: *`` — the last because an MCP client
+    running in a browser cannot read the document without it, and it is
+    safe precisely because the response is identical for every caller
+    (§28.3 rule 4). It carries no ``Access-Control-Allow-Credentials``,
+    which would be asking a browser to attach the caller's cookies to a
+    request that has no use for them.
+
+    **This module is a dependency-only integration (D-09) with no
+    ASGI-middleware variant** (see the module docstring), so unlike the
+    TypeScript/Express/Fastify and Django ports, there is no global guard
+    for this route to be exempted from: the route this function registers
+    carries no ``Depends(...)`` at all, so it answers without a credential
+    by construction — §28.3 rule 2 is satisfied structurally rather than by
+    an explicit path exemption.
+
+    Args:
+        app: A ``FastAPI`` application or an ``APIRouter``. Register on the
+            application root: a router mounted under a prefix would serve
+            the document at a path the derived URL does not name.
+        metadata: The value :func:`~axiam_sdk.protected_resource_metadata`
+            returned.
+        verifier: Optionally, the :class:`JwksVerifier` guards on this
+            application are built from. Passing it applies CONTRACT.md
+            §28.5 rule 3: ``verifier.resource_metadata_url`` must equal
+            ``metadata.metadata_url`` and ``verifier.expected_audience``
+            must equal ``metadata.document.resource``, or this call raises
+            — the document would otherwise announce one identifier while
+            the guard checked ``aud`` against another, so every token the
+            flow produced would be refused. Omit it where the verifier is
+            configured in another process; nothing can be cross-checked
+            there, and ``metadata.metadata_url`` is how both sides are
+            configured from one constant instead.
+
+    Returns:
+        ``metadata``, unchanged — returned for symmetry with
+        :func:`~axiam_sdk.protected_resource_metadata` and so the route
+        registration reads as one expression when the caller does not need
+        the value again.
+
+    Raises:
+        ValidationError: when ``verifier`` is given and either of §28.5
+            rule 3's two comparisons fails.
+    """
+    if verifier is not None:
+        if verifier.resource_metadata_url != metadata.metadata_url:
+            raise ValidationError(
+                "serve_protected_resource_metadata",
+                400,
+                f"resource_metadata_url: is {verifier.resource_metadata_url!r} but this "
+                f"document is published at {metadata.metadata_url!r} — the challenge would "
+                "point at a document that is not this resource server's (CONTRACT.md §28)",
+                [
+                    FieldError(
+                        field="resource_metadata_url",
+                        message="does not equal the document's metadata_url",
+                    )
+                ],
+            )
+        if verifier.expected_audience != metadata.document.resource:
+            raise ValidationError(
+                "serve_protected_resource_metadata",
+                400,
+                f"expected_audience: is {verifier.expected_audience!r} but this document "
+                f"announces {metadata.document.resource!r} — the document would announce one "
+                "identifier while the guard checked aud against another, so every token the "
+                "flow produced would be refused (CONTRACT.md §28)",
+                [
+                    FieldError(
+                        field="expected_audience",
+                        message="does not equal the document's resource",
+                    )
+                ],
+            )
+
+    # §28.3 rule 4: the response is identical for every caller, so there is
+    # nothing per-request to build.
+    body = metadata.document.to_dict()
+
+    @app.get(metadata.metadata_path, include_in_schema=False)
+    async def _protected_resource_metadata_route() -> JSONResponse:
+        """The unauthenticated route serving the document (§28.3 rules 1-4)."""
+        return JSONResponse(
+            body,
+            headers={
+                "Cache-Control": "public, max-age=3600",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
+    return metadata
 
 
 #: §12 login-glue HTTP status mapping (port-brief-addendum item 19,
@@ -715,4 +939,5 @@ __all__ = [
     "require_access",
     "require_authenticated_user",
     "require_role",
+    "serve_protected_resource_metadata",
 ]

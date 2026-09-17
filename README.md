@@ -24,14 +24,23 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 ## Contract conformance
 
 This SDK conforms to **contract 1.38**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
-§19, §20, §21, §22, §23, §24, §25, §26, §27 (including §6.1 mTLS and the §10.1 minimum
-local-verification set). §12 is implemented in full at its 1.38 shape: all **thirteen**
-operations, including the four public "Sign in with X" entry points, on both clients.
+§19, §20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS and the §10.1
+minimum local-verification set). §12 is implemented in full at its 1.38 shape: all
+**thirteen** operations, including the four public "Sign in with X" entry points, on
+both clients.
 
-§12.7, §14, §15, §20, §22, §24, §25, §26 and §27 are named rather than folded into the
-range because they landed after this SDK already claimed §1–§13: widening the
+§12.7, §14, §15, §20, §22, §24, §25, §26, §27 and §28 are named rather than folded into
+the range because they landed after this SDK already claimed §1–§13: widening the
 range silently would turn a statement that was true when written into a
 different claim without anyone editing it.
+
+§28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
+guard built without `resource_metadata_url` is byte-for-byte what it was before §28
+existed. See [MCP resource-server helpers (§28)](#mcp-resource-server-helpers-28).
+The vendored [`CONTRACT.md`](./CONTRACT.md) is synced to contract 1.48, ahead of
+`ilpanich/axiam`'s `main` branch until Phase 21 lands there — §28.10's per-SDK
+posture table in that vendored copy therefore still reads "not yet" for `python`,
+reflecting the source repository's state at sync time rather than this SDK's own.
 
 §27 is the management API — 160 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
@@ -49,8 +58,11 @@ names — `login`, `verify_mfa`, `refresh`, `logout`, `check_access`, `can`,
 twin on the sync class). Each client owns its own session, cookie jar, and
 single-flight refresh guard. gRPC (sync `grpcio` + async `grpc.aio`), AMQP
 (async-only `aio-pika`), a FastAPI dependency plus an `oidc_login_router`,
-and a Django middleware plus `oidc_login_views`, are all available. Seven
-runnable examples live under [`examples/`](./examples).
+and a Django middleware plus `oidc_login_views`, are all available. Both
+framework surfaces also carry the §28 MCP resource-server helpers —
+`protected_resource_metadata`/`bearer_challenge` (framework-agnostic) plus a
+`serve_protected_resource_metadata` per framework — opt-in and off by
+default. Seven runnable examples live under [`examples/`](./examples).
 
 ## Installation
 
@@ -1788,6 +1800,180 @@ accepted.
 A client with no `client_cert=` never reads the member at all, not even to
 validate it, so a deployment whose aliases are malformed cannot break the
 clients that never use them.
+
+## MCP resource-server helpers (§28)
+
+The resource-server half of the Model Context Protocol authorization
+handshake (RFC 9728 + RFC 6750). This is the **other side** of §12: AXIAM is
+the authorization server and implements none of §28 — this section is for a
+service *fronted by this SDK's own guard* (typically an MCP server) that
+wants to publish an RFC 9728 protected-resource metadata document and emit an
+RFC 6750 `WWW-Authenticate` challenge pointing at it, so an MCP client that
+gets refused knows which authorization server to go discover.
+
+Three operations, none of which perform network I/O (no retry, no
+single-flight — they are pure local computation, like `oidc_begin` and
+`uma_parse_challenge`), plus one guard option:
+
+```python
+from axiam_sdk import bearer_challenge, protected_resource_metadata
+
+metadata = protected_resource_metadata(
+    resource="https://mcp.example.com/mcp",
+    authorization_servers=["https://axiam.example.com"],
+    scopes_supported=["mcp:read", "mcp:tools"],
+)
+metadata.metadata_path  # '/.well-known/oauth-protected-resource/mcp'
+metadata.metadata_url  # 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp'
+
+bearer_challenge(metadata.metadata_url, error="insufficient_scope", scope="mcp:tools")
+# 'Bearer error="insufficient_scope", scope="mcp:tools", resource_metadata="https://.../mcp"'
+```
+
+**Validation refuses; it never repairs.** Every §28.2 rule — an absolute
+`https` (or `http` on `127.0.0.1`/`[::1]`/`localhost`) `resource` with no
+query and no fragment, at least one `authorization_servers` entry, scope
+tokens restricted to RFC 6749's `NQCHAR`, `bearer_methods_supported` fixed to
+`["header"]` — is checked at construction and raises `ValidationError`
+(CONTRACT.md §2's taxonomy; §28 adds no new error type) rather than
+normalising a bad value into a passing one.
+
+### Turning it on: `resource_metadata_url`
+
+Setting `resource_metadata_url` is what turns §28 on for a guard — with it
+unset, every guard in this SDK behaves byte-for-byte as it did before §28
+existed: no `WWW-Authenticate` header on any response, no status changed, no
+body changed. It **requires** `expected_audience` to also be set (§10.1 row
+6's existing option, under its existing name — §28 adds no second audience
+option): a resource server that publishes "tokens for me carry this `aud`"
+and does not check `aud` has published a claim it does not honour, and the
+SDK refuses the configuration rather than merely discouraging it.
+
+**FastAPI** — both settings live on `JwksVerifier`, the same object every
+`require_*` factory already takes, so every guard built from one verifier
+shares one §28 policy:
+
+```python
+from fastapi import Depends, FastAPI
+from axiam_sdk import protected_resource_metadata
+from axiam_sdk.fastapi import JwksVerifier, require_access, serve_protected_resource_metadata
+
+metadata = protected_resource_metadata(
+    resource="https://mcp.example.com/mcp",
+    authorization_servers=["https://axiam.example.com"],
+    scopes_supported=["mcp:read", "mcp:tools"],
+)
+verifier = JwksVerifier(
+    base_url,
+    expected_audience=metadata.document.resource,
+    resource_metadata_url=metadata.metadata_url,
+)
+
+app = FastAPI()
+serve_protected_resource_metadata(app, metadata, verifier)  # cross-checks the two above
+
+require_tools = require_access(
+    verifier, "acme", authz_client, "tools:call", resource_id="…", scope="mcp:tools"
+)
+
+
+@app.post("/mcp")
+async def mcp(user=Depends(require_tools)): ...
+```
+
+Because this module is a **dependency-only** integration (D-09) with no
+ASGI-middleware variant, `serve_protected_resource_metadata` registers a
+route with no `Depends(...)` at all — it is unauthenticated by construction,
+which is this port's answer to §28.3 rule 2's "exempt the metadata path from
+the global guard": there is no global guard here to exempt it from.
+
+**Django** — the same two settings live in `settings.py`, alongside the
+ones `AxiamAuthMiddleware` already reads, and the middleware — which *does*
+guard every request globally — exempts the derived metadata path itself:
+
+```python
+# settings.py
+AXIAM_EXPECTED_AUDIENCE = "https://mcp.example.com/mcp"
+AXIAM_RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+```python
+# urls.py
+from axiam_sdk import protected_resource_metadata
+from axiam_sdk.django.mcp import serve_protected_resource_metadata
+
+metadata = protected_resource_metadata(
+    resource="https://mcp.example.com/mcp",
+    authorization_servers=["https://axiam.example.com"],
+    scopes_supported=["mcp:read", "mcp:tools"],
+)
+
+urlpatterns = [...]
+serve_protected_resource_metadata(
+    urlpatterns,
+    metadata,
+    expected_audience=settings.AXIAM_EXPECTED_AUDIENCE,
+    resource_metadata_url=settings.AXIAM_RESOURCE_METADATA_URL,
+)  # cross-checks the two settings above against `metadata`
+```
+
+Django's router is a plain `urlpatterns` list rather than an app/router
+object to call `.get(path, handler)` on the way Express, Fastify and FastAPI
+have — so `serve_protected_resource_metadata` takes that list as its `app`
+and appends one entry to it, the closest structural analogue this framework
+has. And because `urls.py` and `settings.py` are different modules, the
+cross-check against `AxiamAuthMiddleware`'s own configuration is spelled out
+as the two settings values rather than a shared verifier object — pass
+`expected_audience=`/`resource_metadata_url=` to get it, or omit both to skip
+it (exactly like omitting FastAPI's `verifier=` argument above).
+
+### The challenge itself
+
+Every 401 a §28-configured guard emits carries `WWW-Authenticate:
+Bearer resource_metadata="…"` — no `error` parameter when the request carried
+no credential at all (RFC 6750 §3's "no authentication information"), or
+`error="invalid_token"` when one was presented and rejected. The challenge
+never says *why*: expired, wrong tenant, wrong audience, bad signature, an
+unsatisfiable `cnf`, a revoked `sid` are all `invalid_token`,
+indistinguishably — every distinction a 401 draws for an unauthenticated
+stranger is an oracle, so no `error_description` is ever added.
+
+Exactly one class of 403 gains a header: a `require_access` (or
+Django's `@require_access`) call that named a `scope=` argument, whose
+decision came back `no_grant` — "nothing matched, ask for more" is exactly
+what a challenge invites. `denied_by_rule` ("an administrator has already
+decided"), a role-only `require_role` failure, a CSRF refusal and a decision
+with no `scope` argument all carry no header — sending a client through the
+discovery loop to arrive at the identical refusal would be worse than no
+challenge. The JSON body **never changes**: `insufficient_scope` appears only
+in the header, and the body stays the unchanged §11 `authorization_denied`
+shape. Where a route also carries a §20.3 `uma_challenge`, the UMA challenge
+wins and exactly one `WWW-Authenticate` value is emitted.
+
+### gRPC and AMQP
+
+§28.5 rule 8 leaves a gRPC form optional (attaching the same challenge string
+as `www-authenticate` metadata on an `UNAUTHENTICATED` status) and forbids an
+AMQP form outright (there is no client waiting on a response to
+re-authorize with). Neither applies to this SDK: its `axiam_sdk.grpc` and
+`axiam_sdk.amqp` modules are this SDK acting as a **client** of AXIAM's own
+gRPC/AMQP surfaces — `CheckAccess`/`GetUserInfo` and the reactor bus — not a
+resource-server guard protecting an integrator's own gRPC or AMQP service.
+There is no §28-shaped guard on either transport for `bearer_challenge` to
+attach to, so neither is wired up.
+
+### The five required tests
+
+Document shape and the §28.2 validation negatives; challenge quoting
+(the four RFC 6750 test vectors, and that a refused value raises rather than
+escaping into `\"`); a 401 with the challenge (no credential, and an expired
+token) plus the metadata document answering unauthenticated; a 403 whose
+`reason_code` is `no_grant` carrying `insufficient_scope` and every other
+403 carrying nothing; and a token whose `aud` is not the resource refused
+identically to any other `invalid_token`. The framework-independent two live
+in `tests/test_mcp.py`; the three that need a guard are duplicated against
+both frameworks in `tests/test_fastapi_mcp.py` and `tests/test_django_mcp.py`,
+alongside each surface's own off-by-default regression.
 
 ## Development
 

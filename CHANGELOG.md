@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP resource-server helpers** (CONTRACT.md §28, RFC 9728 + RFC 6750,
+  contract 1.48) — the resource-server half of the Model Context Protocol
+  authorization handshake, on both the FastAPI dependency and the Django
+  middleware/decorators. AXIAM is the authorization server and implements
+  none of §28; this section is for a service — typically an MCP server —
+  fronted by this SDK's own guard.
+
+  Three operations, all pure local computation (no network I/O, so §16's
+  retry policy and §9's single-flight refresh do not apply): top-level
+  `protected_resource_metadata(...)` and `bearer_challenge(...)` build the
+  RFC 9728 document and the RFC 6750 `WWW-Authenticate` value respectively;
+  `serve_protected_resource_metadata(...)` registers the unauthenticated
+  route that serves the document and is framework-specific —
+  `axiam_sdk.fastapi.serve_protected_resource_metadata(app, metadata,
+  verifier=None)` and `axiam_sdk.django.mcp.serve_protected_resource_metadata
+  (urlpatterns, metadata, expected_audience=None, resource_metadata_url=None)`.
+
+  **Opt-in and additive.** A new `resource_metadata_url` option — on
+  `JwksVerifier` for FastAPI, `settings.AXIAM_RESOURCE_METADATA_URL` for
+  Django — is what turns §28 on. Left unset, every guard in this SDK is
+  byte-for-byte what it was before §28 existed: no `WWW-Authenticate` header
+  on any response, no status changed, no body changed. Setting it *requires*
+  `expected_audience` (`JwksVerifier`'s existing §10.1 row 6 option /
+  `settings.AXIAM_EXPECTED_AUDIENCE`) to also be set — the SDK refuses the
+  configuration at construction, naming both options, rather than publishing
+  a resource identifier it does not check `aud` against.
+
+  Every 401 a §28-configured guard emits carries the challenge: no `error`
+  parameter when the request carried no credential at all, `error=
+  "invalid_token"` when one was presented and rejected — expired, wrong
+  tenant, wrong audience, bad signature, an unsatisfiable `cnf`, a revoked
+  `sid` are all `invalid_token`, indistinguishably, and the guard never adds
+  an `error_description` to that automatic challenge. Exactly one class of
+  403 gains a header: a `require_access`/`@require_access` call that named a
+  `scope=` argument whose decision came back `reason_code="no_grant"`; every
+  other 403 (`denied_by_rule`, an absent/unrecognised `reason_code`, a
+  scope-less denial, a `require_role` failure, a CSRF refusal) carries none.
+  The JSON body never changes — `insufficient_scope` appears only in the
+  header, the body stays the unchanged §11 `authorization_denied` shape.
+  Where a route also carries a §20.3 `uma_challenge`, the UMA challenge wins
+  and exactly one `WWW-Authenticate` value is ever emitted.
+
+  `protected_resource_metadata`/`bearer_challenge` validate and refuse
+  (`ValidationError`, CONTRACT.md §2's existing taxonomy — §28 adds no new
+  error type); neither ever normalises, trims or escapes a bad value to make
+  it pass.
+
+  **Divergences from the TypeScript reference (T9b), both structural rather
+  than behavioural, and both documented in code:** FastAPI is a
+  dependency-only integration with no ASGI-middleware variant, so
+  `serve_protected_resource_metadata` registers a route carrying no
+  `Depends(...)` at all rather than exempting one path from a global guard
+  that does not exist on this surface. Django has no central
+  application/router object the way Express, Fastify and FastAPI do — URL
+  routing is a plain `urlpatterns` list — so that list stands in for `app`,
+  and because `urls.py` and `settings.py` are separate modules,
+  `serve_protected_resource_metadata`'s §28.5 rule 3 cross-check takes the
+  two raw setting values rather than a shared verifier/session object.
+
+  This SDK ships no resource-server-side gRPC or AMQP guard — `axiam_sdk.grpc`
+  and `axiam_sdk.amqp` are this SDK acting as AXIAM's *client* over those
+  transports, not a guard protecting an integrator's own service — so §28.5
+  rule 8's optional gRPC `www-authenticate` metadata form and its AMQP
+  prohibition both find no guard to attach to or forbid anything on; neither
+  is wired up.
+
+  Tests: the five §28.9 required tests, on §28.9's own fixture — the two
+  framework-independent ones (document shape + validation negatives,
+  challenge quoting + refusals) in `tests/test_mcp.py`; the three that need a
+  live guard (401 with the challenge, 403 `insufficient_scope`, a wrong-`aud`
+  token refused) duplicated against both frameworks in
+  `tests/test_fastapi_mcp.py` and `tests/test_django_mcp.py`, alongside each
+  surface's own off-by-default regression asserting the header's absence
+  rather than merely the status.
+
+  `CONTRACT.md`/`openapi.json` re-synced to contract 1.48 from
+  `ilpanich/axiam`'s `claude_dev/mcp-authorization-server-plan.md` branch
+  (`claude/t21-2a-public-clients`), ahead of that repository's `main` until
+  Phase 21 lands. The §27 management surface (`src/axiam_sdk/management/`,
+  `tests/test_management_surface_generated.py`) is regenerated from the
+  newer `openapi.json` in the same change — `scripts/gen_management.py
+  --check` fails otherwise — picking up, additively, T21.2's public-client
+  `token_endpoint_auth_method: none` (and the now-optional
+  `OAuth2ClientCreatedResponse.client_secret`), T21.3's `allowed_resources`
+  RFC 8707 audience allow-list, and T21.4's `ManagedBy` client-provenance
+  discriminator; no existing management operation, request or response
+  shape changes.
+
 ## [1.0.0-beta15] - 2026-09-15
 
 ### Added

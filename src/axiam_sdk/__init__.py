@@ -8,6 +8,13 @@ models (``LoginResult``, ``User``, ``AccessCheck``, ``AccessResult``,
 ``BatchCheckResult``, ``UserInfo``). See CONTRACT.md §1-§10 for the
 cross-language behavioral contract this SDK conforms to.
 
+Also re-exports CONTRACT.md §28's two framework-agnostic MCP resource-server
+operations, ``protected_resource_metadata`` and ``bearer_challenge`` (RFC 9728
++ RFC 6750) — both pure, I/O-free computation, like ``uma_parse_challenge``.
+The third, ``serve_protected_resource_metadata``, registers a route and is
+therefore framework-specific; find it on ``axiam_sdk.fastapi`` and
+``axiam_sdk.django``.
+
 This module MUST remain importable with ONLY the runtime dependencies
 declared in ``[project.dependencies]`` (httpx, grpcio, aio-pika, pydantic,
 PyJWT) — the optional web-framework integrations (``axiam_sdk.fastapi``,
@@ -19,6 +26,12 @@ from axiam_sdk._account import MfaEnrollment, PasswordResetContext
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError, OAuthProtocolError
+from axiam_sdk._mcp import (
+    ProtectedResourceMetadata,
+    ProtectedResourceMetadataDocument,
+    bearer_challenge,
+    protected_resource_metadata,
+)
 from axiam_sdk._models import (
     AccessCheck,
     AccessResult,
@@ -168,4 +181,12 @@ __all__ = [
     "PasswordResetContext",
     # §26 pushed authorization requests (RFC 9126).
     "PushedAuthorizationRequest",
+    # §28 MCP resource-server helpers (RFC 9728 + RFC 6750). Framework-agnostic
+    # and I/O-free, so they live at the top level rather than under
+    # `axiam_sdk.fastapi`/`axiam_sdk.django` — `serve_protected_resource_metadata`
+    # is the one §28 operation that is framework-specific and stays there.
+    "ProtectedResourceMetadata",
+    "ProtectedResourceMetadataDocument",
+    "bearer_challenge",
+    "protected_resource_metadata",
 ]
