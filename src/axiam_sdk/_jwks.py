@@ -54,6 +54,7 @@ from jwt.exceptions import MissingRequiredClaimError, PyJWTError
 from jwt.types import Options
 
 from axiam_sdk._errors import AuthError
+from axiam_sdk._mcp import McpGuardChallenges, mcp_guard_challenges
 from axiam_sdk._revocation_feed import RevocationFeed
 
 _LOGGER = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class JwksVerifier:
         expected_audience: str | None = None,
         clock_skew_seconds: float = DEFAULT_CLOCK_SKEW_SECONDS,
         revocation_feed: RevocationFeed | None = None,
+        resource_metadata_url: str | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -158,11 +160,26 @@ class JwksVerifier:
                 (CONTRACT.md §10.1 rule 7), defaulting to the RECOMMENDED
                 :data:`DEFAULT_CLOCK_SKEW_SECONDS`. Bounded to
                 ``0 .. MAX_CLOCK_SKEW_SECONDS``.
+            resource_metadata_url: CONTRACT.md §28.5 — the URL of this
+                resource server's RFC 9728 protected-resource metadata
+                document, as derived by
+                :func:`~axiam_sdk.protected_resource_metadata`. **Unset by
+                default**, and with it unset every guard built from this
+                verifier behaves byte-for-byte as it did before §28
+                existed: no ``WWW-Authenticate`` header on any response, no
+                status changed, no body changed. Setting it is what turns
+                §28 on, and it REQUIRES ``expected_audience`` to also be
+                set — a resource server that publishes "tokens for me carry
+                this ``aud``" and does not check ``aud`` has published a
+                claim it does not honour.
 
         Raises:
             ValueError: if ``clock_skew_seconds`` is negative or exceeds
                 :data:`MAX_CLOCK_SKEW_SECONDS` — §10.1 rule 7 forbids an
                 operator-settable unbounded leeway.
+            ValidationError: if ``resource_metadata_url`` is set without
+                ``expected_audience`` (CONTRACT.md §28.5 rule 2), or if
+                either is outside RFC 6750's syntax.
         """
         if not 0 <= clock_skew_seconds <= MAX_CLOCK_SKEW_SECONDS:
             raise ValueError(
@@ -173,6 +190,13 @@ class JwksVerifier:
         self._expected_audience = expected_audience
         self._clock_skew_seconds = clock_skew_seconds
         self._revocation_feed = revocation_feed
+        self._resource_metadata_url = resource_metadata_url
+        # §28.5 rule 2: validated eagerly, at construction — before the first
+        # request rather than as a surprise on the first guard built from
+        # this verifier. Discarded here; guard factories rebuild it (cheaply
+        # — pure string operations, no network I/O) with their own operation
+        # name and, where relevant, their route's own `scope`.
+        mcp_guard_challenges(expected_audience, resource_metadata_url, "JwksVerifier")
         resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
         # The per-key LRU cache (opt-in via a separate constructor flag,
         # intentionally left at its default/disabled state here) has no
@@ -185,6 +209,36 @@ class JwksVerifier:
         # §13.4 observation 6 — latches the slug-vs-UUID diagnostic to one
         # emission, so a stream of bad tokens cannot turn it into a log flood.
         self._slug_comparand_warned = False
+
+    @property
+    def expected_audience(self) -> str | None:
+        """§10.1 row 6's expected audience, as configured at construction —
+        readable so :func:`~axiam_sdk.fastapi.serve_protected_resource_metadata`
+        can cross-check it against a §28 document's ``resource`` (§28.5
+        rule 3)."""
+        return self._expected_audience
+
+    @property
+    def resource_metadata_url(self) -> str | None:
+        """CONTRACT.md §28.5's option, as configured at construction. ``None``
+        when §28 is off."""
+        return self._resource_metadata_url
+
+    def mcp_challenges(self, operation: str, scope: str | None = None) -> McpGuardChallenges | None:
+        """CONTRACT.md §28.5 — this verifier's precomputed §28 challenge
+        values for a guard named ``operation`` and, where the route names
+        one, its ``scope``.
+
+        Called by every FastAPI guard factory (``require_authenticated_user``,
+        ``require_access``, ``require_role``) at factory-construction time —
+        route-setup time, never per-request. Returns ``None`` when
+        :attr:`resource_metadata_url` is unset, which is how "§28 is off"
+        stays byte-for-byte indistinguishable from "§28 is absent" (§28.5
+        rule 1).
+        """
+        return mcp_guard_challenges(
+            self._expected_audience, self._resource_metadata_url, operation, scope
+        )
 
     def verify_signature_only_unchecked(self, token: str) -> dict[str, Any]:
         """Verify ``token``'s EdDSA signature against the cached JWKS and

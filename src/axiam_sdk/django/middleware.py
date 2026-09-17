@@ -60,6 +60,7 @@ from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from axiam_sdk._jwks import DEFAULT_CLOCK_SKEW_SECONDS, JwksVerifier
+from axiam_sdk._mcp import McpGuardChallenges, challenge_for_401, is_metadata_document_request
 
 #: Standardized 401 JSON error body shape (CONTRACT.md §10), no raw token
 #: value ever included — mirrors nethttp.go's errorBody{Error, Message}.
@@ -177,13 +178,29 @@ def _build_user(claims: dict[str, Any]) -> AxiamUser:
     return AxiamUser(user_id=subject, tenant_id=tenant_id, roles=roles)
 
 
-def _error_response(message: str) -> JsonResponse:
+def _error_response(
+    message: str,
+    challenges: McpGuardChallenges | None = None,
+    *,
+    credential_presented: bool = False,
+) -> JsonResponse:
     """Standardized 401 ``{"error": "authentication_failed", "message":
     ...}`` JSON body (CONTRACT.md §10) — ``message`` must never contain a
-    raw token value (T-19-21)."""
-    return JsonResponse(
+    raw token value (T-19-21).
+
+    ``challenges`` is CONTRACT.md §28.5's precomputed challenge set (``None``
+    when ``resource_metadata_url`` is unset on the middleware's verifier);
+    when given, the response also carries the ``WWW-Authenticate`` header
+    §28.5 rule 4 requires on every 401 — ``credential_presented`` selects
+    between the ``invalid_token`` vector and the no-``error`` vector §28.4
+    fixes for "no authentication information at all".
+    """
+    response = JsonResponse(
         {"error": "authentication_failed", "message": message}, status=_AUTH_FAILED_STATUS
     )
+    if challenges is not None:
+        response["WWW-Authenticate"] = challenge_for_401(challenges, credential_presented)
+    return response
 
 
 def _csrf_error_response(message: str) -> JsonResponse:
@@ -224,6 +241,15 @@ class AxiamAuthMiddleware:
         RECOMMENDED :data:`~axiam_sdk._jwks.DEFAULT_CLOCK_SKEW_SECONDS`
         (60 s) and bounded by
         :data:`~axiam_sdk._jwks.MAX_CLOCK_SKEW_SECONDS` (§10.1 rule 7).
+      - ``AXIAM_RESOURCE_METADATA_URL`` — *optional*, unset by default
+        (CONTRACT.md §28.5). Setting it is what turns §28 on: every 401 this
+        middleware emits then carries a ``WWW-Authenticate`` challenge, and
+        a ``GET``/``HEAD`` of the derived metadata path is exempted from
+        authentication (§28.3 rule 2) — register the document itself with
+        :func:`axiam_sdk.django.mcp.serve_protected_resource_metadata`.
+        REQUIRES ``AXIAM_EXPECTED_AUDIENCE`` to also be set; with
+        ``AXIAM_RESOURCE_METADATA_URL`` unset, this middleware behaves
+        byte-for-byte as it did before §28 existed.
 
     Declares ``sync_capable``/``async_capable`` per Django's "Marking
     middleware as async-capable" contract, so it runs correctly whether
@@ -275,7 +301,13 @@ class AxiamAuthMiddleware:
             clock_skew_seconds=getattr(
                 settings, "AXIAM_CLOCK_SKEW_SECONDS", DEFAULT_CLOCK_SKEW_SECONDS
             ),
+            # CONTRACT.md §28.5 — validated here, at middleware-construction
+            # time (JwksVerifier's own constructor refuses a
+            # resource_metadata_url with no expected_audience), and
+            # precomputed once below rather than per request.
+            resource_metadata_url=getattr(settings, "AXIAM_RESOURCE_METADATA_URL", None),
         )
+        self._mcp_challenges = self._verifier.mcp_challenges("AxiamAuthMiddleware")
 
     def __call__(self, request: HttpRequest) -> Any:
         """Dispatch to the sync or async call path depending on whether the
@@ -314,13 +346,28 @@ class AxiamAuthMiddleware:
         attaching ``request.axiam_user``.
 
         Returns:
-            ``None`` on success (``request.axiam_user`` has been set), or a
-            standardized 401/403 :class:`~django.http.JsonResponse` on any
-            failure — never propagating the raw token value (T-19-21).
+            ``None`` on success (``request.axiam_user`` has been set, or the
+            request is CONTRACT.md §28.3's exempted metadata-document GET/HEAD),
+            or a standardized 401/403 :class:`~django.http.JsonResponse` on
+            any failure — never propagating the raw token value (T-19-21).
         """
+        # CONTRACT.md §28.3 rule 2: the metadata document MUST answer without
+        # a credential, and this middleware guards every request globally —
+        # so the exemption is here, explicit, and derived from the one path
+        # AXIAM_RESOURCE_METADATA_URL names. A no-op (returns False) when §28
+        # is not configured.
+        if is_metadata_document_request(self._mcp_challenges, request.method, request.path):
+            return None
+
         credential = _extract_token(request)
         if not credential:
-            return _error_response("missing authentication credentials")
+            # §28.4: no credential is not a bad credential, so the challenge
+            # names no error code (RFC 6750 §3).
+            return _error_response(
+                "missing authentication credentials",
+                self._mcp_challenges,
+                credential_presented=False,
+            )
 
         if credential.from_cookie and request.method.upper() not in _SAFE_METHODS:
             if not _is_csrf_valid(request):
@@ -338,14 +385,21 @@ class AxiamAuthMiddleware:
                 token, expected_tenant_id=self._configured_tenant
             )
         except Exception:
-            return _error_response("invalid or expired token")
+            # §28.4: a credential was presented and rejected. Expired, wrong
+            # tenant, wrong audience, bad signature — all `invalid_token`,
+            # indistinguishably.
+            return _error_response(
+                "invalid or expired token", self._mcp_challenges, credential_presented=True
+            )
 
         # WR-02: a malformed-but-signed claim shape (e.g. scope: null) must
         # degrade to the standardized 401, never an unhandled 500.
         try:
             request.axiam_user = _build_user(claims)
         except _MalformedClaims:
-            return _error_response("invalid or expired token")
+            return _error_response(
+                "invalid or expired token", self._mcp_challenges, credential_presented=True
+            )
         return None
 
 
