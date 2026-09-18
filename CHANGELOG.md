@@ -107,20 +107,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract's own rule is that the statement follows the code; it now reads
   *contract 1.48*.
 
-### Deferred
+- **F-28-01 — the vendored contract artefacts are re-synced from a merged
+  `main` (contract 1.49).** This repository's copies had been re-synced above
+  from a **phase branch**, which kept moving afterwards (CONTRACT.md §28.11 row
+  R-1). They are now re-synced once, from **`ilpanich/axiam` `main` @
+  `e4c62180e`**, as contract 1.49 requires:
 
-- **F-28-01 — the vendored `openapi.json` and `CONTRACT.md` re-sync.** This
-  repository's copies were re-synced above from a **phase branch**, which kept
-  moving afterwards; they match neither `ilpanich/axiam`'s current tree nor the
-  four SDK repositories that declined the `openapi.json` re-sync. Across the
-  eleven SDKs the T21.9 T9d cross-SDK review found five distinct byte-states of
-  `CONTRACT.md` and two of `openapi.json`, all calling themselves contract 1.48
-  (CONTRACT.md §28.11 row R-1). Contract **1.49** states the rule that was
-  missing: a vendored artefact is re-synced from a **merged** `main`, never a
-  phase branch. Both artefacts are therefore re-synced here **once**, as
-  F-28-01, after AXIAM Phase 21 lands on `main`, together with a regeneration
-  of the §27 management surface in the same commit. F-28-01 is recorded
-  identically in all eleven SDK repositories so that it cannot be lost.
+  | Artefact | Blob |
+  |---|---|
+  | `CONTRACT.md` (1.49) | `2493348c3285` |
+  | `openapi.json` | `b75e30eaa359` |
+  | `management-registry.json` | `4619f441aac0` |
+
+  `proto/` already matched and is unchanged; the gRPC stubs regenerate
+  byte-identically. The §27 management surface is regenerated in the same
+  commit (`python scripts/gen_management.py`), moving from **160 to 162
+  operations** across the same 24 namespaces:
+
+  - `client.oauth2_clients.create_registration_token(body)` and
+    `client.oauth2_clients.list_registration_tokens()`, sync and async —
+    `POST` / `GET /api/v1/oauth2-clients/registration-tokens`, the RFC 7591
+    initial access tokens (T21.4). The create is not retried (§27.4 rule 8),
+    like every write here. New models `CreateRegistrationTokenRequest`,
+    `CreateRegistrationTokenResponse` and `RegistrationTokenResponse`.
+  - New model `CimdPolicy` (T21.5 client ID metadata documents), carried as an
+    optional `cimd` field on `OidcPolicy`, `SetOrgSettings` and
+    `TenantSettingsOverride`.
+
+  T21.2–T21.4's `none` auth method, optional `client_secret`,
+  `allowed_resources` and `ManagedBy` were already picked up by the
+  phase-branch regeneration above and do not move.
+  `tests/test_management_surface_generated.py` is regenerated with it. No
+  hand-written operation changes signature or behaviour. The README's
+  conformance statement now names contract 1.49.
 
 ## [1.0.0-beta15] - 2026-09-15
 

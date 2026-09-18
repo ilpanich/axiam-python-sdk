@@ -134,6 +134,42 @@ def _call_delete(
     )
 
 
+def _call_create_registration_token(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+    body: models.CreateRegistrationTokenRequest,
+) -> ManagementCall:
+    """Build the ``oauth2_clients.create_registration_token`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    return ManagementCall(
+        operation="oauth2_clients.create_registration_token",
+        method="POST",
+        path_template="/api/v1/oauth2-clients/registration-tokens",
+        path="/api/v1/oauth2-clients/registration-tokens",
+        body=body.to_wire(),
+    )
+
+
+def _call_list_registration_tokens(
+    client: _AxiamClientBase,
+    scope: NamespaceScope,
+) -> ManagementCall:
+    """Build the ``oauth2_clients.list_registration_tokens`` call.
+
+    Shared by the sync and async handles so the path, query and body are
+    decided in exactly one place.
+    """
+    return ManagementCall(
+        operation="oauth2_clients.list_registration_tokens",
+        method="GET",
+        path_template="/api/v1/oauth2-clients/registration-tokens",
+        path="/api/v1/oauth2-clients/registration-tokens",
+    )
+
+
 class Oauth2ClientsApi:
     """The ``oauth2_clients`` namespace handle.
 
@@ -221,6 +257,29 @@ class Oauth2ClientsApi:
             self._client,
             _call_delete(self._client, self._scope, id),
         )
+
+    def create_registration_token(
+        self,
+        body: models.CreateRegistrationTokenRequest,
+    ) -> models.CreateRegistrationTokenResponse:
+        """``POST /api/v1/oauth2-clients/registration-tokens``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        raw = send_management(
+            self._client,
+            _call_create_registration_token(self._client, self._scope, body),
+        )
+        return models.CreateRegistrationTokenResponse.model_validate(raw)
+
+    def list_registration_tokens(self) -> builtins.list[models.RegistrationTokenResponse]:
+        """``GET /api/v1/oauth2-clients/registration-tokens``"""
+        raw = send_management(
+            self._client,
+            _call_list_registration_tokens(self._client, self._scope),
+        )
+        return [models.RegistrationTokenResponse.model_validate(item) for item in raw or []]
 
 
 class AsyncOauth2ClientsApi:
@@ -313,3 +372,26 @@ class AsyncOauth2ClientsApi:
             self._client,
             _call_delete(self._client, self._scope, id),
         )
+
+    async def create_registration_token(
+        self,
+        body: models.CreateRegistrationTokenRequest,
+    ) -> models.CreateRegistrationTokenResponse:
+        """``POST /api/v1/oauth2-clients/registration-tokens``
+
+        Not retried on failure (§27.4 rule 8): every write on this surface
+        is issued exactly once, including the ones that look idempotent.
+        """
+        raw = await send_management_async(
+            self._client,
+            _call_create_registration_token(self._client, self._scope, body),
+        )
+        return models.CreateRegistrationTokenResponse.model_validate(raw)
+
+    async def list_registration_tokens(self) -> builtins.list[models.RegistrationTokenResponse]:
+        """``GET /api/v1/oauth2-clients/registration-tokens``"""
+        raw = await send_management_async(
+            self._client,
+            _call_list_registration_tokens(self._client, self._scope),
+        )
+        return [models.RegistrationTokenResponse.model_validate(item) for item in raw or []]

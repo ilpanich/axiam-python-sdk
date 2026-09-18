@@ -4653,6 +4653,106 @@ async def test_oauth2_clients_delete_async() -> None:
         await client.oauth2_clients.delete(EXAMPLE_ID)
 
 
+def test_oauth2_clients_create_registration_token() -> None:
+    """``oauth2_clients.create_registration_token`` -- POST
+    /api/v1/oauth2-clients/registration-tokens.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/oauth2-clients/registration-tokens",
+            201,
+            {
+                "initial_access_token": "example",
+                "token": {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "created_by": "11111111-1111-4111-8111-111111111111",
+                    "expires_at": "2026-08-26T00:00:00Z",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                },
+            },
+        )
+        client.oauth2_clients.create_registration_token(
+            models.CreateRegistrationTokenRequest(name="example")
+        )
+
+
+@pytest.mark.asyncio
+async def test_oauth2_clients_create_registration_token_async() -> None:
+    """``oauth2_clients.create_registration_token`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/oauth2-clients/registration-tokens",
+            201,
+            {
+                "initial_access_token": "example",
+                "token": {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "created_by": "11111111-1111-4111-8111-111111111111",
+                    "expires_at": "2026-08-26T00:00:00Z",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                },
+            },
+        )
+        await client.oauth2_clients.create_registration_token(
+            models.CreateRegistrationTokenRequest(name="example")
+        )
+
+
+def test_oauth2_clients_list_registration_tokens() -> None:
+    """``oauth2_clients.list_registration_tokens`` -- GET
+    /api/v1/oauth2-clients/registration-tokens.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/oauth2-clients/registration-tokens",
+            200,
+            [
+                {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "created_by": "11111111-1111-4111-8111-111111111111",
+                    "expires_at": "2026-08-26T00:00:00Z",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            ],
+        )
+        client.oauth2_clients.list_registration_tokens()
+
+
+@pytest.mark.asyncio
+async def test_oauth2_clients_list_registration_tokens_async() -> None:
+    """``oauth2_clients.list_registration_tokens`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/oauth2-clients/registration-tokens",
+            200,
+            [
+                {
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "created_by": "11111111-1111-4111-8111-111111111111",
+                    "expires_at": "2026-08-26T00:00:00Z",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "name": "example",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            ],
+        )
+        await client.oauth2_clients.list_registration_tokens()
+
+
 def test_federation_list_configs() -> None:
     """``federation.list_configs`` -- GET /api/v1/federation-configs."""
     with with_client() as (router, client):
@@ -7082,9 +7182,11 @@ EXERCISED = [
     "notification_rules.list",
     "notification_rules.update",
     "oauth2_clients.create",
+    "oauth2_clients.create_registration_token",
     "oauth2_clients.delete",
     "oauth2_clients.get",
     "oauth2_clients.list",
+    "oauth2_clients.list_registration_tokens",
     "oauth2_clients.update",
     "organizations.get",
     "organizations.list",
@@ -7201,4 +7303,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 160
+    assert len(EXERCISED) == 162
