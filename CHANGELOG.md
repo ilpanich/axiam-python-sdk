@@ -101,6 +101,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking — `CreateRegistrationTokenResponse.initial_access_token` is now a
+  `SecretStr` (contract 1.50, CONTRACT.md §27.5).** The field was a plain `str`;
+  it is the one-time RFC 7591 §1.2 initial access token, so it belonged in the
+  §27.5 sensitive table from the day `oauth2_clients.create_registration_token`
+  shipped and was omitted. As a plain `str` it appeared in every `repr()`, log
+  line and `model_dump_json()` of the response — the leak §7 rule 1 and §27.5
+  exist to prevent. The §27.5 table now lists **fifteen** operations, not
+  fourteen.
+
+  **Migration.** Reading the token now takes the explicit reveal, as it already
+  does for the other fourteen fields:
+
+  ```diff
+  - token = created.initial_access_token
+  + token = created.initial_access_token.get_secret_value()
+  ```
+
+  No plain-`str` accessor is kept alongside it: the plain accessor is precisely
+  the leak. The wire shape is unchanged — `openapi.json` and `proto/` do not
+  move, only this SDK's type does.
+
+  The vendored artefacts are re-synced from **`ilpanich/axiam` `main` @
+  `da94e1d04`**:
+
+  | Artefact | Blob |
+  |---|---|
+  | `CONTRACT.md` (1.50) | `28c163e32d25` |
+  | `openapi.json` | `b75e30eaa359` (unchanged) |
+  | `management-registry.json` | `aab87fd79910` |
+
+  `proto/` already matched and is unchanged; the gRPC stubs regenerate
+  byte-identically. The §27 surface is regenerated in the same commit
+  (`python scripts/gen_management.py`); the operation count stays at **162**
+  across 24 namespaces and the only generated movement is this one field's
+  type, on both the sync and async handles. The README's conformance statement
+  now names contract 1.50. Upstream: ilpanich/axiam#480.
+
 - **Contract conformance statement corrected** (CONTRACT.md Closing Notes,
   §28.11 row R-3, T21.9 T9d). The README named §28 but still claimed
   *contract 1.38*, while the vendored `CONTRACT.md` was already at 1.48. The
