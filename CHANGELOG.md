@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta16] - 2026-09-19
+
 ### Added
+
+- MCP resource-server helpers (CONTRACT.md §28, contract 1.48)
 
 - **MCP resource-server helpers** (CONTRACT.md §28, RFC 9728 + RFC 6750,
   contract 1.48) — the resource-server half of the Model Context Protocol
@@ -100,6 +104,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-synced once, from `main`, after Phase 21 lands.
 
 ### Changed
+
+- Re-sync CONTRACT.md 1.50 and management-registry.json from axiam main @ da94e1d04
+
+- F-28-01 — re-sync CONTRACT.md 1.49, openapi.json and management-registry.json from axiam main @ e4c62180e
+
+- Conformance statement at contract 1.48; record F-28-01 (T21.9 T9d)
 
 - **Breaking — `CreateRegistrationTokenResponse.initial_access_token` is now a
   `SecretStr` (contract 1.50, CONTRACT.md §27.5).** The field was a plain `str`;
