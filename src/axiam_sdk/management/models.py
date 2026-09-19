@@ -1192,10 +1192,13 @@ class CreateRegistrationTokenRequest(ManagementModel):
 class CreateRegistrationTokenResponse(ManagementModel):
     """The one response that carries the handle."""
 
-    initial_access_token: str
+    initial_access_token: SecretStr
     """The plaintext handle, shown exactly once. Presented by the registering
 
     client as `Authorization: Bearer <this>`.
+
+    **Secret.** Redacted from every string, log and JSON rendering; call
+    ``.get_secret_value()`` to read it.
     """
 
     token: RegistrationTokenResponse
