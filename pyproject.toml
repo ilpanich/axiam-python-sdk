@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27,<0.29",
-    "grpcio>=1.78,<1.84",
+    "grpcio>=1.78,<1.85",
     # `grpcio` does NOT depend on `protobuf` — they are separate distributions —
     # so without this line `import axiam_sdk.grpc` fails on a clean install with
     # `ModuleNotFoundError: No module named 'google'`. The generated `_pb2`
