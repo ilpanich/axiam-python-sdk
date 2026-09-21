@@ -58,7 +58,7 @@ speed = ["uvloop>=0.19; sys_platform != 'win32'"]
 # `_opaque.py` contains no cryptography, so the SDK derives nothing and needs no
 # KSF of its own.
 dev = [
-    "grpcio-tools>=1.78,<1.84",
+    "grpcio-tools>=1.78,<1.85",
     "mypy",
     "ruff>=0.16.0,<0.17.0",
     "interrogate",
