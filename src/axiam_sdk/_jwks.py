@@ -15,14 +15,23 @@ verification algorithm. ``jwt.decode`` is always called with an explicit single-
 algorithm allowlist (never a wildcard/unset algorithms argument, and never an
 alg inferred from the token itself).
 
-Two entry points, deliberately named apart (CONTRACT.md §10.1):
+Several entry points, deliberately named apart (CONTRACT.md §10.1):
 
 * :meth:`JwksVerifier.verify_access_token` is **the** guard entry point. It
   applies the complete §10.1 minimum local-verification set — signature with
   ``alg`` pinned to EdDSA before key lookup, a **required** numeric ``exp``,
   ``nbf`` when present, a **required** ``tenant_id`` asserted against the
-  caller's configured tenant, and ``iss``/``aud`` whenever this verifier was
-  configured with an expected value — all under a bounded, named clock skew.
+  caller's configured tenant, ``iss``/``aud`` whenever this verifier was
+  configured with an expected value, all under a bounded, named clock skew —
+  **and rule 9**, applied with no transport evidence, so a token carrying
+  ``cnf`` (certificate- or DPoP-bound) is refused outright rather than
+  silently accepted as an ordinary bearer credential.
+* :meth:`JwksVerifier.verify_with_proofs` is the entry point for a resource
+  server that DOES have transport evidence (a peer certificate, a verified
+  DPoP proof, or both) and wants to *accept* a properly-proven
+  sender-constrained token rather than refuse every bound one.
+  :meth:`JwksVerifier.verify_sender_constrained` is its certificate-only
+  shape, for transports that can only ever produce a certificate thumbprint.
 * :meth:`JwksVerifier.verify_signature_only_unchecked` is the raw
   signature-only primitive §10.1 permits for integrators writing their own
   policy. Its name states the omission at the call site; the SDK's own guards
@@ -325,12 +334,16 @@ class JwksVerifier:
             options={"verify_aud": False},
         )
 
-    def verify_access_token(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
-        """Apply the **complete** CONTRACT.md §10.1 minimum local-verification
-        set to ``token`` and return its claims. This is the documented guard
-        entry point; every SDK route guard and middleware goes through it.
+    def _verify_claims(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
+        """CONTRACT.md §10.1 rules **1-8** — everything except the sender
+        constraint, which every caller of this private method still owes
+        (rule 9). Shared by :meth:`verify_access_token` (which applies rule 9
+        with no evidence, so any ``cnf``-bearing token is refused) and
+        :meth:`verify_with_proofs` (which applies it with the caller's
+        evidence) — one implementation of rules 1-8, never two to keep in
+        sync.
 
-        The seven rules, in order:
+        The eight rules, in order:
 
         1. ``alg`` pinned to ``EdDSA`` and checked BEFORE any keyset lookup,
            so ``alg: none`` and HS-family confusion are rejected without ever
@@ -452,6 +465,98 @@ class JwksVerifier:
 
         return claims
 
+    def verify_access_token(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
+        """Apply the **complete** CONTRACT.md §10.1 minimum local-verification
+        set — rules 1-8 (:meth:`_verify_claims`) **plus rule 9** — to
+        ``token`` and return its claims. This is the documented guard entry
+        point; every SDK route guard and middleware goes through it
+        (``fastapi.require_auth``/``require_user``/``require_access``, the
+        Django middleware, the §11/§28 guards).
+
+        **Rule 9 is applied with no transport evidence**, because this call
+        site has none to offer: a token carrying ``cnf`` is refused outright
+        (CONTRACT.md §10.1 rule 9 — "a token carrying `cnf` is not a bearer
+        token, and MUST NOT be accepted as one"). This is deliberately a
+        fix, not a new feature: before it, this entry point verified rules
+        1-8 and returned, silently accepting a certificate-bound or
+        DPoP-bound token as an ordinary bearer credential — exactly the
+        ``SEC-071``/``SEC-080`` shape rule 9 exists to close, and load-bearing
+        now that §6.1's device login mints certificate-bound tokens by
+        default (contract 1.51): a device token lifted off a device would
+        otherwise open every guarded route this SDK's guards protect.
+
+        An unbound token (no ``cnf`` claim at all) is unaffected either way
+        — rule 9's whole point is "constrains tokens that claim a
+        constraint; it does not make certificates mandatory." A resource
+        server that wants to *accept* a sender-constrained token, having
+        proven the caller holds the confirmed key, calls
+        :meth:`verify_with_proofs` instead, supplying that evidence.
+
+        Args:
+            token: The compact-serialized access token presented by the caller.
+            expected_tenant_id: The tenant this deployment serves. ``None`` or
+                empty is a configuration error and fails closed (rule 4).
+
+        Returns:
+            The decoded claims dict, once every rule 1-9 has passed.
+
+        Raises:
+            AuthError: on any rule violation — the single failure type
+                callers map to HTTP 401 (CONTRACT.md §2/§10).
+        """
+        claims = self._verify_claims(token, expected_tenant_id=expected_tenant_id)
+        verify_token_binding(claims, certificate_thumbprint=None, dpop_thumbprint=None)
+        return claims
+
+    def verify_with_proofs(
+        self,
+        token: str,
+        *,
+        expected_tenant_id: str | None,
+        certificate_thumbprint: str | None = None,
+        dpop_thumbprint: str | None = None,
+    ) -> dict[str, Any]:
+        """:meth:`_verify_claims`'s rules 1-8 plus the **full** CONTRACT.md
+        §10.1 rule 9 (RFC 8705 §3 / RFC 9449 §6, contract 1.16) — with
+        transport evidence, so a properly-proven sender-constrained token is
+        *accepted* rather than refused outright.
+
+        This is the guard entry point for a resource server that accepts
+        certificate-bound **and/or** DPoP-bound access tokens. Pass
+        whichever evidence this connection/request actually has; either or
+        both may be ``None``, in which case a token bound by that method is
+        refused (an unverifiable constraint is never read as unconstrained
+        — CONTRACT.md §10.1 rule 9's three weight-bearing rows). An unbound
+        token is accepted regardless of what evidence is or is not supplied.
+
+        :meth:`verify_sender_constrained` is the certificate-only shape of
+        this call, kept for the transports that can only ever produce a
+        certificate thumbprint; this is the one to use otherwise.
+
+        Args:
+            token: The compact-serialized access token presented by the caller.
+            expected_tenant_id: As :meth:`verify_access_token`.
+            certificate_thumbprint: The RFC 8705 §3.1 ``x5t#S256`` of the peer
+                certificate on this connection, or ``None``.
+            dpop_thumbprint: The ``jkt`` of a DPoP proof **this caller has
+                already verified** for this request, or ``None`` — never a
+                thumbprint read off an unverified proof (§21.7).
+
+        Returns:
+            The decoded claims dict.
+
+        Raises:
+            AuthError: everything :meth:`_verify_claims` raises, plus the
+                rejecting rows of :func:`verify_token_binding`.
+        """
+        claims = self._verify_claims(token, expected_tenant_id=expected_tenant_id)
+        verify_token_binding(
+            claims,
+            certificate_thumbprint=certificate_thumbprint,
+            dpop_thumbprint=dpop_thumbprint,
+        )
+        return claims
+
     def verify_sender_constrained(
         self,
         token: str,
@@ -459,8 +564,10 @@ class JwksVerifier:
         expected_tenant_id: str | None,
         presented_thumbprint: str | None,
     ) -> dict[str, Any]:
-        """:meth:`verify_access_token` plus CONTRACT.md §10.1 **rule 9** — the
-        sender constraint (RFC 8705 §3, contract 1.15).
+        """:meth:`_verify_claims`'s rules 1-8 plus CONTRACT.md §10.1
+        **rule 9**'s certificate half (RFC 8705 §3, contract 1.15) — the
+        certificate-only shape of :meth:`verify_with_proofs`, kept for
+        transports that can only ever produce a certificate thumbprint.
 
         This is the guard entry point for a resource server that accepts
         **certificate-bound** access tokens. Pass the ``x5t#S256`` thumbprint of
@@ -491,7 +598,7 @@ class JwksVerifier:
             AuthError: everything :meth:`verify_access_token` raises, plus the
                 three rejecting rows of :func:`verify_certificate_binding`.
         """
-        claims = self.verify_access_token(token, expected_tenant_id=expected_tenant_id)
+        claims = self._verify_claims(token, expected_tenant_id=expected_tenant_id)
         verify_certificate_binding(claims, presented_thumbprint)
         return claims
 

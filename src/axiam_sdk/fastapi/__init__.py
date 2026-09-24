@@ -246,10 +246,13 @@ async def _authenticate(
     3. Applies the COMPLETE CONTRACT.md §10.1 minimum local-verification set
        via ``verifier.verify_access_token(...)``: EdDSA-pinned signature
        (before key lookup), required numeric ``exp``, ``nbf`` when present,
-       required ``tenant_id`` asserted against ``configured_tenant``, and
+       required ``tenant_id`` asserted against ``configured_tenant``,
        ``iss``/``aud`` when the verifier was configured with an expected
-       value — all under the verifier's bounded, named clock skew. The
-       signature-only primitive is never used here.
+       value, all under the verifier's bounded, named clock skew — **and
+       rule 9** (contract 1.51): a token carrying ``cnf`` (certificate- or
+       DPoP-bound, e.g. from CONTRACT.md §6.1's device login) is refused
+       here, since this entry point has no transport evidence to accept one
+       with. The signature-only primitive is never used here.
     4. Returns :class:`AxiamUser` on success; raises ``HTTPException`` 401 on
        any authentication failure, never including the raw token value.
 

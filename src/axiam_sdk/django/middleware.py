@@ -342,8 +342,10 @@ class AxiamAuthMiddleware:
         :meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` — signature
         (EdDSA-pinned before key lookup), required numeric ``exp``, ``nbf``
         when present, required ``tenant_id`` matched against the configured
-        tenant (T-19-19/T-19-20), and ``iss``/``aud`` when configured — before
-        attaching ``request.axiam_user``.
+        tenant (T-19-19/T-19-20), ``iss``/``aud`` when configured, and rule 9
+        (contract 1.51): a token carrying ``cnf`` is refused here, since this
+        entry point has no transport evidence to accept a bound one with —
+        before attaching ``request.axiam_user``.
 
         Returns:
             ``None`` on success (``request.axiam_user`` has been set, or the

@@ -457,6 +457,7 @@ the single entry point `JwksVerifier.verify_access_token(...)`:
 | 5 | `iss` | Checked **only** when `expected_issuer` is configured (optional, unset by default — no issuer is ever assumed) |
 | 6 | `aud` | Checked **only** when `expected_audience` is configured; a user-facing resource server should pass `RECOMMENDED_RESOURCE_SERVER_AUDIENCE` (`"axiam:user"`) |
 | 7 | clock skew | `DEFAULT_CLOCK_SKEW_SECONDS` (60 s), bounded by `MAX_CLOCK_SKEW_SECONDS` — never settable to an unbounded value |
+| 9 | `cnf` (sender-constrained tokens, contract 1.51) | A token carrying `cnf` is refused: this entry point has no transport evidence to accept a certificate- or DPoP-bound token with. `JwksVerifier.verify_with_proofs(token, expected_tenant_id=, certificate_thumbprint=, dpop_thumbprint=)` is the entry point that CAN accept one, given the evidence; `verify_sender_constrained(...)` is its certificate-only shape. An unbound token is unaffected either way — rule 9 constrains tokens that claim a constraint, not every token |
 
 ```python
 from axiam_sdk._jwks import (
