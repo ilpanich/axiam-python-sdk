@@ -389,6 +389,134 @@ def test_a_failed_rebind_restores_the_previous_binding_and_reports_both_outcomes
         assert restore_body["resource_id"] == OTHER_RESOURCE_ID
 
 
+def _failed_step(report: object) -> object:
+    """The one step of ``report.steps`` whose outcome is ``failed``."""
+    for step in report.steps:  # type: ignore[attr-defined]
+        if step.outcome.status == "failed":
+            return step
+    raise AssertionError("no failed step in this report")
+
+
+def test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field() -> None:
+    """CONTRACT §27.6.1: "If the assign fails, the SDK MUST attempt to
+    assign the previous binding again ... and report both outcomes." The
+    restore outcome must be a structured field on ``StepOutcome``, not only
+    embedded in the failure message string -- every other SDK (TypeScript's
+    ``restoreSucceeded``, Java's ``StepOutcome.restored``, C#'s
+    ``RestoreSucceeded``, Rust's ``BindingUpdateFailed { restore, .. }``)
+    exposes it that way."""
+    with with_client() as (router, client):
+        _tenant_with_one_role_group_and_resource(router)
+        router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "group": _group(GROUP_ID, "Staff", "Everyone"),
+                        "resource_id": OTHER_RESOURCE_ID,
+                        "inherit": True,
+                        "tenant_scope": None,
+                    }
+                ],
+            )
+        )
+        router.delete(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups/{GROUP_ID}").mock(
+            return_value=httpx.Response(204)
+        )
+        assign_route = router.post(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups")
+        assign_route.side_effect = [
+            httpx.Response(500, json={"error": "internal"}),  # the new assign fails
+            httpx.Response(204),  # the restore succeeds
+        ]
+
+        report = client.manifest.apply(_manifest_with_scoped_binding(inherit=None))
+        assert not report.is_complete()
+        failed = _failed_step(report)
+        assert failed.outcome.restore_succeeded is True  # type: ignore[attr-defined]
+        assert failed.outcome.restore_error is None  # type: ignore[attr-defined]
+        # The message stays exactly as before -- this is additive, not a
+        # replacement of the prose.
+        assert "restored" in (failed.outcome.message or "")  # type: ignore[attr-defined]
+
+        # The twin, in the same report: every step whose assign did NOT
+        # fail (here, the no-op resource/role/group steps that precede the
+        # rebind) carries no restore information at all.
+        for step in report.steps:
+            if step is not failed:
+                assert step.outcome.restore_succeeded is None
+                assert step.outcome.restore_error is None
+
+
+def test_a_failed_rebind_whose_restore_also_fails_reports_restore_error() -> None:
+    """When even the restore attempt fails, ``restore_succeeded`` is
+    ``False`` and ``restore_error`` carries the restore's own error --
+    the twin of the succeeding-restore case above."""
+    with with_client() as (router, client):
+        _tenant_with_one_role_group_and_resource(router)
+        router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "group": _group(GROUP_ID, "Staff", "Everyone"),
+                        "resource_id": OTHER_RESOURCE_ID,
+                        "inherit": True,
+                        "tenant_scope": None,
+                    }
+                ],
+            )
+        )
+        router.delete(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups/{GROUP_ID}").mock(
+            return_value=httpx.Response(204)
+        )
+        assign_route = router.post(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups")
+        assign_route.side_effect = [
+            httpx.Response(500, json={"error": "internal, first"}),
+            httpx.Response(500, json={"error": "internal, second"}),
+        ]
+
+        report = client.manifest.apply(_manifest_with_scoped_binding(inherit=None))
+        assert not report.is_complete()
+        failed = _failed_step(report)
+        assert failed.outcome.restore_succeeded is False  # type: ignore[attr-defined]
+        assert failed.outcome.restore_error is not None  # type: ignore[attr-defined]
+        assert "internal, second" in failed.outcome.restore_error  # type: ignore[attr-defined]
+        assert "NOT restored" in (failed.outcome.message or "")  # type: ignore[attr-defined]
+
+
+async def test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field_async() -> None:
+    """Async twin of the sync structured-restore test above."""
+    async with with_async_client() as (router, client):
+        _tenant_with_one_role_group_and_resource(router)
+        router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "group": _group(GROUP_ID, "Staff", "Everyone"),
+                        "resource_id": OTHER_RESOURCE_ID,
+                        "inherit": True,
+                        "tenant_scope": None,
+                    }
+                ],
+            )
+        )
+        router.delete(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups/{GROUP_ID}").mock(
+            return_value=httpx.Response(204)
+        )
+        assign_route = router.post(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups")
+        assign_route.side_effect = [
+            httpx.Response(500, json={"error": "internal"}),
+            httpx.Response(204),
+        ]
+
+        report = await client.manifest.apply(_manifest_with_scoped_binding(inherit=None))
+        assert not report.is_complete()
+        failed = _failed_step(report)
+        assert failed.outcome.restore_succeeded is True  # type: ignore[attr-defined]
+        assert failed.outcome.restore_error is None  # type: ignore[attr-defined]
+
+
 def test_a_manifest_binding_one_role_to_one_subject_twice_is_rejected_before_any_request() -> None:
     manifest = ManagementManifest(
         resources=(ResourceSpec(key="docs", name="documents", resource_type="collection"),),

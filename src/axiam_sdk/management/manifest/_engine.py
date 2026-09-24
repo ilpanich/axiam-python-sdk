@@ -47,6 +47,38 @@ __all__ = ["AsyncManifestApi", "ManifestApi"]
 PLAN_PAGE = PageRequest(limit=200)
 """How many items a planning read asks for per page."""
 
+
+class _RebindFailed(NetworkError):
+    """Raised by ``_rebind_role`` when the new assign fails after the old
+    binding has already been unassigned. Carries the restore attempt's
+    outcome as structured attributes — not only inside the message string —
+    so ``_execute`` can put ``restore_succeeded``/``restore_error`` on the
+    ``StepOutcome`` (CONTRACT §27.6.1: "report both outcomes")."""
+
+    def __init__(self, message: str, *, restore_succeeded: bool, restore_error: str | None) -> None:
+        """Build the exception with ``message`` plus the restore attempt's
+        own outcome, exposed as :attr:`restore_succeeded`/
+        :attr:`restore_error` for :func:`_failed_outcome` to read."""
+        super().__init__(message)
+        self.restore_succeeded = restore_succeeded
+        self.restore_error = restore_error
+
+
+def _failed_outcome(err: Exception) -> StepOutcome:
+    """The ``StepOutcome`` for a step that raised ``err``. A
+    :class:`_RebindFailed` additionally carries its restore attempt's
+    outcome as structured fields (§27.6.1); every other failure leaves them
+    ``None``, as before."""
+    if isinstance(err, _RebindFailed):
+        return StepOutcome(
+            "failed",
+            str(err),
+            restore_succeeded=err.restore_succeeded,
+            restore_error=err.restore_error,
+        )
+    return StepOutcome("failed", str(err))
+
+
 _SUBJECT_KINDS = ("group", "user", "service_account")
 """The three kinds of subject a :data:`RoleBinding` can bind a role to."""
 
@@ -845,7 +877,7 @@ class ManifestApi:
             try:
                 secret = self._run(step, resolved)
             except Exception as err:  # noqa: BLE001 — reported, not swallowed.
-                applied.append(AppliedStep(action, StepOutcome("failed", str(err))))
+                applied.append(AppliedStep(action, _failed_outcome(err)))
                 stopped = True
                 continue
             applied.append(
@@ -1000,6 +1032,7 @@ class ManifestApi:
         # ...ToServiceAccountRequest), so there is no single callable shape
         # to look up generically without losing static typing.
         assign_err: Exception | None = None
+        restore_err: Exception | None = None
         restored = False
         if subject_kind == "group":
             group_id = r.groups[p["subject"]]
@@ -1029,8 +1062,9 @@ class ManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
         elif subject_kind == "user":
             user_id = r.users[p["subject"]]
             c.roles.unassign_from_user(role_id, user_id, previous_resource_id)
@@ -1059,8 +1093,9 @@ class ManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
         else:
             service_account_id = r.service_accounts[p["subject"]]
             c.roles.unassign_from_service_account(role_id, service_account_id, previous_resource_id)
@@ -1093,13 +1128,18 @@ class ManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
 
         if assign_err is not None:
-            raise NetworkError(
-                f"rebinding role failed: {assign_err}; the previous binding was "
-                f"{'restored' if restored else 'NOT restored — the subject now holds no such role'}"
+            restored_word = (
+                "restored" if restored else "NOT restored — the subject now holds no such role"
+            )
+            raise _RebindFailed(
+                f"rebinding role failed: {assign_err}; the previous binding was {restored_word}",
+                restore_succeeded=restored,
+                restore_error=None if restored else str(restore_err),
             ) from assign_err
 
 
@@ -1180,7 +1220,7 @@ class AsyncManifestApi:
             try:
                 secret = await self._run(step, resolved)
             except Exception as err:  # noqa: BLE001 — reported, not swallowed.
-                applied.append(AppliedStep(action, StepOutcome("failed", str(err))))
+                applied.append(AppliedStep(action, _failed_outcome(err)))
                 stopped = True
                 continue
             applied.append(
@@ -1327,6 +1367,7 @@ class AsyncManifestApi:
         tenant_scope = p["tenant_scope"]
 
         assign_err: Exception | None = None
+        restore_err: Exception | None = None
         restored = False
         if subject_kind == "group":
             group_id = r.groups[p["subject"]]
@@ -1356,8 +1397,9 @@ class AsyncManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
         elif subject_kind == "user":
             user_id = r.users[p["subject"]]
             await c.roles.unassign_from_user(role_id, user_id, previous_resource_id)
@@ -1386,8 +1428,9 @@ class AsyncManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
         else:
             service_account_id = r.service_accounts[p["subject"]]
             await c.roles.unassign_from_service_account(
@@ -1422,11 +1465,16 @@ class AsyncManifestApi:
                         ),
                     )
                     restored = True
-                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
                     restored = False
+                    restore_err = err
 
         if assign_err is not None:
-            raise NetworkError(
-                f"rebinding role failed: {assign_err}; the previous binding was "
-                f"{'restored' if restored else 'NOT restored — the subject now holds no such role'}"
+            restored_word = (
+                "restored" if restored else "NOT restored — the subject now holds no such role"
+            )
+            raise _RebindFailed(
+                f"rebinding role failed: {assign_err}; the previous binding was {restored_word}",
+                restore_succeeded=restored,
+                restore_error=None if restored else str(restore_err),
             ) from assign_err

@@ -123,6 +123,24 @@ from them.
   which fails to decode a role-side assignment listing from a server older
   than contract 1.51 (which omits it). `DEFAULT_TRUE_FIELDS` makes the
   generator emit `= True` for it instead, matching §27.13's S-10 rule 3.
+- **A failed manifest role rebind reported the restore outcome only inside
+  a free-text failure message, never as data** (CONTRACT.md §27.6.1: "If
+  the assign fails, the SDK MUST attempt to assign the previous binding
+  again ... and report both outcomes"). Every other SDK exposes this as a
+  structured field (TypeScript's `restoreSucceeded`, Java's
+  `StepOutcome.restored`, C#'s `RestoreSucceeded`, Rust's
+  `BindingUpdateFailed { restore, .. }`); a caller here had to parse
+  `"restored"`/`"NOT restored"` out of the exception string to branch on
+  it. `StepOutcome` gains `restore_succeeded: bool | None` and
+  `restore_error: str | None`, added additively (default `None`, so
+  existing construction is unaffected) and populated only on a
+  `rebind-role` step whose new assign failed; every other step —
+  including a rebind that succeeded outright — leaves both `None`. Covers
+  the sync and async manifest engines alike.
+  (`tests/management/test_manifest_additions.py`:
+  `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field`,
+  `test_a_failed_rebind_whose_restore_also_fails_reports_restore_error`,
+  `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field_async`.)
 
 ### Breaking
 
