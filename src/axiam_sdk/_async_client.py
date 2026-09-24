@@ -27,6 +27,7 @@ from axiam_sdk._client import (
     ACCESS_COOKIE,
     BATCH_CHECK_PATH,
     CHECK_PATH,
+    DEVICE_AUTH_PATH,
     LOGIN_PATH,
     LOGOUT_PATH,
     MFA_VERIFY_PATH,
@@ -49,6 +50,7 @@ from axiam_sdk._models import (
     AuthorizationRequest,
     BatchCheckResult,
     DeviceAuthorization,
+    DeviceToken,
     ExchangedToken,
     FederationProviderList,
     IntrospectionResult,
@@ -161,6 +163,20 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         handle = copy.copy(self)
         handle._acting_tenant = None
         return handle
+
+    # ------------------------------------------------------------------
+    # mTLS device login (CONTRACT.md §6.1 rules 6-10, contract 1.51)
+    # ------------------------------------------------------------------
+
+    async def authenticate_device(self) -> DeviceToken:
+        """``POST /api/v1/auth/device`` (CONTRACT.md §6.1) — the mTLS device
+        login. See :meth:`axiam_sdk.AxiamClient.authenticate_device` for the
+        full contract; this is its async twin."""
+        self._ensure_open()
+        self._reachable_only_with_client_cert("authenticate_device")
+        request = self._session.async_client.build_request("POST", DEVICE_AUTH_PATH)
+        response = await self._rest_send_async(request)
+        return self._handle_device_auth_response(response)
 
     # ------------------------------------------------------------------
     # login / verify_mfa

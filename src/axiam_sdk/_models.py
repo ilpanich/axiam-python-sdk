@@ -118,6 +118,35 @@ class LoginResult(BaseModel):
     model_config = {"frozen": True}
 
 
+class DeviceToken(BaseModel):
+    """``AxiamClient.authenticate_device()``'s result — CONTRACT.md §6.1
+    rules 6-10 (contract 1.51), the mTLS device login.
+
+    Adopted as the client's credential exactly as a :class:`LoginResult` is:
+    subsequent REST calls carry ``access_token`` as ``Authorization: Bearer``
+    (rule 6). **There is no refresh token** (D-6 of the dogfooding
+    remediation plan): re-authenticating is calling
+    :meth:`~axiam_sdk.AxiamClient.authenticate_device` again, which costs one
+    TLS handshake, so a later ``401`` on this token is surfaced as
+    ``AuthError`` without a refresh attempt.
+    """
+
+    access_token: SecretStr
+    """The bearer credential. Adopted, never returned to a caller who did
+    not ask for it — but unlike a cookie-jar session, this SDK has nowhere
+    else to put it, so it is handed back here, wrapped (§7)."""
+
+    token_type: str
+    """Always ``"Bearer"`` — including for a certificate-bound token: rule 9
+    says boundness is decided from the token's ``cnf`` claim alone, never
+    from this field."""
+
+    expires_in: int
+    """The access-token lifetime in seconds (server default 900)."""
+
+    model_config = {"frozen": True}
+
+
 class User(BaseModel):
     """An authenticated identity, as returned by ``GET /api/v1/auth/me`` or
     resolved locally from a verified JWT's claims."""

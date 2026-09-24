@@ -40,6 +40,7 @@ from axiam_sdk._models import (
     AuthorizationRequest,
     BatchCheckResult,
     DeviceAuthorization,
+    DeviceToken,
     ExchangedToken,
     FederationProviderList,
     IntrospectionResult,
@@ -91,6 +92,7 @@ OPAQUE_LOGIN_FINISH_PATH = "/api/v1/auth/opaque/login/finish"
 MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify"
 REFRESH_PATH = "/api/v1/auth/refresh"
 LOGOUT_PATH = "/api/v1/auth/logout"
+DEVICE_AUTH_PATH = "/api/v1/auth/device"
 CHECK_PATH = "/api/v1/authz/check"
 BATCH_CHECK_PATH = "/api/v1/authz/check/batch"
 
@@ -860,16 +862,38 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         if self._acting_tenant is not None:
             request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
 
+    def _apply_bearer_credential(self, request: httpx.Request) -> None:
+        """``Authorization: Bearer <token>`` when this session has adopted a
+        device credential (CONTRACT.md §6.1 rule 6, contract 1.51), nothing
+        otherwise — REST authentication was cookie-only before this rule
+        existed, so a client that never calls ``authenticate_device()``
+        sends byte-for-byte what it sent before.
+
+        Also overrides ``Cookie`` to an explicit empty string, belt-and-
+        suspenders alongside :meth:`~axiam_sdk._session._Session.adopt_bearer_credential`
+        clearing the jar: the server reads the ``axiam_access`` cookie
+        *before* the ``Authorization`` header, so a cookie left from an
+        earlier session would otherwise silently win and the request would
+        run as that session's principal instead of the device's.
+        """
+        token = self._session.bearer_token
+        if token is not None:
+            request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+            request.headers["Cookie"] = ""
+
     def _rest_send_sync(self, request: httpx.Request) -> httpx.Response:
         """The choke-point wrapper every sync REST call sends through:
-        applies §5.2 rule 1's header, then hands off to the shared
-        session's own choke point (``X-Tenant-ID``, CSRF — §5, §3)."""
+        applies §5.2 rule 1's header and §6.1 rule 6's bearer credential,
+        then hands off to the shared session's own choke point
+        (``X-Tenant-ID``, CSRF — §5, §3)."""
         self._apply_acting_tenant(request)
+        self._apply_bearer_credential(request)
         return self._session._send_sync(request)
 
     async def _rest_send_async(self, request: httpx.Request) -> httpx.Response:
         """Async twin of :meth:`_rest_send_sync`."""
         self._apply_acting_tenant(request)
+        self._apply_bearer_credential(request)
         return await self._session._send_async(request)
 
     def _check_acting_tenant_gate(self, tenant_id: str) -> str:
@@ -922,6 +946,78 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         on its own tenant.
         """
         return self._acting_tenant
+
+    # ------------------------------------------------------------------
+    # mTLS device login (CONTRACT.md §6.1 rules 6-10, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def _reachable_only_with_client_cert(self, operation: str) -> None:
+        """§6.1 rule 7: on a client built without a certificate, refuse
+        *client-side*, with **zero** wire calls, rather than going to the
+        wire for a 401 the SDK already knows is coming."""
+        if not self._session.presents_client_certificate:
+            raise AuthError(
+                f"{operation}: this client was not configured with a client certificate "
+                f"(client_cert/client_key) — without one the server would answer 401, so "
+                f"this is refused client-side, with no wire call (CONTRACT.md §6.1 rule 7)"
+            )
+
+    @staticmethod
+    def _device_auth_error_message(response: httpx.Response) -> str:
+        """The server's own message for a failed ``authenticate_device()``
+        call, when the body carries one — rule 8 requires it surfaced
+        verbatim, since it is the only way the caller learns *which*
+        certificate problem this was (unknown, untrusted, expired, revoked,
+        unbound, or a ``Server``-type certificate)."""
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            message = body.get("message")
+            if isinstance(message, str) and message:
+                return message
+        return "authenticate_device failed"
+
+    def _handle_device_auth_response(self, response: httpx.Response) -> DeviceToken:
+        """Parse ``POST /api/v1/auth/device``'s response into a typed
+        :class:`~axiam_sdk._models.DeviceToken` and adopt it as this
+        client's credential (rules 6, 8-10)."""
+        if response.status_code != httpx.codes.OK:
+            message = self._device_auth_error_message(response)
+            # D-15: status code only in the log line, never the body.
+            self._logger.warning(
+                "axiam_sdk: authenticate_device failed: status=%s", response.status_code
+            )
+            if response.status_code == httpx.codes.UNAUTHORIZED:
+                # Rule 8: EVERY refusal is a 401 (unknown/untrusted/expired/
+                # revoked/unbound certificate, or a Server-type one), mapped
+                # to AuthError, verbatim message. This operation IS the
+                # login, so it must never enter the §9 refresh guard — and
+                # it structurally cannot: this call site never routes
+                # through _retry_after_refresh_sync/_async.
+                raise AuthError(message)
+            # A 429 (rate-limited, server T22.2) follows §16 and is NOT an
+            # authentication failure (rule 8) — the ordinary §2 mapping
+            # already answers NetworkError for it, and for every other
+            # status, so no special case is needed here.
+            raise error_from_http_status(response.status_code, message, response=response)
+
+        wire = response.json()
+        result = DeviceToken(
+            access_token=wire["access_token"],
+            token_type=wire["token_type"],
+            expires_in=wire["expires_in"],
+        )
+        # Adopted exactly as a login result is: drop memoized decisions
+        # (§17.1 rule 9), then replace the credential.
+        self._on_credential_change()
+        self._session.adopt_bearer_credential(result.access_token)
+        # §5.2 rule 1, "For C-12" item 5: a device login completes a
+        # session with no user object, so — like OPAQUE/SSO/WebAuthn/the
+        # forced MFA setup — it holds no reach to gate acting_tenant() on.
+        self._principal_scope = None
+        return result
 
 
 class AxiamClient(_AxiamClientBase, ManagementNamespaces):
@@ -1020,6 +1116,41 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         handle = copy.copy(self)
         handle._acting_tenant = None
         return handle
+
+    # ------------------------------------------------------------------
+    # mTLS device login (CONTRACT.md §6.1 rules 6-10, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def authenticate_device(self) -> DeviceToken:
+        """``POST /api/v1/auth/device`` (CONTRACT.md §6.1) — the mTLS device
+        login. No request body; returns a typed :class:`DeviceToken` and
+        adopts ``access_token`` as this client's credential, exactly as a
+        successful :meth:`login` is adopted.
+
+        **Reachable only on a client configured with a client certificate**
+        (``client_cert``/``client_key`` — see the constructor). Without one
+        the server would answer ``401`` regardless, so this refuses
+        client-side instead, with zero wire calls (rule 7).
+
+        There is **no refresh token** (D-6 of the dogfooding remediation
+        plan): a later ``401`` on this credential is surfaced as
+        :class:`~axiam_sdk.AuthError` without a refresh attempt — call this
+        method again, which costs one TLS handshake.
+
+        Raises:
+            AuthError: with zero wire calls, if this client was not built
+                with a client certificate (rule 7); or, from the server,
+                for an unknown, untrusted, expired, revoked or unbound
+                certificate, or a ``Server``-type certificate (rule 8 — every
+                refusal is a ``401``, surfaced with the server's own message).
+            NetworkError: for a ``429`` (rate-limited; not an authentication
+                failure, rule 8) or any other transport/status failure.
+        """
+        self._ensure_open()
+        self._reachable_only_with_client_cert("authenticate_device")
+        request = self._session.sync_client.build_request("POST", DEVICE_AUTH_PATH)
+        response = self._rest_send_sync(request)
+        return self._handle_device_auth_response(response)
 
     # ------------------------------------------------------------------
     # login / verify_mfa
