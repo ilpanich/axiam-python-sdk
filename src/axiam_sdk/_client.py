@@ -1172,6 +1172,14 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._ensure_open()
         self._reachable_only_with_client_cert("authenticate_device")
         request = self._session.sync_client.build_request("POST", DEVICE_AUTH_PATH)
+        # This call is itself a login: withhold the jar explicitly, rather
+        # than relying on _apply_bearer_credential, which only overrides
+        # Cookie once a bearer token is already held — never true on the
+        # very call that is about to mint one. Without this, a cookie left
+        # by an earlier login() on this client rides along on the request
+        # that is supposed to authenticate as the device alone, and the
+        # server reads axiam_access before Authorization (CONTRACT.md §6.1).
+        request.headers["Cookie"] = ""
         response = self._rest_send_sync(request)
         return self._handle_device_auth_response(response)
 

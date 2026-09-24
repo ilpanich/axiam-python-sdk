@@ -113,6 +113,24 @@ class StepOutcome:
     a credential nobody could ever use.
     """
 
+    restore_succeeded: bool | None = None
+    """Whether re-assigning the previous binding succeeded, for a
+    ``role-grant``/``group-role``/``user-role``/``service-account-role``
+    step whose ``rebind-role`` failed to assign the new shape (§27.6.1:
+    "If the assign fails, the SDK MUST attempt to assign the previous
+    binding again ... and report both outcomes"). ``None`` for every other
+    step, including a rebind whose assign succeeded outright — the twin
+    every other SDK keeps (TypeScript's ``restoreSucceeded``, Java's
+    ``StepOutcome.restored``, C#'s ``RestoreSucceeded``, Rust's
+    ``BindingUpdateFailed { restore, .. }``). Added additively so existing
+    ``StepOutcome(...)`` construction keeps working unchanged.
+    """
+
+    restore_error: str | None = None
+    """The restore attempt's own error, when ``restore_succeeded`` is
+    ``False``. ``None`` whenever ``restore_succeeded`` is ``None`` or
+    ``True``."""
+
 
 @dataclass(frozen=True)
 class AppliedStep:

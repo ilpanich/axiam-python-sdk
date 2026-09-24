@@ -201,6 +201,180 @@ def test_a_device_token_withholds_a_stale_cookie() -> None:
             )
 
 
+async def test_a_device_token_withholds_a_stale_cookie_async() -> None:
+    """Async twin of the above."""
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+            return_value=httpx.Response(
+                200,
+                json={"user": {"id": "user-1"}, "session_id": "s1", "expires_in": 900},
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        router.post(f"{BASE_URL}{DEVICE_AUTH_PATH}").mock(
+            return_value=httpx.Response(
+                200,
+                json={"access_token": "dev-token-4a", "token_type": "Bearer", "expires_in": 900},
+            )
+        )
+        check_route = router.post(f"{BASE_URL}/api/v1/authz/check").mock(
+            return_value=httpx.Response(200, json={"allowed": True})
+        )
+        async with _async_device_client() as client:
+            await client.login("a@example.test", "password123")
+            await client.authenticate_device()
+            await client.check_access("read", "11111111-1111-4111-8111-111111111111")
+            sent = check_route.calls.last.request
+            assert sent.headers["Authorization"] == "Bearer dev-token-4a"
+            assert sent.headers.get("Cookie", "") == "", (
+                "the earlier session's cookie must not survive the device login"
+            )
+
+
+# ---------------------------------------------------------------------------
+# The device-login POST itself carries no cookie (CONTRACT §6.1; the POST
+# is a login in its own right, and the server reads axiam_access before
+# Authorization).
+# ---------------------------------------------------------------------------
+
+
+def test_the_device_login_post_itself_carries_no_stale_cookie() -> None:
+    """This is the actual defect: unlike every *later* request under the
+    device credential (which ``_apply_bearer_credential`` protects once a
+    bearer token is adopted), the device-login POST itself runs BEFORE any
+    bearer token exists, so the belt-and-suspenders empty ``Cookie`` header
+    that protects every other request never fires for this one call --
+    the httpx client's own cookie jar attaches the earlier session's
+    ``axiam_access`` cookie at ``build_request`` time and nothing
+    overrides it. Asserted at the transport boundary (the request respx
+    actually saw), not on a mock above the cookie-attaching layer."""
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+            return_value=httpx.Response(
+                200,
+                json={"user": {"id": "user-1"}, "session_id": "s1", "expires_in": 900},
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        device_route = router.post(f"{BASE_URL}{DEVICE_AUTH_PATH}").mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "dev-token-6", "token_type": "Bearer", "expires_in": 900}
+            )
+        )
+        with _device_client() as client:
+            client.login("a@example.test", "password123")
+            client.authenticate_device()
+            sent = device_route.calls.last.request
+            assert sent.headers.get("Cookie", "") == "", (
+                "the device-login POST must carry no cookie from a prior session"
+            )
+
+
+async def test_the_device_login_post_itself_carries_no_stale_cookie_async() -> None:
+    """Async twin of the above."""
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+            return_value=httpx.Response(
+                200,
+                json={"user": {"id": "user-1"}, "session_id": "s1", "expires_in": 900},
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        device_route = router.post(f"{BASE_URL}{DEVICE_AUTH_PATH}").mock(
+            return_value=httpx.Response(
+                200,
+                json={"access_token": "dev-token-6a", "token_type": "Bearer", "expires_in": 900},
+            )
+        )
+        async with _async_device_client() as client:
+            await client.login("a@example.test", "password123")
+            await client.authenticate_device()
+            sent = device_route.calls.last.request
+            assert sent.headers.get("Cookie", "") == "", (
+                "the device-login POST must carry no cookie from a prior session"
+            )
+
+
+# ---------------------------------------------------------------------------
+# A refused device login leaves the prior session exactly as it was
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_device_login_leaves_the_prior_session_untouched() -> None:
+    """A 401 refusal must not clear the jar or the decision memo: a
+    following ordinary request still authenticates as the earlier
+    session's principal, exactly as if ``authenticate_device()`` had never
+    been called."""
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+            return_value=httpx.Response(
+                200,
+                json={"user": {"id": "user-1"}, "session_id": "s1", "expires_in": 900},
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        router.post(f"{BASE_URL}{DEVICE_AUTH_PATH}").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "error": "authentication_failed",
+                    "message": "the presented certificate is unbound",
+                },
+            )
+        )
+        check_route = router.post(f"{BASE_URL}/api/v1/authz/check").mock(
+            return_value=httpx.Response(200, json={"allowed": True})
+        )
+        with _device_client() as client:
+            client.login("a@example.test", "password123")
+            with pytest.raises(AuthError):
+                client.authenticate_device()
+            client.check_access("read", "11111111-1111-4111-8111-111111111111")
+            sent = check_route.calls.last.request
+            assert "axiam_access" in sent.headers.get("Cookie", ""), (
+                "a refused device login must not clear the prior session's cookie jar"
+            )
+            assert "Authorization" not in sent.headers, (
+                "a refused device login must not adopt a bearer credential"
+            )
+
+
+async def test_a_refused_device_login_leaves_the_prior_session_untouched_async() -> None:
+    """Async twin of the above."""
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+            return_value=httpx.Response(
+                200,
+                json={"user": {"id": "user-1"}, "session_id": "s1", "expires_in": 900},
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        router.post(f"{BASE_URL}{DEVICE_AUTH_PATH}").mock(
+            return_value=httpx.Response(
+                401,
+                json={
+                    "error": "authentication_failed",
+                    "message": "the presented certificate is unbound",
+                },
+            )
+        )
+        check_route = router.post(f"{BASE_URL}/api/v1/authz/check").mock(
+            return_value=httpx.Response(200, json={"allowed": True})
+        )
+        async with _async_device_client() as client:
+            await client.login("a@example.test", "password123")
+            with pytest.raises(AuthError):
+                await client.authenticate_device()
+            await client.check_access("read", "11111111-1111-4111-8111-111111111111")
+            sent = check_route.calls.last.request
+            assert "axiam_access" in sent.headers.get("Cookie", ""), (
+                "a refused device login must not clear the prior session's cookie jar"
+            )
+            assert "Authorization" not in sent.headers, (
+                "a refused device login must not adopt a bearer credential"
+            )
+
+
 # ---------------------------------------------------------------------------
 # No refresh on a later 401
 # ---------------------------------------------------------------------------
