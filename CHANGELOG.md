@@ -167,10 +167,10 @@ from them.
   mean guessing at semantics no other SDK agrees on. Revisit when the
   contract defines it.
 
-pytest tests: 1653 passed on `origin/main` before this work began; 1736
+pytest tests: 1653 passed on `origin/main` before this work began; 1746
 passed at the end (0 failed). Coverage (`pytest --cov=axiam_sdk
 --cov-report=lcov`, the same invocation `.github/workflows/coverage.yml`
-runs): 98.57% on `origin/main`, 98.56% on this branch — both clear the
+runs): 98.57% on `origin/main`, 98.61% on this branch — both clear the
 `fail_under = 98` floor in `pyproject.toml`.
 
 ## [1.0.0-beta16] - 2026-09-19
