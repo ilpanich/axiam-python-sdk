@@ -1210,3 +1210,127 @@ async def test_a_failed_sa_rebind_restores_the_previous_binding_on_the_async_pat
         assert failure is not None
         assert "restored" in failure.message
         assert assign_route.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# The global-role + inherit=False refusal (§27.6.1 addition 2's last rule,
+# the MAY C-12 question 6 decided client-side, matching the Rust reference),
+# and the plain-binding-over-a-scoped-assignment reconciliation (matching
+# the Rust reference's a_plain_binding_over_a_scoped_assignment_is_an_update).
+# ---------------------------------------------------------------------------
+
+
+def test_a_global_role_bound_with_inherit_false_is_refused_before_any_request() -> None:
+    """The server refuses a global role bound with ``inherit: false`` with a
+    400 (a global role ignores resource scope in the first place); this SDK
+    checks it client-side, before any request -- like the duplicate-role
+    check, not merely before any *write*."""
+    manifest = ManagementManifest(
+        resources=(ResourceSpec(key="docs", name="documents", resource_type="collection"),),
+        roles=(RoleSpec(key="editor", name="Editor", description="Edits", is_global=True),),
+        groups=(
+            GroupSpec(
+                key="staff",
+                name="Staff",
+                description="Everyone",
+                roles=(ScopedRoleBinding(role="editor", resource="docs", inherit=False),),
+            ),
+        ),
+    )
+    with with_client() as (router, client):
+        with pytest.raises(NetworkError, match=r"binds global role 'editor' with inherit=False"):
+            client.manifest.plan(manifest)
+        assert len(router.calls) == 1, "only the with_client() fixture's own login call"
+
+
+async def test_a_global_role_bound_with_inherit_false_is_refused_before_any_request_async() -> None:
+    manifest = ManagementManifest(
+        resources=(ResourceSpec(key="docs", name="documents", resource_type="collection"),),
+        roles=(RoleSpec(key="editor", name="Editor", description="Edits", is_global=True),),
+        groups=(
+            GroupSpec(
+                key="staff",
+                name="Staff",
+                description="Everyone",
+                roles=(ScopedRoleBinding(role="editor", resource="docs", inherit=False),),
+            ),
+        ),
+    )
+    async with with_async_client() as (router, client):
+        with pytest.raises(NetworkError, match=r"binds global role 'editor' with inherit=False"):
+            await client.manifest.plan(manifest)
+        assert len(router.calls) == 1, "only the with_async_client() fixture's own login call"
+
+
+def test_the_same_global_role_bound_plainly_has_no_such_refusal() -> None:
+    """I4 twin: the plain (unscoped) shape names no resource, so it raises
+    no inherit=False question at all -- plan() and apply() both proceed."""
+    manifest = ManagementManifest(
+        roles=(RoleSpec(key="editor", name="Editor", description="Edits", is_global=True),),
+        groups=(GroupSpec(key="staff", name="Staff", description="Everyone", roles=("editor",)),),
+    )
+    with with_client() as (router, client):
+        _empty_tenant(router)
+        router.post(f"{BASE_URL}/api/v1/roles").mock(
+            return_value=httpx.Response(201, json=_role(ROLE_ID, "Editor", "Edits", is_global=True))
+        )
+        router.post(f"{BASE_URL}/api/v1/groups").mock(
+            return_value=httpx.Response(201, json=_group(GROUP_ID, "Staff", "Everyone"))
+        )
+        assign_route = router.post(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(204)
+        )
+
+        plan = client.manifest.plan(manifest)
+        assert [(a.change, a.target) for a in plan.changes()] == [
+            ("create", "role"),
+            ("create", "group"),
+            ("create", "group-role"),
+        ]
+
+        report = client.manifest.apply(manifest)
+        assert report.is_complete()
+        assert assign_route.called
+
+
+def test_a_plain_binding_over_a_scoped_assignment_is_an_update() -> None:
+    """A manifest's plain (unscoped) binding over a server assignment that
+    carries a ``resource_id`` is an ``Update``, not ``NoChange``: the plain
+    shape states "no resource", so the next apply unassigns and re-assigns
+    it tenant-wide -- mirroring the Rust reference's
+    ``a_plain_binding_over_a_scoped_assignment_is_an_update``."""
+    manifest = ManagementManifest(
+        resources=(ResourceSpec(key="docs", name="documents", resource_type="collection"),),
+        roles=(RoleSpec(key="editor", name="Editor", description="Edits"),),
+        groups=(GroupSpec(key="staff", name="Staff", description="Everyone", roles=("editor",)),),
+    )
+    with with_client() as (router, client):
+        _tenant_with_one_role_group_and_resource(router)
+        router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "group": _group(GROUP_ID, "Staff", "Everyone"),
+                        "resource_id": OTHER_RESOURCE_ID,
+                        "inherit": True,
+                        "tenant_scope": None,
+                    }
+                ],
+            )
+        )
+        unassign_route = router.delete(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups/{GROUP_ID}").mock(
+            return_value=httpx.Response(204)
+        )
+        assign_route = router.post(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/groups").mock(
+            return_value=httpx.Response(204)
+        )
+
+        plan = client.manifest.plan(manifest)
+        assert [(a.change, a.target) for a in plan.changes()] == [("update", "group-role")]
+
+        report = client.manifest.apply(manifest)
+        assert report.is_complete()
+        assert unassign_route.called
+        sent = json.loads(assign_route.calls[-1].request.content)
+        assert set(sent) == {"group_id"}, "the plain shape rebinds with no resource_id at all"
