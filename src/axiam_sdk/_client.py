@@ -1064,8 +1064,19 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             raise error_from_http_status(response.status_code, message, response=response)
 
         wire = response.json()
+        access_token = wire.get("access_token")
+        # CONTRACT.md §6.1 rule 8 / CONTRACT 1.52 N4.2: a malformed 200 (no
+        # usable access_token) is refused client-side, with NO credential
+        # adopted and no other client state touched — same "changes no
+        # client state" guarantee rule 2 gives an outright refusal, just
+        # reached from the success status rather than a 401.
+        if not access_token:
+            raise NetworkError(
+                "authenticate_device: malformed response — 200 with no access_token "
+                "(CONTRACT.md §6.1 rule 8); refused client-side, no credential adopted"
+            )
         result = DeviceToken(
-            access_token=wire["access_token"],
+            access_token=access_token,
             token_type=wire["token_type"],
             expires_in=wire["expires_in"],
         )
