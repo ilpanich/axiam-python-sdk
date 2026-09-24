@@ -989,7 +989,13 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
                 "§5.2 rule 1)",
                 resource_id=tenant_id,
             )
-        if scope.reachable_tenant_ids is not None and tenant_id not in scope.reachable_tenant_ids:
+        # CONTRACT 1.52 N5.6 (C-12): reach is decided on UUIDs, never on
+        # letter case. `tenant_id` passed the case-insensitive UUID check
+        # above, and the server writes `reachable_tenant_ids` in lower case,
+        # so both sides are compared in one canonical case.
+        if scope.reachable_tenant_ids is not None and tenant_id.lower() not in {
+            reachable.lower() for reachable in scope.reachable_tenant_ids
+        }:
             raise AuthzError(
                 "acting_tenant: the signed-in principal's roles do not reach this tenant — "
                 "it is not in reachable_tenant_ids, and the server refuses the header with "

@@ -111,6 +111,13 @@ from them.
 
 ### Fixed
 
+- **`acting_tenant()` decides reach on UUIDs, not on letter case (CONTRACT 1.52 N5.6, C-12).**
+  `reachable_tenant_ids` was matched with a plain string `in`. The UUID check accepts either
+  case, and the server writes lower case, so an upper-case spelling of a tenant the principal
+  does reach was refused client-side. Both sides are now compared in one canonical case.
+  Pinned by `test_reach_is_decided_on_uuids_not_on_letter_case` and its twin
+  `test_reach_still_refuses_an_unreachable_tenant_in_any_case`, in `tests/test_acting_tenant.py`.
+
 - **`scripts/gen_management.py` generated `SubjectAltName` — an externally
   tagged `oneOf` (`{"dns": ...}` vs `{"ip": ...}`, no shared discriminator
   field) — as an empty class with no fields**, because the generator's
