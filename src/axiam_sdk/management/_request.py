@@ -108,7 +108,15 @@ def send_management(client: AxiamClient, call: ManagementCall) -> Any:
         )
         with client._telemetry.request(call.operation, call.method, call.path_template, n) as span:
             response = client._rest_send_sync(request)
-            if response.status_code == httpx.codes.UNAUTHORIZED:
+            # CONTRACT.md §6.1 rule 5 / CONTRACT 1.52 N4.5: a device
+            # credential is never refreshed. Leaving `response` as the
+            # server's own 401 when one is held means `_raise_for_status`
+            # below raises with the SERVER's message, never the refresh
+            # guard's "no access token to refresh".
+            if (
+                response.status_code == httpx.codes.UNAUTHORIZED
+                and client._session.bearer_token is None
+            ):
                 response = client._retry_after_refresh_sync(request)
             span.status = response.status_code
             _raise_for_status(call, response)
@@ -137,7 +145,15 @@ async def send_management_async(client: AsyncAxiamClient, call: ManagementCall) 
         )
         with client._telemetry.request(call.operation, call.method, call.path_template, n) as span:
             response = await client._rest_send_async(request)
-            if response.status_code == httpx.codes.UNAUTHORIZED:
+            # CONTRACT.md §6.1 rule 5 / CONTRACT 1.52 N4.5: a device
+            # credential is never refreshed. Leaving `response` as the
+            # server's own 401 when one is held means `_raise_for_status`
+            # below raises with the SERVER's message, never the refresh
+            # guard's "no access token to refresh".
+            if (
+                response.status_code == httpx.codes.UNAUTHORIZED
+                and client._session.bearer_token is None
+            ):
                 response = await client._retry_after_refresh_async(request)
             span.status = response.status_code
             _raise_for_status(call, response)

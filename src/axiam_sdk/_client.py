@@ -1577,7 +1577,15 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         with self._telemetry.request(operation, "POST", path, attempt) as span:
             response = self._rest_send_sync(request)
 
-            if response.status_code == httpx.codes.UNAUTHORIZED:
+            # CONTRACT.md §6.1 rule 5 / CONTRACT 1.52 N4.5: a device
+            # credential is never refreshed, on either transport. Leaving
+            # `response` as the server's own 401 when one is held means the
+            # status check below raises with the SERVER's message, never
+            # the refresh guard's "no access token to refresh".
+            if (
+                response.status_code == httpx.codes.UNAUTHORIZED
+                and self._session.bearer_token is None
+            ):
                 response = self._retry_after_refresh_sync(request)
 
             span.status = response.status_code
