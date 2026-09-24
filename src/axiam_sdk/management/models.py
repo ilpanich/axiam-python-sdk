@@ -77,6 +77,21 @@ class AssignRoleToGroupRequest(ManagementModel):
     group_id: str
     """``group_id``."""
 
+    inherit: bool | None = None
+    """Whether the assignment also reaches the descendants of `resource_id`.
+
+
+    Omitted — the default — or `true` is today's behaviour: a
+    resource-scoped assignment applies at its resource and everywhere below
+    it. `false` applies it at `resource_id` only, "here and no further", for
+    allow and deny grants alike.
+
+    Refused with 400 when `false` is sent with no `resource_id` (a
+    tenant-wide assignment has no node to stop at) or for a role with
+    `is_global: true` (a global role applies everywhere by definition). The
+    flag is part of the assignment: to change it, unassign and assign again.
+    """
+
     resource_id: str | None = None
     """``resource_id``."""
 
@@ -98,6 +113,21 @@ class AssignRoleToGroupRequest(ManagementModel):
 
 class AssignRoleToServiceAccountRequest(ManagementModel):
     """``AssignRoleToServiceAccountRequest`` (generated from openapi.json)."""
+
+    inherit: bool | None = None
+    """Whether the assignment also reaches the descendants of `resource_id`.
+
+
+    Omitted — the default — or `true` is today's behaviour: a
+    resource-scoped assignment applies at its resource and everywhere below
+    it. `false` applies it at `resource_id` only, "here and no further", for
+    allow and deny grants alike.
+
+    Refused with 400 when `false` is sent with no `resource_id` (a
+    tenant-wide assignment has no node to stop at) or for a role with
+    `is_global: true` (a global role applies everywhere by definition). The
+    flag is part of the assignment: to change it, unassign and assign again.
+    """
 
     resource_id: str | None = None
     """``resource_id``."""
@@ -123,6 +153,21 @@ class AssignRoleToServiceAccountRequest(ManagementModel):
 
 class AssignRoleToUserRequest(ManagementModel):
     """``AssignRoleToUserRequest`` (generated from openapi.json)."""
+
+    inherit: bool | None = None
+    """Whether the assignment also reaches the descendants of `resource_id`.
+
+
+    Omitted — the default — or `true` is today's behaviour: a
+    resource-scoped assignment applies at its resource and everywhere below
+    it. `false` applies it at `resource_id` only, "here and no further", for
+    allow and deny grants alike.
+
+    Refused with 400 when `false` is sent with no `resource_id` (a
+    tenant-wide assignment has no node to stop at) or for a role with
+    `is_global: true` (a global role applies everywhere by definition). The
+    flag is part of the assignment: to change it, unassign and assign again.
+    """
 
     resource_id: str | None = None
     """``resource_id``."""
@@ -355,7 +400,13 @@ class CaCertificate(ManagementModel):
     """``status``."""
 
     subject: str
-    """The certificate subject (e.g., `CN=ACME Corp Root CA`)."""
+    """The CA's common name, e.g. `ACME Corp Root CA`.
+
+
+    The normalised value: a `CN=` prefix in the request is understood and
+    stripped, so this always says what the certificate's subject DN says
+    (DF-023).
+    """
 
     tenant_id: str | None = None
     """The tenant this CA signs for, when it is a tenant signing CA.
@@ -421,7 +472,13 @@ class Certificate(ManagementModel):
     """``status``."""
 
     subject: str
-    """The certificate subject (e.g., `CN=device-001`)."""
+    """The certificate's common name, e.g. `device-001`.
+
+
+    The normalised value: a `CN=` prefix in the request is understood and
+    stripped, so this always says what the certificate's subject DN says
+    (DF-023).
+    """
 
     tenant_id: str
     """The tenant this certificate belongs to."""
@@ -435,6 +492,21 @@ class CertificatePolicy(ManagementModel):
 
     max_cert_validity_days: int
     """``max_cert_validity_days``."""
+
+    server_cert_allowed_names: list[str] | None = None
+    """The names a `Server` certificate may be issued for (S-7, DF-001): DNS
+
+    suffixes (`.lakeside.internal`, strictly below), exact hosts
+    (`lakeside.internal`) and IP prefixes (`10.0.0.0/8`, `fd00::/8`). See
+    [`crate::models::server_names`] for the matching rules.
+
+    **Empty by default, and empty refuses every `Server` request** (I1). A
+    certificate for a name, signed under the organization root, is trusted
+    by every relying party that trusts that root, so the list is written
+    where the root is owned. A tenant override may only remove an entry or
+    narrow one; when the baseline later shrinks, the tenant's effective list
+    is the intersection of the two.
+    """
 
 
 CertificateStatus = Literal["Active", "Revoked", "Expired"] | str
@@ -451,7 +523,7 @@ what the widening removes is the claim that nothing else can occur.
 """
 
 
-CertificateType = Literal["User", "Service", "Device"] | str
+CertificateType = Literal["User", "Service", "Device", "Server"] | str
 """The purpose for which a certificate was issued.
 
 
@@ -772,7 +844,13 @@ class CreateCaCertificateRequest(ManagementModel):
     """``key_algorithm``."""
 
     subject: str
-    """``subject``."""
+    """The CA's common name, e.g. `ACME Corp Root CA`.
+
+
+    A **common name**, not a distinguished name. A single `CN=` prefix is
+    accepted and stripped; anything else containing `=` — `O=Acme, CN=ACME
+    Corp Root CA` — is refused with `400`.
+    """
 
     validity_days: int
     """Validity duration in days."""
@@ -795,6 +873,16 @@ class CreateCertificateRequest(ManagementModel):
 
     subject: str
     """``subject``."""
+
+    subject_alt_names: list[SubjectAltName] | None = None
+    """The names a `Server` certificate is issued for, as `[{"dns":
+
+    "api.lakeside.internal"}, {"ip": "10.0.0.5"}]`. Required for `cert_type:
+    Server` and refused for every other type. Each name, and the common
+    name, must be admitted by the tenant's effective
+    `server_cert_allowed_names`, which is empty — refusing every `Server`
+    request — until an organization administrator lists names.
+    """
 
     validity_days: int
     """Validity duration in days."""
@@ -931,7 +1019,13 @@ class CreateIntermediateCaRequest(ManagementModel):
     """The organization CA that signs it."""
 
     subject: str
-    """Subject for the signing CA, e.g. `CN=ACME R&D Signing CA`."""
+    """The signing CA's common name, e.g. `ACME R&D Signing CA`.
+
+
+    A **common name**, not a distinguished name. A single `CN=` prefix is
+    accepted and stripped; anything else containing `=` is refused with
+    `400`.
+    """
 
     validity_days: int
     """Validity duration in days, capped to the parent's own expiry."""
@@ -1752,7 +1846,13 @@ class GeneratedCaCertificate(ManagementModel):
     """``status``."""
 
     subject: str
-    """The certificate subject (e.g., `CN=ACME Corp Root CA`)."""
+    """The CA's common name, e.g. `ACME Corp Root CA`.
+
+
+    The normalised value: a `CN=` prefix in the request is understood and
+    stripped, so this always says what the certificate's subject DN says
+    (DF-023).
+    """
 
     tenant_id: str | None = None
     """The tenant this CA signs for, when it is a tenant signing CA.
@@ -1825,7 +1925,13 @@ class GeneratedCertificate(ManagementModel):
     """``status``."""
 
     subject: str
-    """The certificate subject (e.g., `CN=device-001`)."""
+    """The certificate's common name, e.g. `device-001`.
+
+
+    The normalised value: a `CN=` prefix in the request is understood and
+    stripped, so this always says what the certificate's subject DN says
+    (DF-023).
+    """
 
     tenant_id: str
     """The tenant this certificate belongs to."""
@@ -3389,6 +3495,26 @@ class RoleAssignment(ManagementModel):
     to).
     """
 
+    @property
+    def inherits(self) -> bool:
+        """Whether this assignment reaches the descendants of ``resource_id``
+        as well as the resource itself.
+
+        ``inherit`` is optional on this subject-side listing, and CONTRACT
+        §27.13 S-10 rule 3 requires an absent value to be read as ``True`` --
+        what every assignment meant before the field existed -- never as
+        ``False``. Prefer this over reading :attr:`inherit` directly.
+        """
+        return True if self.inherit is None else self.inherit
+
+    inherit: bool | None = None
+    """Whether the assignment reaches the descendants of `resource_id` as well
+
+    as the resource itself (`true`, the default, and the value of every
+    assignment written before the field existed) or applies at that resource
+    only (`false`).
+    """
+
     resource_id: str | None = None
     """`None` means the role was assigned globally (no resource scope)."""
 
@@ -3405,6 +3531,17 @@ class RoleGroupAssignment(ManagementModel):
     group: Group
     """The assigned group."""
 
+    inherit: bool = True
+    """Whether the assignment also reaches the descendants of `resource_id`
+
+    (`true`, the default) or applies at that resource only (`false`).
+
+    **Defaults to ``True`` when absent from the wire**, even though the
+    schema marks it required: a server older than contract 1.51 omits it,
+    and an inheritable assignment is what every assignment meant before this
+    field existed (CONTRACT §27.13 S-10 rule 3).
+    """
+
     resource_id: str | None = None
     """`None` means the role was assigned globally (no resource scope)."""
 
@@ -3418,6 +3555,17 @@ class RoleGroupAssignment(ManagementModel):
 
 class RoleServiceAccountAssignment(ManagementModel):
     """A service account together with the resource scope of its assignment."""
+
+    inherit: bool = True
+    """Whether the assignment also reaches the descendants of `resource_id`
+
+    (`true`, the default) or applies at that resource only (`false`).
+
+    **Defaults to ``True`` when absent from the wire**, even though the
+    schema marks it required: a server older than contract 1.51 omits it,
+    and an inheritable assignment is what every assignment meant before this
+    field existed (CONTRACT §27.13 S-10 rule 3).
+    """
 
     resource_id: str | None = None
     """`None` means the role was assigned globally (no resource scope)."""
@@ -3439,6 +3587,17 @@ class RoleServiceAccountAssignment(ManagementModel):
 class RoleUserAssignment(ManagementModel):
     """A user together with the resource scope of their assignment of this
     role.
+    """
+
+    inherit: bool = True
+    """Whether the assignment also reaches the descendants of `resource_id`
+
+    (`true`, the default) or applies at that resource only (`false`).
+
+    **Defaults to ``True`` when absent from the wire**, even though the
+    schema marks it required: a server older than contract 1.51 omits it,
+    and an inheritable assignment is what every assignment meant before this
+    field existed (CONTRACT §27.13 S-10 rule 3).
     """
 
     resource_id: str | None = None
@@ -3848,6 +4007,12 @@ class SetOrgSettings(ManagementModel):
     sensitive_scopes_enabled: bool | None = None
     """``sensitive_scopes_enabled``."""
 
+    server_cert_allowed_names: list[str] | None = None
+    """S-7 — defaulted to empty, so an API client written before the field
+
+    lands on "no `Server` certificate is issued" (I1).
+    """
+
     webauthn_user_verification: str | None = None
     """``webauthn_user_verification``."""
 
@@ -3896,6 +4061,14 @@ class SignCertificateCsrRequest(ManagementModel):
 
     metadata: Any | None = None
     """``metadata``."""
+
+    subject_alt_names: list[SubjectAltName] | None = None
+    """See [`CreateCertificateRequest::subject_alt_names`]. Stated here and
+
+    never in the CSR, which is still refused if it requests a
+    `subjectAltName`. Under a CA whose key is held by `vault_pki` a `Server`
+    request on this path is refused; use `POST /api/v1/certificates`.
+    """
 
     validity_days: int
     """Validity duration in days."""
@@ -3964,6 +4137,30 @@ class SmtpConfig(ManagementModel):
 
     username: str
     """``username``."""
+
+
+class SubjectAltNameDns(ManagementModel):
+    """A DNS name, e.g. `api.lakeside.internal` or `*.lakeside.internal`."""
+
+    dns: str
+    """A DNS name, e.g. `api.lakeside.internal` or `*.lakeside.internal`."""
+
+
+class SubjectAltNameIp(ManagementModel):
+    """An IPv4 or IPv6 address, e.g. `10.0.0.5`."""
+
+    ip: str
+    """An IPv4 or IPv6 address, e.g. `10.0.0.5`."""
+
+
+SubjectAltName = SubjectAltNameDns | SubjectAltNameIp
+"""A name to put in a `Server` certificate's `subjectAltName`.
+
+
+Stated explicitly in the request, never read from a CSR: a CSR asking for a
+`subjectAltName` extension is still refused. URI and e-mail names are not
+offered — nothing in AXIAM consumes them yet.
+"""
 
 
 class Tenant(ManagementModel):
@@ -4136,6 +4333,14 @@ class TenantSettingsOverride(ManagementModel):
 
     sensitive_scopes_enabled: bool | None = None
     """``sensitive_scopes_enabled``."""
+
+    server_cert_allowed_names: list[str] | None = None
+    """S-7 — tighten-only: every entry must be covered by an organization
+
+    entry. An empty list means this tenant issues no `Server` certificate at
+    all, which is different from an absent field (inherit the organization's
+    list).
+    """
 
     webauthn_user_verification: str | None = None
     """``webauthn_user_verification``."""
@@ -4952,6 +5157,8 @@ for _model in (
     SignIntermediateCsrRequest,
     SignedAuditBatch,
     SmtpConfig,
+    SubjectAltNameDns,
+    SubjectAltNameIp,
     Tenant,
     TenantSettingsOverride,
     TokenExchangeTrustRequest,
