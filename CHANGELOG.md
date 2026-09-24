@@ -7,6 +7,167 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract **1.51**, the dogfooding remediation
+([`claude_dev/dogfooding-findings-fix-plan.md`](https://github.com/ilpanich/axiam/blob/main/claude_dev/dogfooding-findings-fix-plan.md)'s
+C-3 task; CONTRACT.md §1.1.1, §5.2 rule 1, §6.1 rules 6-10, §10.1 rule 9,
+§27.6.1, §27.13). `CONTRACT.md`, `openapi.json` and `management-registry.json`
+are re-vendored byte-for-byte from `ilpanich/axiam@56fbe44`; `proto/` was
+already identical. The §27 surface (162 operations, up from 160) and the
+gRPC stubs (`token.proto` added to `scripts/gen_grpc.sh`) are regenerated
+from them.
+
+### Added
+
+- **Acting tenant** (§5.2 rule 1). `AxiamClient(acting_tenant=...)` /
+  `AsyncAxiamClient(acting_tenant=...)` at construction, and
+  `client.acting_tenant(tenant_id)` / `client.clear_acting_tenant()` on an
+  existing client — Python's own handle idiom rather than the reference's
+  builder method, since a Python client is already a plain value that can be
+  shallow-copied. `acting_tenant(...)` returns a *new* handle sharing the
+  session (cookie jar, refresh guard, decision memo) with the client it was
+  called on; the original is unchanged, so two handles can act on two
+  tenants at once over one session. `X-Axiam-Tenant` is sent on `/api/v1`
+  REST requests of such a handle **only when set** — a client that never
+  asks for it sends exactly what it sent before. Once a login result has
+  reported the principal's reach, the on-client form refuses client-side
+  (`AuthError`, no wire call) unless the principal is `organization_level`,
+  and refuses a tenant outside `reachable_tenant_ids`; a client holding no
+  login result (a service account, an injected token, OPAQUE/SSO/WebAuthn)
+  sends the header regardless and lets the server's `403` answer. The §17
+  decision-memo key includes the acting tenant. REST-only: the gRPC
+  interceptor reads no acting-tenant metadata.
+- **`authenticate_device()`** on both clients, the mTLS device login (§6.1
+  rules 6-10): `POST /api/v1/auth/device`, no body, returns
+  `DeviceToken(access_token: SecretStr, token_type, expires_in)`. Reachable
+  only on a client built with `client_cert=`/`client_key=` — otherwise
+  `AuthError` before any wire call. The token is adopted as the client's
+  credential (`Authorization: Bearer`, cookie jar cleared and an explicit
+  empty `Cookie` header sent) rather than living beside the jar, because the
+  server reads the `axiam_access` cookie before `Authorization` and a
+  leftover session cookie would otherwise win. No refresh token exists by
+  design (D-6): a `401` on this credential, at login or later, is
+  `AuthError` with no refresh attempt; a `429` is `NetworkError`, not an
+  authentication failure, and is not retried. New example:
+  [`examples/device_mtls_provisioning.py`](examples/device_mtls_provisioning.py).
+- **gRPC `validate_token()` / `introspect_token()`** (§1.1.1, §10.3) on
+  `AuthzGrpcClient` and `AsyncAuthzGrpcClient`, on the same channel and
+  interceptor `check_access`/`get_user_info` already use. Every response
+  field is modelled, including `cnf` as `TokenCnf | None` — absent and empty
+  stay distinct. `TokenValidation.verify_possession(...)` /
+  `TokenIntrospection.verify_possession(...)` apply CONTRACT.md §10.1 rule 9
+  against caller-supplied evidence, delegating to the same
+  `axiam_sdk._jwks.verify_token_binding` the local `JwksVerifier` uses — a
+  gRPC-validating guard and a JWKS-verifying one never disagree about
+  whether a token is a bearer token. A no-token call raises `AuthError`
+  client-side, exactly like `get_user_info`.
+- **`JwksVerifier.verify_with_proofs(token, *, expected_tenant_id,
+  certificate_thumbprint=, dpop_thumbprint=)`**, the full §10.1 set
+  including rule-9 evidence in one call, replacing the
+  `verify_access_token()` + separate `verify_token_binding()` pairing the
+  now-fixed default entry point made unsafe (see Breaking).
+- **Manifest additions** (§27.6.1, §27.5 rule 5):
+  - `ResourceSpec.metadata: dict[str, Any] | None`, sent on Create; on
+    Update only when stated and it differs from the server's value as a
+    whole-object JSON comparison, never a key-by-key merge — unstated is
+    silent, matching every other field.
+  - `RoleBinding = str | ScopedRoleBinding` on `GroupSpec.roles`,
+    `UserSpec.roles` and the new `ServiceAccountSpec.roles`.
+    `ScopedRoleBinding(role=, resource=, inherit=True)` is the object shape;
+    a bare role key is unchanged and still compiles every existing
+    manifest. One role bound twice to one subject — plain and scoped
+    included — is rejected by `plan()`/`apply()` before any request, and so
+    is a global role bound with `inherit=False`. A changed binding is
+    unassign-then-assign (the server has no update endpoint for it),
+    carries the server's `tenant_scope` across unchanged, and re-assigns
+    the previous binding when the new assign fails — the step's outcome
+    names whether the restore itself also succeeded. `inherit` reaches the
+    wire only as `False`, so an inheritable binding's request body stays
+    byte-for-byte what it was before contract 1.51.
+  - `ServiceAccountSpec(key, name, description=None, roles=())`. Reconciled
+    by `name`, which the server does not enforce uniqueness on: `plan()`
+    fails, before any write, when a stated name matches more than one
+    existing account. A `Create` outcome carries the one-time
+    `client_secret` (`ApplyReport.client_secret(manifest_key)`) — set even
+    when a *later* step of the same `apply` fails, because each step's
+    outcome is recorded as it completes. `apply()` never calls
+    `rotate_secret` to reconcile; a second `apply` against an unchanged
+    tenant is `NoChange`.
+  - `axiam_service_account` decorator, wired into `define_manifest` and
+    `collect_manifest`.
+  - `webhooks` stays unspecified in contract 1.51 and is **declined** — see
+    Declined below.
+- **Contract 1.51 model changes** (§27.13), from the regenerated surface:
+  `SubjectAltNameDns` / `SubjectAltNameIp` (`SubjectAltName` is their
+  union); `inherit` on `RoleGroupAssignment`, `RoleUserAssignment` and
+  `RoleServiceAccountAssignment`, defaulting to `True` when absent from the
+  wire (a server older than 1.51 omits it, and an inheritable assignment is
+  what every assignment meant before the field existed); `RoleAssignment`
+  gained an `.inherits` property reading the same way.
+
+### Fixed
+
+- **`scripts/gen_management.py` generated `SubjectAltName` — an externally
+  tagged `oneOf` (`{"dns": ...}` vs `{"ip": ...}`, no shared discriminator
+  field) — as an empty class with no fields**, because the generator's
+  `discriminated()` detector only recognised internally-tagged unions (a
+  shared enum-valued tag). It emitted `{}` on the wire, which the server
+  refuses. A new `externally_tagged()` detector fixes the generation; the
+  regenerated `SubjectAltNameDns | SubjectAltNameIp` union is the "Added"
+  entry above.
+- **The same generator would have produced a required `inherit` field**,
+  which fails to decode a role-side assignment listing from a server older
+  than contract 1.51 (which omits it). `DEFAULT_TRUE_FIELDS` makes the
+  generator emit `= True` for it instead, matching §27.13's S-10 rule 3.
+
+### Breaking
+
+- **`JwksVerifier.verify_access_token` — and so every guard built on it
+  (`AxiamUser`, the §11 dependency/middleware, and the §28 MCP guard) —
+  accepted a sender-constrained token as an ordinary bearer token, against
+  CONTRACT.md §10.1 rule 9.** This is the SDK's documented default
+  verification entry point, and it had no transport evidence to check a
+  `cnf` claim against, so it should have refused any token carrying one; it
+  admitted them instead. Checked specifically because C-3 named this as the
+  first thing to verify, before any new feature: every `authenticate_device()`
+  token now carries `cnf.x5t#S256` (mTLS device certificates are new in this
+  same release), so the gap was no longer theoretical — a device token would
+  have passed the default guard with no proof of possession. `verify_access_token`
+  now refuses any token carrying `cnf` (`AuthError`); `verify_with_proofs`
+  (Added, above) and `verify_sender_constrained` (unchanged, and itself
+  fixed in the same commit — it called the now-refusing
+  `verify_access_token` internally and would otherwise have rejected every
+  bound token, including a correctly-proven one) are the accept-with-evidence
+  paths. An unbound token is unaffected either way.
+  `tests/test_local_verification_set.py`'s
+  `test_verify_access_token_does_not_apply_rule_9` — which pinned the
+  defect — is inverted to
+  `test_verify_access_token_applies_rule_9_with_no_evidence`, asserting the
+  refusal.
+- `GroupSpec.roles`, `UserSpec.roles` and `ServiceAccountSpec.roles` are
+  `tuple[RoleBinding, ...]`, not `tuple[str, ...]`. A bare role key still
+  compiles and compares equal to a plain binding; code that iterates the
+  tuple assuming every element is a `str` has to change.
+- `ManagementManifest` gains `service_accounts`, and `ResourceSpec` gains
+  `metadata`. Both are dataclasses with defaults, so positional
+  construction is unaffected; a caller that lists every field by keyword
+  against `__dataclass_fields__` would see the new ones.
+
+### Declined
+
+- **§27.6 `webhooks` is not a manifest resource in this release.** The
+  contract names it under §27.6 alongside the other management namespaces
+  but leaves its shape unspecified for the manifest surface in 1.51 (no
+  natural key, no drift semantics defined) — the same reading the Rust
+  reference SDK gave it. Adding a `WebhookSpec` ahead of the contract would
+  mean guessing at semantics no other SDK agrees on. Revisit when the
+  contract defines it.
+
+pytest tests: 1653 passed on `origin/main` before this work began; 1736
+passed at the end (0 failed). Coverage (`pytest --cov=axiam_sdk
+--cov-report=lcov`, the same invocation `.github/workflows/coverage.yml`
+runs): 98.57% on `origin/main`, 98.56% on this branch — both clear the
+`fail_under = 98` floor in `pyproject.toml`.
+
 ## [1.0.0-beta16] - 2026-09-19
 
 ### Added
