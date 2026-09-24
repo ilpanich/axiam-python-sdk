@@ -341,16 +341,35 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         # CONTRACT.md §5.2 / §5.2.3 — what the last completed login said
         # about the principal's reach, when a login said anything at all.
         #
-        # `None` until a password or MFA login reports a user object, and
-        # reset by `_absorb_session_cookies` (every session-establishing
-        # path) and by `logout`. It is `None` on purpose rather than a
-        # defaulted `False`, for every path that completes a session
-        # without a user object — OPAQUE, SSO, the forced MFA setup, a
-        # device login, an injected token — because "the server did not
-        # say" must not gate `acting_tenant()` as if the server had said
-        # "not organization-level" (§5.2 rule 1: a client holding no login
-        # result has nothing to gate on, and sends the header regardless,
-        # letting the server's 403 answer).
+        # `None` until a path that lands on `_handle_login_response`'s 200
+        # branch reports a user object, and reset by
+        # `_absorb_session_cookies` (every session-establishing path) and by
+        # `logout`. The server sends that `user` object on `login`,
+        # `verify_mfa`, `login_opaque`, `mfa_setup_confirm` and
+        # `webauthn_setup_register_finish` alike — all five route through
+        # `_handle_login_response`, whose 200 branch sets this right after
+        # `_absorb_session_cookies` resets it — so all five gate
+        # `acting_tenant()` on what that object said.
+        #
+        # WebAuthn *authentication* (`webauthn_login_finish` /
+        # `webauthn_discoverable_finish`), an SSO completion, and the mTLS
+        # device login complete a session with no such object — the first
+        # two call `_absorb_session_cookies` with no follow-up set, the
+        # device login sets this to `None` directly — and neither does an
+        # injected token or a service account from client credentials. It is
+        # `None` on purpose rather than a defaulted `False` for all of
+        # those, because "the server did not say" must not gate
+        # `acting_tenant()` as if the server had said "not
+        # organization-level" (§5.2 rule 1: a client holding no login result
+        # has nothing to gate on, and sends the header regardless, letting
+        # the server's 403 answer).
+        #
+        # Differs from the Rust reference, which resets to unknown on every
+        # one of these paths, OPAQUE and the two setup flows included: their
+        # responses carry a user object too (the same builder as the
+        # password path on OPAQUE's server handler; both setup routes are
+        # typed the same success response), so gating on it here is tighter
+        # than gating on nothing.
         self._principal_scope: _PrincipalScope | None = None
 
         self._session = _Session(
@@ -699,11 +718,12 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
 
         # CONTRACT.md §5.2 rule 1 — a new session is a new principal until
         # its login says otherwise. `_handle_login_response`'s 200 branch
-        # (login, verify_mfa) records what the user object says right after
-        # this call. Every other path that lands here — OPAQUE, SSO, the
-        # forced MFA setup, WebAuthn — completes a session without a user
-        # object, and must not inherit the previous principal's reach as a
-        # gate on `acting_tenant()`.
+        # (login, verify_mfa, login_opaque, mfa_setup_confirm,
+        # webauthn_setup_register_finish) records what the user object says
+        # right after this call. The other paths that land here directly —
+        # WebAuthn *authentication* and an SSO completion — complete a
+        # session without a user object, and must not inherit the previous
+        # principal's reach as a gate on `acting_tenant()`.
         self._principal_scope = None
 
     # ------------------------------------------------------------------
@@ -1014,8 +1034,11 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         self._on_credential_change()
         self._session.adopt_bearer_credential(result.access_token)
         # §5.2 rule 1, "For C-12" item 5: a device login completes a
-        # session with no user object, so — like OPAQUE/SSO/WebAuthn/the
-        # forced MFA setup — it holds no reach to gate acting_tenant() on.
+        # session with no user object, so — like WebAuthn authentication and
+        # an SSO completion — it holds no reach to gate acting_tenant() on.
+        # OPAQUE, the forced MFA setup and the WebAuthn *setup* flow are
+        # different: their responses carry a user object too, so they DO
+        # gate (see the `_principal_scope` field comment in `__init__`).
         self._principal_scope = None
         return result
 

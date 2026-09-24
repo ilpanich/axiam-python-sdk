@@ -1206,13 +1206,20 @@ acme.clear_acting_tenant()  # or: back to the org's own scope
   session (cookie jar, refresh guard, decision memo) with `client` — `client`
   itself is unchanged, so two handles can act on two tenants at once over one
   session. Once this client holds a login result that reported the
-  principal's reach, it refuses **client-side, with no wire call**, unless
-  `organization_level` is `True`, and refuses a tenant outside
-  `reachable_tenant_ids` when the login reported one (§5.2.3 rule 4). A
-  client holding no login result — a service account, an injected token, a
-  session completed by OPAQUE/SSO/WebAuthn/the forced MFA setup — has
-  nothing to gate on: the header is sent regardless, and the server's `403`
-  is the answer.
+  principal's reach, it refuses **client-side, with no wire call**
+  (`AuthzError`), unless `organization_level` is `True`, and refuses a
+  tenant outside `reachable_tenant_ids` when the login reported one (§5.2.3
+  rule 4). **What "holds a login result" covers**: `login`, `verify_mfa`,
+  `login_opaque` and `mfa_setup_confirm` all report the principal's reach —
+  so does completing a forced WebAuthn *setup* — because their responses
+  all carry the same user object, through the same internal handler. A
+  client that has only completed a WebAuthn *authentication*, an SSO
+  sign-in, or the mTLS device login — or that holds an injected token or a
+  service account from client credentials — has nothing to gate on: the
+  header is sent regardless, and the server's `403` is the answer. (This
+  differs from the Rust reference, which treats OPAQUE and the setup flows
+  the same as those: their responses carry no less of a user object here,
+  so gating on it is tighter than gating on nothing.)
 - It is **REST-only**: the gRPC interceptor reads no acting-tenant metadata
   and acts on the token's tenant regardless of what this says.
 - It never changes `X-Tenant-ID`, and never changes a `{tenant_id}` path

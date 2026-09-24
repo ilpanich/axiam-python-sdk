@@ -30,12 +30,17 @@ from them.
   REST requests of such a handle **only when set** — a client that never
   asks for it sends exactly what it sent before. Once a login result has
   reported the principal's reach, the on-client form refuses client-side
-  (`AuthError`, no wire call) unless the principal is `organization_level`,
-  and refuses a tenant outside `reachable_tenant_ids`; a client holding no
-  login result (a service account, an injected token, OPAQUE/SSO/WebAuthn)
-  sends the header regardless and lets the server's `403` answer. The §17
-  decision-memo key includes the acting tenant. REST-only: the gRPC
-  interceptor reads no acting-tenant metadata.
+  (`AuthzError`, no wire call) unless the principal is `organization_level`,
+  and refuses a tenant outside `reachable_tenant_ids`. "Reported the
+  principal's reach" covers `login`, `verify_mfa`, `login_opaque`,
+  `mfa_setup_confirm` and a forced WebAuthn setup alike — their responses
+  all carry the same user object, so all five gate. A client holding no
+  such result (a service account, an injected token, a WebAuthn
+  *authentication*, an SSO sign-in, or the mTLS device login) sends the
+  header regardless and lets the server's `403` answer — this is tighter
+  than the Rust reference, which resets to unknown on OPAQUE and the setup
+  flows too. The §17 decision-memo key includes the acting tenant.
+  REST-only: the gRPC interceptor reads no acting-tenant metadata.
 - **`authenticate_device()`** on both clients, the mTLS device login (§6.1
   rules 6-10): `POST /api/v1/auth/device`, no body, returns
   `DeviceToken(access_token: SecretStr, token_type, expires_in)`. Reachable

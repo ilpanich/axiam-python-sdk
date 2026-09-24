@@ -4,25 +4,40 @@
 §8 rule 7 of the dogfooding fix plan requires: the header is sent when set
 and absent when not (the I4 twin); this file also pins the reference's other
 choices recorded in its "For C-12" list — the §17 memo key includes the
-acting tenant, and a session that completes without a user object (here:
-``logout``, standing in for OPAQUE/SSO/WebAuthn/the forced MFA setup, all of
-which land on the same ``_absorb_session_cookies`` reset) is read as "holds
-no login result" rather than "not organization-level".
+acting tenant, and a session that completes without a user object is read as
+"holds no login result" rather than "not organization-level". That "without a
+user object" set is **not** every session-establishing path: ``login``,
+``verify_mfa``, ``login_opaque`` and ``mfa_setup_confirm`` all report the
+principal's reach (their responses carry the same user object, through the
+same ``_handle_login_response``), and gate ``acting_tenant()`` accordingly —
+pinned below by the OPAQUE and forced-MFA-setup cases. ``logout`` (used
+below to stand in for the paths that genuinely carry no user object — a
+WebAuthn *authentication*, an SSO completion, the mTLS device login, all of
+which land on the same ``_absorb_session_cookies`` reset with no follow-up
+set) resets a *held* result to unknown rather than clearing it to "not
+organization-level".
 """
 
 from __future__ import annotations
 
+import secrets
 import uuid
 
 import httpx
 import pytest
 import respx
 
-from axiam_sdk import AuthzError, AxiamClient, NetworkError
-from axiam_sdk._client import ACTING_TENANT_HEADER
+from axiam_sdk import AsyncAxiamClient, AuthzError, AxiamClient, NetworkError, _opaque
+from axiam_sdk._client import (
+    ACTING_TENANT_HEADER,
+    OPAQUE_LOGIN_FINISH_PATH,
+    OPAQUE_LOGIN_START_PATH,
+)
+from tests._opaque_fake import FakeOpaqueLibrary
 from tests.management_support import (
     BASE_URL,
     TENANT_SLUG,
+    access_token,
     mount_json,
     mount_login_as,
     with_async_client,
@@ -251,11 +266,12 @@ def test_a_client_holding_no_login_result_is_not_gated() -> None:
 
 def test_logout_resets_the_gate_to_unknown_not_to_false() -> None:
     """After ``logout``, the principal scope is forgotten entirely (`None`),
-    not remembered as "not organization-level" — exactly like a session that
-    completes with no user object (OPAQUE, SSO, WebAuthn, the forced MFA
-    setup all reach the same reset in ``_absorb_session_cookies``, which this
-    pins through the one session-ending path every login-completing flow
-    also passes through)."""
+    not remembered as "not organization-level" — the same reset a WebAuthn
+    authentication, an SSO completion or the mTLS device login apply, all of
+    which (like ``logout``) complete or end a session with no user object.
+    OPAQUE, the forced MFA setup and a WebAuthn *setup* are different: see
+    ``test_login_opaque_with_organization_level_false_gates_acting_tenant``
+    and its neighbours below, which pin that those DO carry the gate."""
     with respx.mock(assert_all_called=False) as router:
         mount_login_as(router, organization_level=False)
         client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
@@ -313,3 +329,187 @@ def test_the_decision_memo_key_includes_the_acting_tenant() -> None:
         assert route.call_count == 2
 
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# "For C-12" question 5, corrected: OPAQUE, the forced MFA setup and a
+# WebAuthn setup DO gate acting_tenant() -- their responses carry the same
+# user object login/verify_mfa's do, through the same
+# _handle_login_response. Only a WebAuthn *authentication*, an SSO
+# completion and the mTLS device login (and an injected token / a service
+# account) hold nothing to gate on. Orchestrator review of commit 073b224.
+# ---------------------------------------------------------------------------
+
+_OPAQUE_ARGON2ID = {"ksf": "argon2id", "memory_kib": 19456, "iterations": 2, "parallelism": 1}
+_OPAQUE_PASSWORD = f"correct-{secrets.token_hex(8)}"
+
+
+@pytest.fixture
+def opaque_lib():
+    fake = FakeOpaqueLibrary()
+    _opaque._set_for_tests(fake)
+    try:
+        yield fake
+    finally:
+        _opaque._reset_for_tests()
+
+
+def _opaque_login_started(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "opaque_session": "session-handle",
+        "ke2": "ke2-hex",
+        **_OPAQUE_ARGON2ID,
+    }
+    body.update(overrides)
+    return body
+
+
+def _mount_opaque_login(router: respx.MockRouter, *, organization_level: bool) -> None:
+    router.post(f"{BASE_URL}{OPAQUE_LOGIN_START_PATH}").mock(
+        return_value=httpx.Response(200, json=_opaque_login_started())
+    )
+    router.post(f"{BASE_URL}{OPAQUE_LOGIN_FINISH_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "user": {"id": "user-1", "organization_level": organization_level},
+                "session_id": "s1",
+                "expires_in": 900,
+            },
+            headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+        )
+    )
+
+
+def test_login_opaque_with_organization_level_false_gates_acting_tenant(opaque_lib) -> None:
+    """login_opaque's finish response carries the same ``user`` object
+    login's does, through the same ``_handle_login_response`` -- so it gates
+    ``acting_tenant()`` exactly as a password login does, unlike the Rust
+    reference (whose OPAQUE path resets to unknown)."""
+    with respx.mock(assert_all_called=False) as router:
+        _mount_opaque_login(router, organization_level=False)
+        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client.login_opaque("a@example.test", _OPAQUE_PASSWORD)
+        calls_before = len(router.calls)
+        with pytest.raises(AuthzError, match="organization-level"):
+            client.acting_tenant(TENANT_A)
+        assert len(router.calls) == calls_before, "refused with zero wire calls"
+        client.close()
+
+
+async def test_login_opaque_with_organization_level_false_gates_acting_tenant_async(
+    opaque_lib,
+) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        _mount_opaque_login(router, organization_level=False)
+        client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        await client.login_opaque("a@example.test", _OPAQUE_PASSWORD)
+        calls_before = len(router.calls)
+        with pytest.raises(AuthzError, match="organization-level"):
+            client.acting_tenant(TENANT_A)
+        assert len(router.calls) == calls_before, "refused with zero wire calls"
+        await client.aclose()
+
+
+def _mount_mfa_setup_confirm(router: respx.MockRouter, *, organization_level: bool) -> None:
+    router.post(f"{BASE_URL}/api/v1/auth/mfa/setup/confirm").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "user": {"id": "user-1", "organization_level": organization_level},
+                "session_id": "s1",
+                "expires_in": 900,
+            },
+            headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+        )
+    )
+
+
+def test_mfa_setup_confirm_with_organization_level_false_gates_acting_tenant() -> None:
+    """The forced-MFA-setup completion routes through
+    ``_handle_login_response`` exactly as ``login_opaque`` does -- same
+    gate, for the same reason."""
+    with respx.mock(assert_all_called=False) as router:
+        _mount_mfa_setup_confirm(router, organization_level=False)
+        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client.mfa_setup_confirm(setup_token="setup-token-1", totp_code="123456")
+        calls_before = len(router.calls)
+        with pytest.raises(AuthzError, match="organization-level"):
+            client.acting_tenant(TENANT_A)
+        assert len(router.calls) == calls_before, "refused with zero wire calls"
+        client.close()
+
+
+async def test_mfa_setup_confirm_with_organization_level_false_gates_acting_tenant_async() -> None:
+    with respx.mock(assert_all_called=False) as router:
+        _mount_mfa_setup_confirm(router, organization_level=False)
+        client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        await client.mfa_setup_confirm(setup_token="setup-token-1", totp_code="123456")
+        calls_before = len(router.calls)
+        with pytest.raises(AuthzError, match="organization-level"):
+            client.acting_tenant(TENANT_A)
+        assert len(router.calls) == calls_before, "refused with zero wire calls"
+        await client.aclose()
+
+
+def test_an_sso_completion_after_an_org_level_false_login_resets_the_stale_gate() -> None:
+    """The stale-principal case "For C-12" question 5 warns about: a HELD
+    org-level=false login result must not survive past a LATER
+    session-establishing call that carries no user object at all. SSO
+    completion (like a WebAuthn authentication or the device login) lands on
+    ``_absorb_session_cookies`` with no follow-up set, so the gate resets to
+    "nothing to gate on" and the header is sent regardless -- not "still not
+    organization-level"."""
+    with respx.mock(assert_all_called=False) as router:
+        mount_login_as(router, organization_level=False)
+        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client.login("a@example.test", "password123")
+        with pytest.raises(AuthzError):
+            client.acting_tenant(TENANT_A)
+
+        router.post(f"{BASE_URL}/api/v1/auth/federation/oidc/callback").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "user_id": "user-2",
+                    "session_id": "s2",
+                    "expires_in": 900,
+                    "redirect_uri": "https://app.test/post-login",
+                },
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        client.sso_complete(state="federation-state-1", code="idp-code-1")
+
+        handle = client.acting_tenant(TENANT_A)
+        assert handle.acting_tenant_id == TENANT_A
+        client.close()
+
+
+async def test_an_sso_completion_after_an_org_level_false_login_resets_the_stale_gate_async() -> (
+    None
+):
+    with respx.mock(assert_all_called=False) as router:
+        mount_login_as(router, organization_level=False)
+        client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        await client.login("a@example.test", "password123")
+        with pytest.raises(AuthzError):
+            client.acting_tenant(TENANT_A)
+
+        router.post(f"{BASE_URL}/api/v1/auth/federation/oidc/callback").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "user_id": "user-2",
+                    "session_id": "s2",
+                    "expires_in": 900,
+                    "redirect_uri": "https://app.test/post-login",
+                },
+                headers=[("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly")],
+            )
+        )
+        await client.sso_complete(state="federation-state-1", code="idp-code-1")
+
+        handle = client.acting_tenant(TENANT_A)
+        assert handle.acting_tenant_id == TENANT_A
+        await client.aclose()
