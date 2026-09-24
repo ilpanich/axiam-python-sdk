@@ -716,6 +716,17 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
 
         self._session.refresh_guard.seed(access, refresh, claims.get("exp"))
 
+        # CONTRACT.md §6.1 rule 6 / CONTRACT 1.52 N4.4 — this is a
+        # session-establishing call (login, verify_mfa, OPAQUE finish, MFA
+        # setup confirm, the WebAuthn setup pair, a WebAuthn
+        # *authentication*, or an SSO completion — every path that lands
+        # here). Its cookie session REPLACES a device credential adopted by
+        # an earlier `authenticate_device()`, exactly as a later
+        # `authenticate_device()` itself replaces one (rule 4): the cookie
+        # session just captured above is what every request must use from
+        # here on, not a stale bearer token from before.
+        self._session.clear_bearer_credential()
+
         # CONTRACT.md §5.2 rule 1 — a new session is a new principal until
         # its login says otherwise. `_handle_login_response`'s 200 branch
         # (login, verify_mfa, login_opaque, mfa_setup_confirm,
@@ -802,11 +813,21 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         """Resolve the current session id (the access token's ``jti`` claim)
         to send as ``POST /api/v1/auth/logout``'s ``session_id``.
 
+        A held device credential (CONTRACT.md §6.1 rule 6) is read too, not
+        only the cookie session: CONTRACT 1.52 N4.4/N4 rule 3 lists
+        ``logout`` among the requests a device credential is the credential
+        of, so a client that authenticated with ``authenticate_device()``
+        and never held a cookie session at all must still be able to log
+        out, exactly as it must still reach the management API (N4.7).
+
         Raises:
             AuthError: if there is no active session (no ``axiam_access``
-                cookie), or the access token carries no ``jti`` claim.
+                cookie and no held bearer credential), or the access token
+                carries no ``jti`` claim.
         """
         access = self._session.cookie_value(ACCESS_COOKIE)
+        if not access and self._session.bearer_token is not None:
+            access = self._session.bearer_token.get_secret_value()
         if not access:
             raise AuthError("no active session to log out")
         claims = _decode_unverified_claims(access)
@@ -1449,6 +1470,9 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # CONTRACT.md §6.1 rule 4 / CONTRACT 1.52 N4.4: logout clears a
+        # held device credential, same as it clears the cookie session.
+        self._session.clear_bearer_credential()
         # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
         self._principal_scope = None
 

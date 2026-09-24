@@ -367,6 +367,9 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # CONTRACT.md §6.1 rule 4 / CONTRACT 1.52 N4.4: logout clears a
+        # held device credential, same as it clears the cookie session.
+        self._session.clear_bearer_credential()
         # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
         self._principal_scope = None
 
