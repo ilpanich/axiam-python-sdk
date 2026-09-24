@@ -898,9 +898,20 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         rebuilt from its headers (``_retry_after_refresh_sync``/``_async``)
         carries the header along too, and so a request handed to
         ``_credential_free_request``'s callers stays untouched by this call
-        entirely (those never route through here)."""
-        if self._acting_tenant is not None:
-            request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
+        entirely (those never route through here).
+
+        Same-origin guard (CONTRACT 1.52 N5.1): the header names a tenant
+        and is refused off-origin exactly like ``X-Tenant-ID``
+        (``_Session._prepare_request``) — a request built against a host
+        other than this session's own (a discovered ``/oauth2`` endpoint on
+        another host, say, or a followed redirect) gets neither.
+        """
+        if self._acting_tenant is None:
+            return
+        req_host = request.url.host
+        if req_host and req_host != self._session._base_host:
+            return
+        request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
 
     def _apply_bearer_credential(self, request: httpx.Request) -> None:
         """``Authorization: Bearer <token>`` when this session has adopted a
@@ -915,11 +926,20 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         *before* the ``Authorization`` header, so a cookie left from an
         earlier session would otherwise silently win and the request would
         run as that session's principal instead of the device's.
+
+        Same-origin guard (CONTRACT 1.52 N5.1): a request built against a
+        host other than this session's own gets no credential at all — the
+        bearer token, like ``X-Tenant-ID``/``X-Axiam-Tenant``, MUST NOT
+        reach a host other than the configured base URL.
         """
         token = self._session.bearer_token
-        if token is not None:
-            request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
-            request.headers["Cookie"] = ""
+        if token is None:
+            return
+        req_host = request.url.host
+        if req_host and req_host != self._session._base_host:
+            return
+        request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+        request.headers["Cookie"] = ""
 
     def _rest_send_sync(self, request: httpx.Request) -> httpx.Response:
         """The choke-point wrapper every sync REST call sends through:
