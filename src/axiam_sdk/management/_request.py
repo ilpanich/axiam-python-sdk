@@ -68,15 +68,25 @@ def _require_session(client: Any, call: ManagementCall) -> None:
     enters the §9 refresh guard and fails there, two indirections from the
     actual mistake.
 
+    A held device credential satisfies this precondition too (CONTRACT.md
+    §27.4 rule 1 / §6.1 rule 6, CONTRACT 1.52 N4.7): §27.4 rule 1's session
+    check accepts a bearer credential, so a client that called
+    ``authenticate_device()`` and never held a cookie session at all must
+    not be refused client-side for lacking one.
+
     Raises:
-        AuthError: when no ``axiam_access`` cookie is present.
+        AuthError: when neither an ``axiam_access`` cookie nor an adopted
+            device credential is present.
     """
     from axiam_sdk._client import ACCESS_COOKIE
 
-    if not client._session.cookie_value(ACCESS_COOKIE):
-        raise AuthError(
-            f"{call.operation}: no active session — call login() before using the management API"
-        )
+    if client._session.cookie_value(ACCESS_COOKIE):
+        return
+    if client._session.bearer_token is not None:
+        return
+    raise AuthError(
+        f"{call.operation}: no active session — call login() before using the management API"
+    )
 
 
 def send_management(client: AxiamClient, call: ManagementCall) -> Any:
