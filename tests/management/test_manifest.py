@@ -32,7 +32,7 @@ EMPTY_PAGE = {"items": [], "total": 0, "offset": 0, "limit": 200}
 
 def mount_empty_tenant(router: respx.MockRouter) -> None:
     """Answer every planning read with an empty tenant."""
-    for path in ("resources", "permissions", "roles", "groups", "users"):
+    for path in ("resources", "permissions", "roles", "groups", "users", "service-accounts"):
         router.get(f"{BASE_URL}/api/v1/{path}").mock(
             return_value=httpx.Response(200, json=EMPTY_PAGE)
         )
@@ -255,14 +255,14 @@ ROLE_ID = "66666666-6666-4666-8666-666666666666"
 
 def mount_tenant_with_one_role(router: respx.MockRouter, description: str) -> None:
     """A tenant holding exactly one role, with the given description."""
-    for path in ("resources", "permissions", "groups", "users"):
+    for path in ("resources", "permissions", "groups", "users", "service-accounts"):
         router.get(f"{BASE_URL}/api/v1/{path}").mock(
             return_value=httpx.Response(200, json=EMPTY_PAGE)
         )
     router.get(f"{BASE_URL}/api/v1/roles").mock(
         return_value=httpx.Response(200, json=_page([_role(ROLE_ID, "Editor", description)]))
     )
-    for sub in ("permissions", "users", "groups"):
+    for sub in ("permissions", "users", "groups", "service-accounts"):
         router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/{sub}").mock(
             return_value=httpx.Response(200, json=[])
         )
@@ -452,7 +452,7 @@ def test_applying_an_empty_manifest_is_clean() -> None:
 def test_a_password_is_never_sent_for_a_user_that_already_exists() -> None:
     """A config file mentioning a password is not a request to reset one."""
     with with_client() as (router, client):
-        for path in ("resources", "permissions", "roles", "groups"):
+        for path in ("resources", "permissions", "roles", "groups", "service-accounts"):
             router.get(f"{BASE_URL}/api/v1/{path}").mock(
                 return_value=httpx.Response(200, json=EMPTY_PAGE)
             )

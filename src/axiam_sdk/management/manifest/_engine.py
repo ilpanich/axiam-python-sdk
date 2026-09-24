@@ -1,4 +1,4 @@
-"""Reconciling a manifest against a live tenant — CONTRACT.md §27.6.
+"""Reconciling a manifest against a live tenant — CONTRACT.md §27.6, §27.6.1.
 
 The split here is deliberate. Everything that *decides* — matching specs against
 the tenant's current state, ordering the work, resolving manifest keys to server
@@ -13,6 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pydantic import SecretStr
+
+from axiam_sdk._errors import NetworkError
 from axiam_sdk.management import models
 from axiam_sdk.management._page import PageRequest
 from axiam_sdk.management.manifest._plan import (
@@ -23,10 +26,17 @@ from axiam_sdk.management.manifest._plan import (
     PlannedAction,
     StepOutcome,
     Target,
+    resource_key,
+    role_key,
     topological_order,
     validate,
 )
-from axiam_sdk.management.manifest._spec import ManagementManifest, ResourceSpec
+from axiam_sdk.management.manifest._spec import (
+    ManagementManifest,
+    ResourceSpec,
+    RoleBinding,
+    ScopedRoleBinding,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from axiam_sdk._async_client import AsyncAxiamClient
@@ -36,6 +46,9 @@ __all__ = ["AsyncManifestApi", "ManifestApi"]
 
 PLAN_PAGE = PageRequest(limit=200)
 """How many items a planning read asks for per page."""
+
+_SUBJECT_KINDS = ("group", "user", "service_account")
+"""The three kinds of subject a :data:`RoleBinding` can bind a role to."""
 
 
 @dataclass
@@ -60,6 +73,10 @@ class Resolved:
     users: dict[str, str] = field(default_factory=dict)
     """User key to user id."""
 
+    service_accounts: dict[str, str] = field(default_factory=dict)
+    """Service account key to service account id (CONTRACT §27.6.1
+    addition 3, contract 1.51)."""
+
 
 @dataclass
 class Snapshot:
@@ -83,14 +100,28 @@ class Snapshot:
     users: list[models.UserResponse] = field(default_factory=list)
     """Every user in the tenant."""
 
+    service_accounts: list[models.ServiceAccountResponse] = field(default_factory=list)
+    """Every service account in the tenant (CONTRACT §27.6.1 addition 3,
+    contract 1.51) — read in full, not filtered by the manifest's names, so
+    an ambiguous ``name`` (the server enforces no uniqueness on it) can be
+    detected before any write."""
+
     role_grants: dict[str, list[str]] = field(default_factory=dict)
     """Granted permission ids, keyed by role id."""
 
-    role_users: dict[str, list[str]] = field(default_factory=dict)
-    """Assigned user ids, keyed by role id."""
+    role_user_bindings: dict[str, list[models.RoleUserAssignment]] = field(default_factory=dict)
+    """The full role-side user-assignment listing, keyed by role id — not
+    just ids: reconciling ``resource_id``/``inherit``/``tenant_scope``
+    (CONTRACT §27.6.1 addition 2) needs the whole assignment."""
 
-    role_groups: dict[str, list[str]] = field(default_factory=dict)
-    """Assigned group ids, keyed by role id."""
+    role_group_bindings: dict[str, list[models.RoleGroupAssignment]] = field(default_factory=dict)
+    """As :attr:`role_user_bindings`, for groups."""
+
+    role_service_account_bindings: dict[str, list[models.RoleServiceAccountAssignment]] = field(
+        default_factory=dict
+    )
+    """As :attr:`role_user_bindings`, for service accounts (CONTRACT
+    §27.6.1 addition 3)."""
 
     group_members: dict[str, list[str]] = field(default_factory=dict)
     """Member user ids, keyed by group id."""
@@ -115,6 +146,128 @@ class Step:
     """Everything else the step needs, by name."""
 
 
+def _metadata_differs(existing: Any, stated: dict[str, Any] | None) -> bool:
+    """Whether an ``Update`` must carry ``metadata`` (CONTRACT §27.6.1
+    addition 1): ``stated is None`` means the spec is silent, never a
+    request to clear it (rule 3). Otherwise it is JSON equality of the
+    *whole* object against the server's value — never a key-by-key merge,
+    or ``apply`` could never remove a key."""
+    return stated is not None and stated != existing
+
+
+def _inherit_wire(inherit: bool) -> bool | None:
+    """CONTRACT §27.6.1 addition 2 rule: ``inherit`` reaches the wire only
+    as ``False`` — an inheritable binding's body stays byte-for-byte a
+    pre-1.51 body."""
+    return False if not inherit else None
+
+
+def _binding_resource_and_inherit(
+    binding: RoleBinding, resolved: Resolved
+) -> tuple[str | None, bool]:
+    """The resolved resource id (or ``None``) and the stated ``inherit`` a
+    :data:`RoleBinding` names — the shape both the plan comparison and the
+    wire-request builders need."""
+    if isinstance(binding, ScopedRoleBinding):
+        return resolved.resources.get(binding.resource), binding.inherit
+    return None, True
+
+
+def _existing_binding(bindings: list[Any], subject_id: str | None, attr: str) -> Any | None:
+    """The one existing assignment naming ``subject_id`` on ``attr`` (e.g.
+    ``"group"``/``"user"``/``"service_account"``), or ``None``. At most one
+    can exist: the server keys assignments on ``(subject, role)`` with no
+    resource component (``has_role`` is ``UNIQUE(in, out)``)."""
+    if subject_id is None:
+        return None
+    for assignment in bindings:
+        subject = getattr(assignment, attr)
+        if subject.id == subject_id:
+            return assignment
+    return None
+
+
+def _plan_role_binding(
+    push: Any,
+    subject_kind: str,
+    subject_key: str,
+    subject_id: str | None,
+    subject_name: str,
+    binding: RoleBinding,
+    resolved: Resolved,
+    existing_bindings: list[Any],
+    subject_attr: str,
+    target: Target,
+) -> None:
+    """The reconciliation :func:`_compute` shares for a group/user/service-
+    account's one role binding (CONTRACT §27.6.1 addition 2, contract 1.51).
+
+    The natural key is ``(subject, role)``; the resource and ``inherit`` are
+    fields on it. ``NoChange`` when the server's assignment of that role
+    names the same resource (``None`` for the plain shape) and the same
+    ``inherit``; ``Update`` (an unassign-then-assign, with restore on
+    failure — carried out by the ``rebind-role`` step) otherwise; ``Create``
+    (``assign-role-to-<kind>``) when no such assignment exists yet — which
+    is also the case while the subject or the role is itself still pending
+    creation earlier in this same ``apply``.
+    """
+    rk = role_key(binding)
+    role_id = resolved.roles.get(rk)
+    resource_k = resource_key(binding)
+    stated_resource_id, stated_inherit = _binding_resource_and_inherit(binding, resolved)
+    summary = f"role {rk!r} on {subject_kind} {subject_name!r}"
+
+    existing = (
+        _existing_binding(existing_bindings, subject_id, subject_attr)
+        if role_id is not None
+        else None
+    )
+
+    if existing is None:
+        push(
+            "create",
+            target,
+            subject_key,
+            summary,
+            Step(
+                f"assign-role-to-{subject_kind}",
+                subject_key,
+                {
+                    "role": rk,
+                    "subject": subject_key,
+                    "resource": resource_k,
+                    "inherit": stated_inherit,
+                },
+            ),
+        )
+        return
+
+    if existing.resource_id == stated_resource_id and existing.inherit == stated_inherit:
+        push("no-change", target, subject_key, summary, Step("noop", subject_key))
+        return
+
+    push(
+        "update",
+        target,
+        subject_key,
+        summary,
+        Step(
+            "rebind-role",
+            subject_key,
+            {
+                "subject_kind": subject_kind,
+                "role": rk,
+                "subject": subject_key,
+                "resource": resource_k,
+                "inherit": stated_inherit,
+                "previous_resource_id": existing.resource_id,
+                "previous_inherit": existing.inherit,
+                "tenant_scope": existing.tenant_scope,
+            },
+        ),
+    )
+
+
 def _compute(
     manifest: ManagementManifest, snapshot: Snapshot, resolved: Resolved
 ) -> list[tuple[PlannedAction, Step]]:
@@ -123,6 +276,12 @@ def _compute(
     Pure: it reads ``snapshot``, fills ``resolved`` with the ids of things that
     already exist, and returns the work. Nothing here touches the network, which
     is what lets ``plan`` promise it writes nothing.
+
+    Ordering (CONTRACT §27.6 rule 5, extended by §27.6.1 for contract 1.51):
+    resources -> scopes -> permissions -> roles -> role/permission grants ->
+    groups -> group/role bindings -> users -> user/role bindings ->
+    service accounts -> service-account/role bindings -> (group members,
+    this SDK's own extra step, last).
     """
     out: list[tuple[PlannedAction, Step]] = []
 
@@ -148,13 +307,18 @@ def _compute(
         summary = f"resource {spec.name!r} ({spec.resource_type})"
         if existing is not None:
             resolved.resources[key] = existing.id
+            update_fields: dict[str, Any] = {}
             if existing.resource_type != spec.resource_type:
+                update_fields["resource_type"] = spec.resource_type
+            if _metadata_differs(existing.metadata, spec.metadata):
+                update_fields["metadata"] = spec.metadata
+            if update_fields:
                 push(
                     "update",
                     "resource",
                     key,
                     summary,
-                    Step("update-resource", key, {"resource_type": spec.resource_type}),
+                    Step("update-resource", key, update_fields),
                 )
             else:
                 push("no-change", "resource", key, summary, Step("noop", key))
@@ -167,7 +331,12 @@ def _compute(
                 Step(
                     "create-resource",
                     key,
-                    {"name": spec.name, "resource_type": spec.resource_type, "parent": spec.parent},
+                    {
+                        "name": spec.name,
+                        "resource_type": spec.resource_type,
+                        "parent": spec.parent,
+                        "metadata": spec.metadata,
+                    },
                 ),
             )
 
@@ -322,21 +491,24 @@ def _compute(
             )
 
     for group in manifest.groups:
-        for role_key in group.roles:
-            role_id = resolved.roles.get(role_key)
-            group_id = resolved.groups.get(group.key)
-            assigned = snapshot.role_groups.get(role_id, []) if role_id else []
-            summary = f"role {role_key!r} on group {group.name!r}"
-            if group_id is not None and group_id in assigned:
-                push("no-change", "group-role", group.key, summary, Step("noop", group.key))
-            else:
-                push(
-                    "create",
-                    "group-role",
-                    group.key,
-                    summary,
-                    Step("assign-role-to-group", group.key, {"role": role_key, "group": group.key}),
-                )
+        group_id = resolved.groups.get(group.key)
+        for binding in group.roles:
+            role_id = resolved.roles.get(role_key(binding))
+            group_bindings: list[Any] = (
+                snapshot.role_group_bindings.get(role_id, []) if role_id else []
+            )
+            _plan_role_binding(
+                push,
+                "group",
+                group.key,
+                group_id,
+                group.name,
+                binding,
+                resolved,
+                group_bindings,
+                "group",
+                "group-role",
+            )
 
     for user in manifest.users:
         found_user = next((u for u in snapshot.users if u.username == user.username), None)
@@ -371,21 +543,86 @@ def _compute(
             )
 
     for user in manifest.users:
-        for role_key in user.roles:
-            role_id = resolved.roles.get(role_key)
-            user_id = resolved.users.get(user.key)
-            assigned = snapshot.role_users.get(role_id, []) if role_id else []
-            summary = f"role {role_key!r} on user {user.username!r}"
-            if user_id is not None and user_id in assigned:
-                push("no-change", "user-role", user.key, summary, Step("noop", user.key))
+        user_id = resolved.users.get(user.key)
+        for binding in user.roles:
+            role_id = resolved.roles.get(role_key(binding))
+            user_bindings: list[Any] = (
+                snapshot.role_user_bindings.get(role_id, []) if role_id else []
+            )
+            _plan_role_binding(
+                push,
+                "user",
+                user.key,
+                user_id,
+                user.username,
+                binding,
+                resolved,
+                user_bindings,
+                "user",
+                "user-role",
+            )
+
+    for service_account in manifest.service_accounts:
+        matches = [s for s in snapshot.service_accounts if s.name == service_account.name]
+        summary = f"service account {service_account.name!r}"
+        if len(matches) == 1:
+            found_sa = matches[0]
+            resolved.service_accounts[service_account.key] = found_sa.id
+            if found_sa.description != service_account.description:
+                push(
+                    "update",
+                    "service-account",
+                    service_account.key,
+                    summary,
+                    Step(
+                        "update-service-account",
+                        service_account.key,
+                        {"description": service_account.description},
+                    ),
+                )
             else:
                 push(
-                    "create",
-                    "user-role",
-                    user.key,
+                    "no-change",
+                    "service-account",
+                    service_account.key,
                     summary,
-                    Step("assign-role-to-user", user.key, {"role": role_key, "user": user.key}),
+                    Step("noop", service_account.key),
                 )
+        elif len(matches) == 0:
+            push(
+                "create",
+                "service-account",
+                service_account.key,
+                summary,
+                Step(
+                    "create-service-account",
+                    service_account.key,
+                    {"name": service_account.name, "description": service_account.description},
+                ),
+            )
+        # len(matches) > 1 is an ambiguous name — _no_ambiguous_service_accounts
+        # rejects the manifest before any step here runs, so this branch is
+        # unreachable by the time steps are ever executed.
+
+    for service_account in manifest.service_accounts:
+        service_account_id = resolved.service_accounts.get(service_account.key)
+        for binding in service_account.roles:
+            role_id = resolved.roles.get(role_key(binding))
+            sa_bindings: list[Any] = (
+                snapshot.role_service_account_bindings.get(role_id, []) if role_id else []
+            )
+            _plan_role_binding(
+                push,
+                "service_account",
+                service_account.key,
+                service_account_id,
+                service_account.name,
+                binding,
+                resolved,
+                sa_bindings,
+                "service_account",
+                "service-account-role",
+            )
 
     for user in manifest.users:
         for group_key in user.groups:
@@ -417,8 +654,6 @@ def _needs_password(manifest: ManagementManifest, steps: list[tuple[PlannedActio
     Raises:
         NetworkError: naming every user that would be created without one.
     """
-    from axiam_sdk._errors import NetworkError
-
     missing = [
         step.key
         for _, step in steps
@@ -430,6 +665,31 @@ def _needs_password(manifest: ManagementManifest, steps: list[tuple[PlannedActio
             f"manifest would create {len(missing)} user(s) with no initial_password: {joined}. "
             f"A user cannot be created without one, and this is refused before any request "
             f"rather than part-way through an apply (§27.6 rule 1)."
+        )
+
+
+def _no_ambiguous_service_accounts(manifest: ManagementManifest, snapshot: Snapshot) -> None:
+    """Refuse before any request when a manifest's ``service_accounts[].name``
+    matches more than one existing account (CONTRACT §27.6.1 addition 3,
+    contract 1.51): the server enforces uniqueness only on ``client_id``, so
+    picking one of several same-named accounts would reconcile an arbitrary
+    one.
+
+    Raises:
+        NetworkError: naming every ambiguous ``service_accounts`` spec.
+    """
+    problems = []
+    for spec in manifest.service_accounts:
+        matches = [s for s in snapshot.service_accounts if s.name == spec.name]
+        if len(matches) > 1:
+            problems.append(
+                f"service account {spec.key!r} names {spec.name!r}, which matches "
+                f"{len(matches)} existing accounts — only client_id is unique, so plan "
+                f"cannot pick one (CONTRACT §27.6.1 addition 3)"
+            )
+    if problems:
+        raise NetworkError(
+            f"manifest is not reconcilable ({len(problems)} problem(s)): " + "; ".join(problems)
         )
 
 
@@ -455,6 +715,66 @@ def _wanted_group_ids(manifest: ManagementManifest, snapshot: Snapshot) -> list[
     return [g.id for g in snapshot.groups if g.name in names]
 
 
+def _status_of(step: Step) -> str:
+    """``created``/``updated``/``unchanged``, from the step's own kind."""
+    if step.kind.startswith("update") or step.kind == "rebind-role":
+        return "updated"
+    return "created"
+
+
+def _resource_step_id(resolved: Resolved, key: str | None) -> str | None:
+    """A resource id resolved from a step payload's manifest key, or
+    ``None`` for the plain (no-resource) binding shape."""
+    return resolved.resources[key] if key else None
+
+
+def _assign_kwargs(
+    id_field: str,
+    subject_id: str,
+    resource_id: str | None,
+    inherit_wire: bool | None,
+    tenant_scope: list[str] | None,
+) -> dict[str, Any]:
+    """The kwargs for an ``AssignRoleTo*Request``, omitting ``resource_id``/
+    ``inherit``/``tenant_scope`` entirely when they are ``None`` rather than
+    passing them explicitly.
+
+    Pydantic's ``model_fields_set`` (what ``to_wire()``'s ``exclude_unset``
+    reads) marks a field "set" the moment the constructor receives it as a
+    kwarg — even as ``None`` — so passing ``resource_id=None`` here would
+    still serialize ``"resource_id": null`` on the wire. A plain (no-
+    resource) binding's assign request must stay byte-for-byte what it was
+    before contract 1.51 (§27.6.1 addition 2 rule 1), which means these
+    three keys must be ABSENT from the kwargs entirely, not merely ``None``
+    valued.
+    """
+    kwargs: dict[str, Any] = {id_field: subject_id}
+    if resource_id is not None:
+        kwargs["resource_id"] = resource_id
+    if inherit_wire is not None:
+        kwargs["inherit"] = inherit_wire
+    if tenant_scope is not None:
+        kwargs["tenant_scope"] = tenant_scope
+    return kwargs
+
+
+def _create_resource_request(p: dict[str, Any], parent: str | None) -> models.CreateResourceRequest:
+    """Build a ``CreateResourceRequest`` that OMITS ``metadata`` when the
+    spec never stated one, rather than sending it explicitly as ``null``
+    (CONTRACT §27.6.1 addition 1: "omitted means silent, as for any other
+    field" — ``to_wire()``'s ``exclude_unset`` only omits a field the
+    constructor was never given, so a bare ``metadata=None`` kwarg would
+    still serialize as ``"metadata": null``)."""
+    kwargs: dict[str, Any] = {
+        "name": p["name"],
+        "resource_type": p["resource_type"],
+        "parent_id": parent,
+    }
+    if p["metadata"] is not None:
+        kwargs["metadata"] = p["metadata"]
+    return models.CreateResourceRequest(**kwargs)
+
+
 class ManifestApi:
     """The declarative-management handle, reached as ``client.manifest``."""
 
@@ -466,6 +786,7 @@ class ManifestApi:
         """What reconciling ``manifest`` would do. **Issues no writes.**"""
         validate(manifest)
         snapshot = self._read(manifest)
+        _no_ambiguous_service_accounts(manifest, snapshot)
         steps = _compute(manifest, snapshot, Resolved())
         _needs_password(manifest, steps)
         return ManagementPlan(tuple(action for action, _ in steps))
@@ -478,6 +799,7 @@ class ManifestApi:
         """
         validate(manifest)
         snapshot = self._read(manifest)
+        _no_ambiguous_service_accounts(manifest, snapshot)
         resolved = Resolved()
         steps = _compute(manifest, snapshot, resolved)
         _needs_password(manifest, steps)
@@ -492,6 +814,7 @@ class ManifestApi:
             roles=c.roles.list_all(PLAN_PAGE),
             groups=c.groups.list_all(PLAN_PAGE),
             users=c.users.list_all(PLAN_PAGE),
+            service_accounts=c.service_accounts.list_all(PLAN_PAGE),
         )
         for resource_id in _wanted_scope_resources(manifest, snapshot):
             snapshot.scopes[resource_id] = c.scopes.list(resource_id)
@@ -499,8 +822,9 @@ class ManifestApi:
             snapshot.role_grants[role_id] = [
                 g.permission.id for g in c.roles.list_permissions(role_id)
             ]
-            snapshot.role_users[role_id] = [a.user.id for a in c.roles.list_users(role_id)]
-            snapshot.role_groups[role_id] = [a.group.id for a in c.roles.list_groups(role_id)]
+            snapshot.role_user_bindings[role_id] = c.roles.list_users(role_id)
+            snapshot.role_group_bindings[role_id] = c.roles.list_groups(role_id)
+            snapshot.role_service_account_bindings[role_id] = c.roles.list_service_accounts(role_id)
         for group_id in _wanted_group_ids(manifest, snapshot):
             snapshot.group_members[group_id] = [
                 u.id for u in c.groups.list_members_all(group_id, PLAN_PAGE)
@@ -519,35 +843,28 @@ class ManifestApi:
                 applied.append(AppliedStep(action, StepOutcome("unchanged")))
                 continue
             try:
-                self._run(step, resolved)
+                secret = self._run(step, resolved)
             except Exception as err:  # noqa: BLE001 — reported, not swallowed.
                 applied.append(AppliedStep(action, StepOutcome("failed", str(err))))
                 stopped = True
                 continue
             applied.append(
-                AppliedStep(
-                    action, StepOutcome("updated" if step.kind.startswith("update") else "created")
-                )
+                AppliedStep(action, StepOutcome(_status_of(step), client_secret=secret))  # type: ignore[arg-type]
             )
         return ApplyReport(tuple(applied))
 
-    def _run(self, step: Step, r: Resolved) -> None:
-        """Carry out one step, recording any id it mints."""
+    def _run(self, step: Step, r: Resolved) -> SecretStr | None:
+        """Carry out one step, recording any id it mints. Returns the
+        one-time ``client_secret`` for a ``create-service-account`` step,
+        ``None`` for every other kind (§27.5 rule 5)."""
         c = self._client
         p = step.payload
         if step.kind == "create-resource":
             parent = r.resources.get(p["parent"]) if p["parent"] else None
-            created = c.resources.create(
-                models.CreateResourceRequest(
-                    name=p["name"], resource_type=p["resource_type"], parent_id=parent
-                )
-            )
+            created = c.resources.create(_create_resource_request(p, parent))
             r.resources[step.key] = created.id
         elif step.kind == "update-resource":
-            c.resources.update(
-                r.resources[step.key],
-                models.UpdateResourceRequest(resource_type=p["resource_type"]),
-            )
+            c.resources.update(r.resources[step.key], models.UpdateResourceRequest(**p))
         elif step.kind == "create-scope":
             created_scope = c.scopes.create(
                 r.resources[p["resource"]],
@@ -592,11 +909,6 @@ class ManifestApi:
             r.groups[step.key] = created_group.id
         elif step.kind == "update-group":
             c.groups.update(r.groups[step.key], models.UpdateGroup(description=p["description"]))
-        elif step.kind == "assign-role-to-group":
-            c.roles.assign_to_group(
-                r.roles[p["role"]],
-                models.AssignRoleToGroupRequest(group_id=r.groups[p["group"]]),
-            )
         elif step.kind == "create-user":
             created_user = c.users.create(
                 models.CreateUserRequest(
@@ -606,16 +918,189 @@ class ManifestApi:
             r.users[step.key] = created_user.id
         elif step.kind == "update-user":
             c.users.update(r.users[step.key], models.UpdateUserRequest(email=p["email"]))
+        elif step.kind == "create-service-account":
+            created_sa = c.service_accounts.create(
+                models.CreateServiceAccountRequest(name=p["name"], description=p["description"])
+            )
+            r.service_accounts[step.key] = created_sa.id
+            return created_sa.client_secret
+        elif step.kind == "update-service-account":
+            c.service_accounts.update(
+                r.service_accounts[step.key],
+                models.UpdateServiceAccount(description=p["description"]),
+            )
+        elif step.kind == "assign-role-to-group":
+            c.roles.assign_to_group(
+                r.roles[p["role"]],
+                models.AssignRoleToGroupRequest(
+                    **_assign_kwargs(
+                        "group_id",
+                        r.groups[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
+            )
         elif step.kind == "assign-role-to-user":
             c.roles.assign_to_user(
-                r.roles[p["role"]], models.AssignRoleToUserRequest(user_id=r.users[p["user"]])
+                r.roles[p["role"]],
+                models.AssignRoleToUserRequest(
+                    **_assign_kwargs(
+                        "user_id",
+                        r.users[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
             )
+        elif step.kind == "assign-role-to-service_account":
+            c.roles.assign_to_service_account(
+                r.roles[p["role"]],
+                models.AssignRoleToServiceAccountRequest(
+                    **_assign_kwargs(
+                        "service_account_id",
+                        r.service_accounts[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
+            )
+        elif step.kind == "rebind-role":
+            self._rebind_role(p, r)
         elif step.kind == "add-group-member":
             c.groups.add_member(
                 r.groups[p["group"]], models.AddMemberRequest(user_id=r.users[p["user"]])
             )
         else:  # pragma: no cover - every kind _compute emits is handled above.
             raise AssertionError(f"unknown manifest step {step.kind!r}")
+        return None
+
+    def _rebind_role(self, p: dict[str, Any], r: Resolved) -> None:
+        """``rebind-role``: unassign, then assign the new shape — CONTRACT
+        §27.6.1's "there is no update endpoint" rule. If the assign fails,
+        re-assign the previous binding (same resource, same ``inherit``) and
+        report both outcomes; ``tenant_scope`` is carried across unchanged
+        either way, so a re-assignment never silently widens an
+        organization-level account's reach (§5.2.3)."""
+        c = self._client
+        subject_kind = p["subject_kind"]
+        role_id = r.roles[p["role"]]
+        new_resource_id = _resource_step_id(r, p["resource"])
+        new_inherit_wire = _inherit_wire(p["inherit"])
+        previous_resource_id = p["previous_resource_id"]
+        previous_inherit_wire = _inherit_wire(p["previous_inherit"])
+        tenant_scope = p["tenant_scope"]
+
+        # Three explicit branches rather than a dispatch table: each subject
+        # kind's assign request is a genuinely different type
+        # (AssignRoleToGroupRequest / ...ToUserRequest /
+        # ...ToServiceAccountRequest), so there is no single callable shape
+        # to look up generically without losing static typing.
+        assign_err: Exception | None = None
+        restored = False
+        if subject_kind == "group":
+            group_id = r.groups[p["subject"]]
+            c.roles.unassign_from_group(role_id, group_id, previous_resource_id)
+            try:
+                c.roles.assign_to_group(
+                    role_id,
+                    models.AssignRoleToGroupRequest(
+                        **_assign_kwargs(
+                            "group_id", group_id, new_resource_id, new_inherit_wire, tenant_scope
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    c.roles.assign_to_group(
+                        role_id,
+                        models.AssignRoleToGroupRequest(
+                            **_assign_kwargs(
+                                "group_id",
+                                group_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+        elif subject_kind == "user":
+            user_id = r.users[p["subject"]]
+            c.roles.unassign_from_user(role_id, user_id, previous_resource_id)
+            try:
+                c.roles.assign_to_user(
+                    role_id,
+                    models.AssignRoleToUserRequest(
+                        **_assign_kwargs(
+                            "user_id", user_id, new_resource_id, new_inherit_wire, tenant_scope
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    c.roles.assign_to_user(
+                        role_id,
+                        models.AssignRoleToUserRequest(
+                            **_assign_kwargs(
+                                "user_id",
+                                user_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+        else:
+            service_account_id = r.service_accounts[p["subject"]]
+            c.roles.unassign_from_service_account(role_id, service_account_id, previous_resource_id)
+            try:
+                c.roles.assign_to_service_account(
+                    role_id,
+                    models.AssignRoleToServiceAccountRequest(
+                        **_assign_kwargs(
+                            "service_account_id",
+                            service_account_id,
+                            new_resource_id,
+                            new_inherit_wire,
+                            tenant_scope,
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    c.roles.assign_to_service_account(
+                        role_id,
+                        models.AssignRoleToServiceAccountRequest(
+                            **_assign_kwargs(
+                                "service_account_id",
+                                service_account_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+
+        if assign_err is not None:
+            raise NetworkError(
+                f"rebinding role failed: {assign_err}; the previous binding was "
+                f"{'restored' if restored else 'NOT restored — the subject now holds no such role'}"
+            ) from assign_err
 
 
 class AsyncManifestApi:
@@ -636,6 +1121,7 @@ class AsyncManifestApi:
         """What reconciling ``manifest`` would do. **Issues no writes.**"""
         validate(manifest)
         snapshot = await self._read(manifest)
+        _no_ambiguous_service_accounts(manifest, snapshot)
         steps = _compute(manifest, snapshot, Resolved())
         _needs_password(manifest, steps)
         return ManagementPlan(tuple(action for action, _ in steps))
@@ -644,6 +1130,7 @@ class AsyncManifestApi:
         """Reconcile ``manifest``, stopping at the first failure."""
         validate(manifest)
         snapshot = await self._read(manifest)
+        _no_ambiguous_service_accounts(manifest, snapshot)
         resolved = Resolved()
         steps = _compute(manifest, snapshot, resolved)
         _needs_password(manifest, steps)
@@ -658,6 +1145,7 @@ class AsyncManifestApi:
             roles=await c.roles.list_all(PLAN_PAGE),
             groups=await c.groups.list_all(PLAN_PAGE),
             users=await c.users.list_all(PLAN_PAGE),
+            service_accounts=await c.service_accounts.list_all(PLAN_PAGE),
         )
         for resource_id in _wanted_scope_resources(manifest, snapshot):
             snapshot.scopes[resource_id] = await c.scopes.list(resource_id)
@@ -665,8 +1153,11 @@ class AsyncManifestApi:
             snapshot.role_grants[role_id] = [
                 g.permission.id for g in await c.roles.list_permissions(role_id)
             ]
-            snapshot.role_users[role_id] = [a.user.id for a in await c.roles.list_users(role_id)]
-            snapshot.role_groups[role_id] = [a.group.id for a in await c.roles.list_groups(role_id)]
+            snapshot.role_user_bindings[role_id] = await c.roles.list_users(role_id)
+            snapshot.role_group_bindings[role_id] = await c.roles.list_groups(role_id)
+            snapshot.role_service_account_bindings[role_id] = await c.roles.list_service_accounts(
+                role_id
+            )
         for group_id in _wanted_group_ids(manifest, snapshot):
             snapshot.group_members[group_id] = [
                 u.id for u in await c.groups.list_members_all(group_id, PLAN_PAGE)
@@ -687,35 +1178,28 @@ class AsyncManifestApi:
                 applied.append(AppliedStep(action, StepOutcome("unchanged")))
                 continue
             try:
-                await self._run(step, resolved)
+                secret = await self._run(step, resolved)
             except Exception as err:  # noqa: BLE001 — reported, not swallowed.
                 applied.append(AppliedStep(action, StepOutcome("failed", str(err))))
                 stopped = True
                 continue
             applied.append(
-                AppliedStep(
-                    action, StepOutcome("updated" if step.kind.startswith("update") else "created")
-                )
+                AppliedStep(action, StepOutcome(_status_of(step), client_secret=secret))  # type: ignore[arg-type]
             )
         return ApplyReport(tuple(applied))
 
-    async def _run(self, step: Step, r: Resolved) -> None:
-        """Carry out one step, recording any id it mints."""
+    async def _run(self, step: Step, r: Resolved) -> SecretStr | None:
+        """Carry out one step, recording any id it mints. Returns the
+        one-time ``client_secret`` for a ``create-service-account`` step,
+        ``None`` for every other kind (§27.5 rule 5)."""
         c = self._client
         p = step.payload
         if step.kind == "create-resource":
             parent = r.resources.get(p["parent"]) if p["parent"] else None
-            created = await c.resources.create(
-                models.CreateResourceRequest(
-                    name=p["name"], resource_type=p["resource_type"], parent_id=parent
-                )
-            )
+            created = await c.resources.create(_create_resource_request(p, parent))
             r.resources[step.key] = created.id
         elif step.kind == "update-resource":
-            await c.resources.update(
-                r.resources[step.key],
-                models.UpdateResourceRequest(resource_type=p["resource_type"]),
-            )
+            await c.resources.update(r.resources[step.key], models.UpdateResourceRequest(**p))
         elif step.kind == "create-scope":
             created_scope = await c.scopes.create(
                 r.resources[p["resource"]],
@@ -762,11 +1246,6 @@ class AsyncManifestApi:
             await c.groups.update(
                 r.groups[step.key], models.UpdateGroup(description=p["description"])
             )
-        elif step.kind == "assign-role-to-group":
-            await c.roles.assign_to_group(
-                r.roles[p["role"]],
-                models.AssignRoleToGroupRequest(group_id=r.groups[p["group"]]),
-            )
         elif step.kind == "create-user":
             created_user = await c.users.create(
                 models.CreateUserRequest(
@@ -776,13 +1255,178 @@ class AsyncManifestApi:
             r.users[step.key] = created_user.id
         elif step.kind == "update-user":
             await c.users.update(r.users[step.key], models.UpdateUserRequest(email=p["email"]))
+        elif step.kind == "create-service-account":
+            created_sa = await c.service_accounts.create(
+                models.CreateServiceAccountRequest(name=p["name"], description=p["description"])
+            )
+            r.service_accounts[step.key] = created_sa.id
+            return created_sa.client_secret
+        elif step.kind == "update-service-account":
+            await c.service_accounts.update(
+                r.service_accounts[step.key],
+                models.UpdateServiceAccount(description=p["description"]),
+            )
+        elif step.kind == "assign-role-to-group":
+            await c.roles.assign_to_group(
+                r.roles[p["role"]],
+                models.AssignRoleToGroupRequest(
+                    **_assign_kwargs(
+                        "group_id",
+                        r.groups[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
+            )
         elif step.kind == "assign-role-to-user":
             await c.roles.assign_to_user(
-                r.roles[p["role"]], models.AssignRoleToUserRequest(user_id=r.users[p["user"]])
+                r.roles[p["role"]],
+                models.AssignRoleToUserRequest(
+                    **_assign_kwargs(
+                        "user_id",
+                        r.users[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
             )
+        elif step.kind == "assign-role-to-service_account":
+            await c.roles.assign_to_service_account(
+                r.roles[p["role"]],
+                models.AssignRoleToServiceAccountRequest(
+                    **_assign_kwargs(
+                        "service_account_id",
+                        r.service_accounts[p["subject"]],
+                        _resource_step_id(r, p["resource"]),
+                        _inherit_wire(p["inherit"]),
+                        None,
+                    )
+                ),
+            )
+        elif step.kind == "rebind-role":
+            await self._rebind_role(p, r)
         elif step.kind == "add-group-member":
             await c.groups.add_member(
                 r.groups[p["group"]], models.AddMemberRequest(user_id=r.users[p["user"]])
             )
         else:  # pragma: no cover - every kind _compute emits is handled above.
             raise AssertionError(f"unknown manifest step {step.kind!r}")
+        return None
+
+    async def _rebind_role(self, p: dict[str, Any], r: Resolved) -> None:
+        """Async twin of :meth:`ManifestApi._rebind_role`."""
+        c = self._client
+        subject_kind = p["subject_kind"]
+        role_id = r.roles[p["role"]]
+        new_resource_id = _resource_step_id(r, p["resource"])
+        new_inherit_wire = _inherit_wire(p["inherit"])
+        previous_resource_id = p["previous_resource_id"]
+        previous_inherit_wire = _inherit_wire(p["previous_inherit"])
+        tenant_scope = p["tenant_scope"]
+
+        assign_err: Exception | None = None
+        restored = False
+        if subject_kind == "group":
+            group_id = r.groups[p["subject"]]
+            await c.roles.unassign_from_group(role_id, group_id, previous_resource_id)
+            try:
+                await c.roles.assign_to_group(
+                    role_id,
+                    models.AssignRoleToGroupRequest(
+                        **_assign_kwargs(
+                            "group_id", group_id, new_resource_id, new_inherit_wire, tenant_scope
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    await c.roles.assign_to_group(
+                        role_id,
+                        models.AssignRoleToGroupRequest(
+                            **_assign_kwargs(
+                                "group_id",
+                                group_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+        elif subject_kind == "user":
+            user_id = r.users[p["subject"]]
+            await c.roles.unassign_from_user(role_id, user_id, previous_resource_id)
+            try:
+                await c.roles.assign_to_user(
+                    role_id,
+                    models.AssignRoleToUserRequest(
+                        **_assign_kwargs(
+                            "user_id", user_id, new_resource_id, new_inherit_wire, tenant_scope
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    await c.roles.assign_to_user(
+                        role_id,
+                        models.AssignRoleToUserRequest(
+                            **_assign_kwargs(
+                                "user_id",
+                                user_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+        else:
+            service_account_id = r.service_accounts[p["subject"]]
+            await c.roles.unassign_from_service_account(
+                role_id, service_account_id, previous_resource_id
+            )
+            try:
+                await c.roles.assign_to_service_account(
+                    role_id,
+                    models.AssignRoleToServiceAccountRequest(
+                        **_assign_kwargs(
+                            "service_account_id",
+                            service_account_id,
+                            new_resource_id,
+                            new_inherit_wire,
+                            tenant_scope,
+                        )
+                    ),
+                )
+            except Exception as err:  # noqa: BLE001 — reported below, not swallowed.
+                assign_err = err
+                try:
+                    await c.roles.assign_to_service_account(
+                        role_id,
+                        models.AssignRoleToServiceAccountRequest(
+                            **_assign_kwargs(
+                                "service_account_id",
+                                service_account_id,
+                                previous_resource_id,
+                                previous_inherit_wire,
+                                tenant_scope,
+                            )
+                        ),
+                    )
+                    restored = True
+                except Exception:  # noqa: BLE001 — reported below, not swallowed.
+                    restored = False
+
+        if assign_err is not None:
+            raise NetworkError(
+                f"rebinding role failed: {assign_err}; the previous binding was "
+                f"{'restored' if restored else 'NOT restored — the subject now holds no such role'}"
+            ) from assign_err

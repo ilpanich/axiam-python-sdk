@@ -28,6 +28,7 @@ from axiam_sdk.management.manifest._spec import (
     ResourceSpec,
     RoleSpec,
     ScopeSpec,
+    ServiceAccountSpec,
     UserSpec,
 )
 
@@ -39,6 +40,7 @@ __all__ = [
     "axiam_resource",
     "axiam_role",
     "axiam_scope",
+    "axiam_service_account",
     "axiam_user",
     "collect_manifest",
     "define_manifest",
@@ -94,6 +96,10 @@ class _Bucket:
     user: UserSpec | None = None
     """The user this class declares, if any."""
 
+    service_account: ServiceAccountSpec | None = None
+    """The service account this class declares, if any (CONTRACT §27.6.1
+    addition 3, contract 1.51)."""
+
 
 def _bucket(cls: type) -> _Bucket:
     """This class's own bucket, created on first use and never inherited."""
@@ -122,6 +128,7 @@ def define_manifest(
     roles: Sequence[RoleSpec] = (),
     groups: Sequence[GroupSpec] = (),
     users: Sequence[UserSpec] = (),
+    service_accounts: Sequence[ServiceAccountSpec] = (),
 ) -> ManagementManifest:
     """Declare a manifest and check it immediately.
 
@@ -159,6 +166,7 @@ def define_manifest(
         roles=tuple(roles),
         groups=tuple(groups),
         users=tuple(users),
+        service_accounts=tuple(service_accounts),
     )
     validate(manifest)
     return manifest
@@ -256,6 +264,18 @@ def axiam_user(spec: UserSpec) -> Decorator:
     return apply
 
 
+def axiam_service_account(spec: ServiceAccountSpec) -> Decorator:
+    """Declare a service account (CONTRACT §27.6.1 addition 3, contract
+    1.51)."""
+
+    def apply(cls: C) -> C:
+        """Record ``spec`` as this class's service account."""
+        _bucket(_require_class(cls, "axiam_service_account")).service_account = spec
+        return cls
+
+    return apply
+
+
 def collect_manifest(*classes: type) -> ManagementManifest:
     """Assemble a manifest from decorated classes.
 
@@ -279,6 +299,7 @@ def collect_manifest(*classes: type) -> ManagementManifest:
     roles: list[RoleSpec] = []
     groups: list[GroupSpec] = []
     users: list[UserSpec] = []
+    service_accounts: list[ServiceAccountSpec] = []
 
     for cls in classes:
         bucket = cls.__dict__.get(_BUCKET)
@@ -311,6 +332,8 @@ def collect_manifest(*classes: type) -> ManagementManifest:
             groups.append(bucket.group)
         if bucket.user is not None:
             users.append(bucket.user)
+        if bucket.service_account is not None:
+            service_accounts.append(bucket.service_account)
 
     return define_manifest(
         resources=resources,
@@ -318,4 +341,5 @@ def collect_manifest(*classes: type) -> ManagementManifest:
         roles=roles,
         groups=groups,
         users=users,
+        service_accounts=service_accounts,
     )
