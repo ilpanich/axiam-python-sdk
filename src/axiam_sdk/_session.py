@@ -37,6 +37,8 @@ from axiam_sdk.token.refresh_guard import RefreshGuard
 if TYPE_CHECKING:
     from http.cookiejar import CookieJar
 
+    from axiam_sdk._client import _PrincipalScope
+
 
 def _looks_like_pem(value: str) -> bool:
     """Heuristically decide whether ``custom_ca`` is inline PEM text rather
@@ -200,6 +202,17 @@ class _Session:
         # cookie jar is: it names the SESSION's identity, and every handle
         # sharing this session (CONTRACT.md §5.2 rule 1) shares one identity.
         self.bearer_token: SecretStr | None = None
+
+        # CONTRACT.md §5.2 rule 1 (contract 1.51; CONTRACT 1.52 N5.3) — what
+        # the last completed login on ANY handle over this session reported
+        # about the principal's reach. Held on the session, not on a
+        # handle: "one gate per session" — a login on any handle changes
+        # what every handle sharing this session gates `acting_tenant()`
+        # on. `_AxiamClientBase._principal_scope` (`_client.py`) is a
+        # property that reads/writes this field, so every existing
+        # `self._principal_scope = ...` call site already writes through
+        # to here rather than to a per-handle copy.
+        self.principal_scope: _PrincipalScope | None = None
 
     def adopt_bearer_credential(self, token: SecretStr) -> None:
         """Adopt *token* as this session's credential (§6.1 rule 6) in place

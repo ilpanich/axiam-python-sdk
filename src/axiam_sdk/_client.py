@@ -340,37 +340,14 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         )
         # CONTRACT.md §5.2 / §5.2.3 — what the last completed login said
         # about the principal's reach, when a login said anything at all.
-        #
-        # `None` until a path that lands on `_handle_login_response`'s 200
-        # branch reports a user object, and reset by
-        # `_absorb_session_cookies` (every session-establishing path) and by
-        # `logout`. The server sends that `user` object on `login`,
-        # `verify_mfa`, `login_opaque`, `mfa_setup_confirm` and
-        # `webauthn_setup_register_finish` alike — all five route through
-        # `_handle_login_response`, whose 200 branch sets this right after
-        # `_absorb_session_cookies` resets it — so all five gate
-        # `acting_tenant()` on what that object said.
-        #
-        # WebAuthn *authentication* (`webauthn_login_finish` /
-        # `webauthn_discoverable_finish`), an SSO completion, and the mTLS
-        # device login complete a session with no such object — the first
-        # two call `_absorb_session_cookies` with no follow-up set, the
-        # device login sets this to `None` directly — and neither does an
-        # injected token or a service account from client credentials. It is
-        # `None` on purpose rather than a defaulted `False` for all of
-        # those, because "the server did not say" must not gate
-        # `acting_tenant()` as if the server had said "not
-        # organization-level" (§5.2 rule 1: a client holding no login result
-        # has nothing to gate on, and sends the header regardless, letting
-        # the server's 403 answer).
-        #
-        # Differs from the Rust reference, which resets to unknown on every
-        # one of these paths, OPAQUE and the two setup flows included: their
-        # responses carry a user object too (the same builder as the
-        # password path on OPAQUE's server handler; both setup routes are
-        # typed the same success response), so gating on it here is tighter
-        # than gating on nothing.
-        self._principal_scope: _PrincipalScope | None = None
+        # This is `self._session.principal_scope` (CONTRACT 1.52 N5.3, "one
+        # gate per session") reached through the `_principal_scope`
+        # property below; see `_Session.__init__` for the full field
+        # comment (`None` until a path that lands on
+        # `_handle_login_response`'s 200 branch reports a user object, and
+        # reset by `_absorb_session_cookies`/`logout`) and it for why it is
+        # `None` rather than a defaulted `False` for the paths that
+        # complete a session without a user object.
 
         self._session = _Session(
             base_url=base_url,
@@ -892,6 +869,28 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
     # ------------------------------------------------------------------
     # acting tenant (CONTRACT.md §5.2 rule 1, contract 1.51)
     # ------------------------------------------------------------------
+
+    @property
+    def _principal_scope(self) -> _PrincipalScope | None:
+        """What the last completed login on ANY handle over this session
+        reported about the principal's reach (CONTRACT.md §5.2 / §5.2.3).
+
+        A thin forwarding property over ``self._session.principal_scope``
+        (CONTRACT 1.52 N5.3, "one gate per session"): the field itself is
+        held on the shared session rather than on this handle, so a login
+        performed through one handle (``acting_tenant()``/
+        ``clear_acting_tenant()`` return a new handle over the same
+        ``_session``) changes what every handle sharing that session gates
+        ``acting_tenant()`` on, exactly as ``_ensure_open``'s shared
+        ``closed`` flag does for close().
+        """
+        return self._session.principal_scope
+
+    @_principal_scope.setter
+    def _principal_scope(self, value: _PrincipalScope | None) -> None:
+        """Write through to ``self._session.principal_scope`` — see the
+        getter above."""
+        self._session.principal_scope = value
 
     def _apply_acting_tenant(self, request: httpx.Request) -> None:
         """``X-Axiam-Tenant`` when this handle acts on a tenant, nothing
