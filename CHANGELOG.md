@@ -141,6 +141,25 @@ from them.
   `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field`,
   `test_a_failed_rebind_whose_restore_also_fails_reports_restore_error`,
   `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field_async`.)
+- **`authenticate_device()`'s own `POST /api/v1/auth/device` carried a
+  prior session's `axiam_access` cookie.** The call builds its request
+  straight from the shared httpx client (`_session.sync_client`/
+  `_session.async_client`), whose cookie jar attaches any cookie left by
+  an earlier `login()` on the same client at `build_request` time;
+  `_apply_bearer_credential`'s belt-and-suspenders empty `Cookie` header
+  only fires once a bearer token is already held, which is never true on
+  the very call that is about to mint one. The server reads `axiam_access`
+  before `Authorization` (CONTRACT.md §6.1), so a device login attempted
+  right after a `login()` on the same client could silently authenticate
+  as that earlier session's principal instead of the device's. The Rust
+  reference (and the TypeScript, Java, Go, Kotlin, Swift, C and C++ SDKs)
+  withhold the jar on this call with an explicit empty `Cookie`; this SDK
+  now does the same, on both the sync and async client. A refused device
+  login (401/429/transport error) already left the prior session's jar,
+  gate and decision memo untouched — that was verified, not changed.
+  (`tests/test_device_auth.py`:
+  `test_the_device_login_post_itself_carries_no_stale_cookie`[`_async`],
+  `test_a_refused_device_login_leaves_the_prior_session_untouched`[`_async`].)
 
 ### Breaking
 
@@ -190,6 +209,12 @@ passed at the end (0 failed). Coverage (`pytest --cov=axiam_sdk
 --cov-report=lcov`, the same invocation `.github/workflows/coverage.yml`
 runs): 98.57% on `origin/main`, 98.61% on this branch — both clear the
 `fail_under = 98` floor in `pyproject.toml`.
+
+A follow-up conformance read of this port turned up the two defects fixed
+above (the structured rebind-restore fields and the device-login cookie
+leak): 1746 passed at the start of that pass; 1754 at the end (0 failed,
++8: the red-before tests plus their I4 twins, sync and async). Coverage:
+98.57%, still clear of the `fail_under = 98` floor.
 
 ## [1.0.0-beta16] - 2026-09-19
 

@@ -175,6 +175,10 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         self._ensure_open()
         self._reachable_only_with_client_cert("authenticate_device")
         request = self._session.async_client.build_request("POST", DEVICE_AUTH_PATH)
+        # See AxiamClient.authenticate_device: this call mints the bearer
+        # credential, so it must withhold the jar itself rather than rely
+        # on _apply_bearer_credential, which only fires once one is held.
+        request.headers["Cookie"] = ""
         response = await self._rest_send_async(request)
         return self._handle_device_auth_response(response)
 
