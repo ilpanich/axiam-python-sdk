@@ -876,20 +876,59 @@ def test_a_cnf_naming_an_unimplemented_method_is_rejected_not_ignored() -> None:
             verify_certificate_binding(dpopish, presented)
 
 
-def test_verify_access_token_does_not_apply_rule_9(keypair, valid_claims) -> None:
-    """``verify_access_token`` deliberately does not enforce rule 9 — it has no
-    transport to ask for a peer certificate. Asserted so the split cannot be
-    collapsed by accident: a resource server accepting bound tokens must call
-    ``verify_sender_constrained``."""
+def test_verify_access_token_applies_rule_9_with_no_evidence(keypair, valid_claims) -> None:
+    """``verify_access_token`` — the documented guard entry point every route
+    guard and framework integration in this SDK calls — now enforces rule 9
+    itself, with no evidence to offer (contract 1.51, the dogfooding
+    remediation fix; inverted from this test's earlier
+    ``test_verify_access_token_does_not_apply_rule_9``, which pinned the
+    defect).
+
+    Before this fix, a certificate-bound or DPoP-bound token reached this
+    entry point and was accepted as an ordinary bearer credential —
+    ``SEC-071``/``SEC-080``'s shape, and load-bearing since contract 1.51's
+    §6.1 device login mints certificate-bound tokens by default: a device
+    token lifted off a device would have opened every route guarded through
+    ``verify_access_token``. A resource server that DOES have transport
+    evidence and wants to accept a properly-proven bound token now calls
+    :meth:`~axiam_sdk._jwks.JwksVerifier.verify_with_proofs` instead."""
     private_key, jwk_dict = keypair
     verifier, _endpoint = _verifier(jwk_dict)
     token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
 
-    claims = verifier.verify_access_token(token, expected_tenant_id=_TENANT)
-    # ...but the claim is there for a caller applying rule 9 itself.
-    verify_certificate_binding(claims, _THUMBPRINT)
-    with pytest.raises(AuthError):
-        verify_certificate_binding(claims, None)
+    with pytest.raises(AuthError, match="no client certificate was presented"):
+        verifier.verify_access_token(token, expected_tenant_id=_TENANT)
+
+    # An unbound token is unaffected -- rule 9 constrains tokens that claim a
+    # constraint; it does not make evidence mandatory for everyone.
+    unbound = _sign(private_key, valid_claims)
+    claims = verifier.verify_access_token(unbound, expected_tenant_id=_TENANT)
+    assert claims["sub"] == "user-1"
+
+
+def test_verify_with_proofs_accepts_a_bound_token_given_matching_evidence(
+    keypair, valid_claims
+) -> None:
+    """The accept path :meth:`~axiam_sdk._jwks.JwksVerifier.verify_with_proofs`
+    exists for: rules 1-8 plus the full rule 9, WITH the caller's evidence,
+    so a properly-proven sender-constrained token is usable rather than
+    refused outright the way the no-evidence ``verify_access_token`` refuses
+    every bound token."""
+    private_key, jwk_dict = keypair
+    verifier, _endpoint = _verifier(jwk_dict)
+    token = _sign(private_key, {**valid_claims, "cnf": {"x5t#S256": _THUMBPRINT}})
+
+    claims = verifier.verify_with_proofs(
+        token, expected_tenant_id=_TENANT, certificate_thumbprint=_THUMBPRINT
+    )
+    assert claims["cnf"]["x5t#S256"] == _THUMBPRINT
+
+    with pytest.raises(AuthError, match="different client certificate"):
+        verifier.verify_with_proofs(
+            token, expected_tenant_id=_TENANT, certificate_thumbprint=_OTHER_THUMBPRINT
+        )
+    with pytest.raises(AuthError, match="no client certificate was presented"):
+        verifier.verify_with_proofs(token, expected_tenant_id=_TENANT)
 
 
 def test_thumbprint_helper_produces_unpadded_base64url() -> None:

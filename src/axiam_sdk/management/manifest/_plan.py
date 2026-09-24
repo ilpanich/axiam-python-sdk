@@ -5,8 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from pydantic import SecretStr
+
 from axiam_sdk._errors import NetworkError
-from axiam_sdk.management.manifest._spec import ManagementManifest
+from axiam_sdk.management.manifest._spec import (
+    ManagementManifest,
+    RoleBinding,
+    RoleSpec,
+    ScopedRoleBinding,
+)
 
 __all__ = [
     "AppliedStep",
@@ -31,6 +38,8 @@ Target = Literal[
     "user",
     "user-role",
     "group-member",
+    "service-account",
+    "service-account-role",
 ]
 """Which part of the manifest an action came from."""
 
@@ -93,6 +102,17 @@ class StepOutcome:
     message: str | None = None
     """The error the server or transport gave, on a ``failed`` step only."""
 
+    client_secret: SecretStr | None = None
+    """The one-time ``client_secret`` (§27.5 rule 5, contract 1.51) — set
+    only on a ``service_accounts`` spec's ``Create`` outcome, and only
+    there: ``Update``/``NoChange`` never carry one, and ``apply`` never
+    calls ``rotate_secret`` to reconcile. Carried here rather than dropped,
+    even when a *later* action of the same ``apply`` fails: this is the
+    only moment the plaintext exists, and §27.6 rule 7 already requires
+    every attempted action's outcome reported — losing this one would mint
+    a credential nobody could ever use.
+    """
+
 
 @dataclass(frozen=True)
 class AppliedStep:
@@ -147,6 +167,18 @@ class ApplyReport:
         """How many steps actually changed something."""
         return sum(1 for s in self.steps if s.outcome.status in ("created", "updated"))
 
+    def client_secret(self, manifest_key: str) -> SecretStr | None:
+        """The one-time ``client_secret`` an ``apply`` minted for the
+        ``service_accounts`` spec carrying ``manifest_key``, if that spec's
+        step was a ``Create`` (§27.5 rule 5) — the only place it is ever
+        returned. ``None`` for an ``Update``/``NoChange`` outcome, a step
+        that never ran (``not-attempted``), or a key this report has no
+        step for."""
+        for step in self.steps:
+            if step.action.key == manifest_key and step.outcome.client_secret is not None:
+                return step.outcome.client_secret
+        return None
+
 
 def validate(manifest: ManagementManifest) -> None:
     """Reject a manifest that cannot be reconciled, before any request is made.
@@ -165,6 +197,7 @@ def validate(manifest: ManagementManifest) -> None:
     permission_keys = {p.key for p in manifest.permissions}
     role_keys = {r.key for r in manifest.roles}
     group_keys = {g.key for g in manifest.groups}
+    role_by_key = {r.key: r for r in manifest.roles}
 
     _duplicates("resource", [r.key for r in manifest.resources], problems)
     _duplicates("scope", [s.key for r in manifest.resources for s in r.scopes], problems)
@@ -172,6 +205,7 @@ def validate(manifest: ManagementManifest) -> None:
     _duplicates("role", [r.key for r in manifest.roles], problems)
     _duplicates("group", [g.key for g in manifest.groups], problems)
     _duplicates("user", [u.key for u in manifest.users], problems)
+    _duplicates("service_account", [s.key for s in manifest.service_accounts], problems)
 
     for resource in manifest.resources:
         if resource.parent and resource.parent not in resource_keys:
@@ -192,22 +226,28 @@ def validate(manifest: ManagementManifest) -> None:
                         f"role {role.key!r} scopes a grant to {scope!r}, which no scope declares"
                     )
     for group in manifest.groups:
-        for role_key in group.roles:
-            if role_key not in role_keys:
-                problems.append(
-                    f"group {group.key!r} is assigned role {role_key!r}, which no role declares"
-                )
+        _validate_role_bindings(
+            "group", group.key, group.roles, role_keys, resource_keys, role_by_key, problems
+        )
     for user in manifest.users:
-        for role_key in user.roles:
-            if role_key not in role_keys:
-                problems.append(
-                    f"user {user.key!r} is assigned role {role_key!r}, which no role declares"
-                )
+        _validate_role_bindings(
+            "user", user.key, user.roles, role_keys, resource_keys, role_by_key, problems
+        )
         for group_key in user.groups:
             if group_key not in group_keys:
                 problems.append(
                     f"user {user.key!r} is in group {group_key!r}, which no group declares"
                 )
+    for service_account in manifest.service_accounts:
+        _validate_role_bindings(
+            "service_account",
+            service_account.key,
+            service_account.roles,
+            role_keys,
+            resource_keys,
+            role_by_key,
+            problems,
+        )
 
     try:
         topological_order(manifest)
@@ -227,6 +267,70 @@ def _duplicates(kind: str, keys: list[str], problems: list[str]) -> None:
         if key in seen:
             problems.append(f"{kind} key {key!r} is declared more than once")
         seen.add(key)
+
+
+def role_key(binding: RoleBinding) -> str:
+    """The ``key`` of the role a :data:`RoleBinding` names, whichever shape
+    it is."""
+    return binding if isinstance(binding, str) else binding.role
+
+
+def resource_key(binding: RoleBinding) -> str | None:
+    """The ``key`` of the resource a :data:`RoleBinding` is scoped to, or
+    ``None`` for the plain (no-resource) shape."""
+    return None if isinstance(binding, str) else binding.resource
+
+
+def _validate_role_bindings(
+    kind: str,
+    subject_key: str,
+    bindings: tuple[RoleBinding, ...],
+    role_keys: set[str],
+    resource_keys: set[str],
+    role_by_key: dict[str, RoleSpec],
+    problems: list[str],
+) -> None:
+    """The checks every ``roles[]`` list needs, shared by groups, users and
+    service accounts (CONTRACT §27.6.1, contract 1.51):
+
+    - every named role and resource actually exists in the manifest;
+    - **a subject holds a role at most once** (§27.6.1: the server keys
+      assignments on ``(subject, role)`` with no resource component, so a
+      manifest binding one role to one subject twice — plain, scoped, or
+      one of each — describes a state the server cannot hold, and is
+      rejected before any request);
+    - a global role bound with ``inherit: false`` is refused by the server
+      with 400 (§27.6.1 addition 2's last rule); this SDK checks it
+      client-side, matching the Rust reference's choice among the two the
+      contract leaves open (MAY).
+    """
+    seen_roles: set[str] = set()
+    for binding in bindings:
+        rk = role_key(binding)
+        rname = f"{kind} {subject_key!r}"
+        if rk not in role_keys:
+            problems.append(f"{rname} is assigned role {rk!r}, which no role declares")
+        if rk in seen_roles:
+            problems.append(
+                f"{rname} binds role {rk!r} more than once — a subject holds a role at "
+                f"most once (CONTRACT §27.6.1); the server keys assignments on "
+                f"(subject, role) with no resource component"
+            )
+        seen_roles.add(rk)
+
+        if isinstance(binding, ScopedRoleBinding):
+            if binding.resource not in resource_keys:
+                problems.append(
+                    f"{rname} binds role {rk!r} at resource {binding.resource!r}, which no "
+                    f"resource declares"
+                )
+            if not binding.inherit:
+                role = role_by_key.get(rk)
+                if role is not None and role.is_global:
+                    problems.append(
+                        f"{rname} binds global role {rk!r} with inherit=False, which the "
+                        f"server refuses with 400 (a global role ignores resource scope)"
+                    )
 
 
 def topological_order(manifest: ManagementManifest) -> list[str]:

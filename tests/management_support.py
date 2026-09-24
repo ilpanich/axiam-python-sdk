@@ -87,6 +87,30 @@ def mount_login(router: respx.MockRouter, **claims: str) -> None:
     )
 
 
+def mount_login_as(
+    router: respx.MockRouter,
+    *,
+    organization_level: bool = False,
+    reachable_tenant_ids: list[str] | None = None,
+) -> None:
+    """Mock ``POST /api/v1/auth/login`` with a ``user`` object carrying
+    CONTRACT.md §5.2 / §5.2.3's ``organization_level``/``reachable_tenant_ids``
+    -- the fields :meth:`mount_login` never sets, needed to exercise
+    ``acting_tenant()``'s client-side gate."""
+    user: dict[str, object] = {"id": "user-1", "organization_level": organization_level}
+    if reachable_tenant_ids is not None:
+        user["reachable_tenant_ids"] = reachable_tenant_ids
+    router.post(f"{BASE_URL}/api/v1/auth/login").mock(
+        return_value=httpx.Response(
+            200,
+            json={"user": user, "session_id": "s1", "expires_in": 900},
+            headers=[
+                ("Set-Cookie", f"axiam_access={access_token()}; Path=/; HttpOnly"),
+            ],
+        )
+    )
+
+
 def mount_json(
     router: respx.MockRouter, method: str, path: str, status: int, body: Any
 ) -> respx.Route:
@@ -102,11 +126,17 @@ def mount_json(
 
 
 @contextmanager
-def with_client(**claims: str) -> Iterator[tuple[respx.MockRouter, AxiamClient]]:
-    """A logged-in sync client and the router its requests are matched against."""
+def with_client(
+    *, acting_tenant: str | None = None, **claims: str
+) -> Iterator[tuple[respx.MockRouter, AxiamClient]]:
+    """A logged-in sync client and the router its requests are matched
+    against. ``acting_tenant`` is the construction-time CONTRACT.md §5.2
+    rule 1 option (contract 1.51), unrelated to the JWT ``claims``."""
     with respx.mock(assert_all_called=False) as router:
         mount_login(router, **claims)
-        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client = AxiamClient(
+            base_url=BASE_URL, tenant_slug=TENANT_SLUG, acting_tenant=acting_tenant
+        )
         client.login("admin@example.test", "password123")
         try:
             yield router, client
@@ -116,12 +146,16 @@ def with_client(**claims: str) -> Iterator[tuple[respx.MockRouter, AxiamClient]]
 
 @asynccontextmanager
 async def with_async_client(
-    **claims: str,
+    *, acting_tenant: str | None = None, **claims: str
 ) -> AsyncIterator[tuple[respx.MockRouter, AsyncAxiamClient]]:
-    """A logged-in async client and the router its requests are matched against."""
+    """A logged-in async client and the router its requests are matched
+    against. ``acting_tenant`` is the construction-time CONTRACT.md §5.2
+    rule 1 option (contract 1.51), unrelated to the JWT ``claims``."""
     with respx.mock(assert_all_called=False) as router:
         mount_login(router, **claims)
-        client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client = AsyncAxiamClient(
+            base_url=BASE_URL, tenant_slug=TENANT_SLUG, acting_tenant=acting_tenant
+        )
         await client.login("admin@example.test", "password123")
         try:
             yield router, client

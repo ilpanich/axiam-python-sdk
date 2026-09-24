@@ -1590,6 +1590,7 @@ def test_roles_list_users() -> None:
             200,
             [
                 {
+                    "inherit": True,
                     "user": {
                         "created_at": "2026-08-26T00:00:00Z",
                         "email": "example",
@@ -1603,7 +1604,7 @@ def test_roles_list_users() -> None:
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
                         "username": "example",
-                    }
+                    },
                 }
             ],
         )
@@ -1621,6 +1622,7 @@ async def test_roles_list_users_async() -> None:
             200,
             [
                 {
+                    "inherit": True,
                     "user": {
                         "created_at": "2026-08-26T00:00:00Z",
                         "email": "example",
@@ -1634,7 +1636,7 @@ async def test_roles_list_users_async() -> None:
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
                         "username": "example",
-                    }
+                    },
                 }
             ],
         )
@@ -1697,7 +1699,8 @@ def test_roles_list_groups() -> None:
                         "name": "example",
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
-                    }
+                    },
+                    "inherit": True,
                 }
             ],
         )
@@ -1723,7 +1726,8 @@ async def test_roles_list_groups_async() -> None:
                         "name": "example",
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
-                    }
+                    },
+                    "inherit": True,
                 }
             ],
         )
@@ -1877,6 +1881,7 @@ def test_roles_list_service_accounts() -> None:
             200,
             [
                 {
+                    "inherit": True,
                     "service_account": {
                         "client_id": "example",
                         "created_at": "2026-08-26T00:00:00Z",
@@ -1885,7 +1890,7 @@ def test_roles_list_service_accounts() -> None:
                         "status": "Active",
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
-                    }
+                    },
                 }
             ],
         )
@@ -1903,6 +1908,7 @@ async def test_roles_list_service_accounts_async() -> None:
             200,
             [
                 {
+                    "inherit": True,
                     "service_account": {
                         "client_id": "example",
                         "created_at": "2026-08-26T00:00:00Z",
@@ -1911,7 +1917,7 @@ async def test_roles_list_service_accounts_async() -> None:
                         "status": "Active",
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
-                    }
+                    },
                 }
             ],
         )

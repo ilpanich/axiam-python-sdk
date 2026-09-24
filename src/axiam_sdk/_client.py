@@ -14,6 +14,8 @@ refresh-guard call differ. Mirrors ``the Go SDK's client.go`` + ``the Go SDK's l
 from __future__ import annotations
 
 import base64
+import copy
+import dataclasses
 import json
 import logging
 import time
@@ -27,6 +29,7 @@ from axiam_sdk._account import MfaEnrollment, PasswordResetContext, _AccountMixi
 from axiam_sdk._decision_memo import DecisionMemo, memo_key
 from axiam_sdk._errors import (
     AuthError,
+    AuthzError,
     NetworkError,
     error_from_http_status,
     error_from_oauth2_response,
@@ -37,6 +40,7 @@ from axiam_sdk._models import (
     AuthorizationRequest,
     BatchCheckResult,
     DeviceAuthorization,
+    DeviceToken,
     ExchangedToken,
     FederationProviderList,
     IntrospectionResult,
@@ -52,6 +56,7 @@ from axiam_sdk._models import (
     VerifiedLogoutToken,
 )
 from axiam_sdk._oidc import (
+    _UUID_RE,
     DISCOVERY_PATH,
     SSO_CALLBACK_PATH,
     SSO_HANDOFF_PATH,
@@ -87,11 +92,51 @@ OPAQUE_LOGIN_FINISH_PATH = "/api/v1/auth/opaque/login/finish"
 MFA_VERIFY_PATH = "/api/v1/auth/mfa/verify"
 REFRESH_PATH = "/api/v1/auth/refresh"
 LOGOUT_PATH = "/api/v1/auth/logout"
+DEVICE_AUTH_PATH = "/api/v1/auth/device"
 CHECK_PATH = "/api/v1/authz/check"
 BATCH_CHECK_PATH = "/api/v1/authz/check/batch"
 
 ACCESS_COOKIE = "axiam_access"
 REFRESH_COOKIE = "axiam_refresh"
+
+#: The header an organization-level principal names its acting tenant in —
+#: CONTRACT.md §5.2 rule 1 (contract 1.51). Distinct from ``X-Tenant-ID``
+#: (§5 rule 2), which the server does not read as an acting-tenant switch.
+ACTING_TENANT_HEADER = "X-Axiam-Tenant"
+
+
+def _validate_acting_tenant(tenant_id: str) -> str:
+    """CONTRACT.md §5.2 rule 1: refuse a non-UUID acting tenant client-side,
+    with **no** wire call.
+
+    The server parses ``X-Axiam-Tenant`` as a UUID and silently ignores a
+    value that does not parse — the request then acts on the caller's own
+    tenant and succeeds, reporting success about the wrong tenant. This is
+    the same client-side refusal §27.4 rule 2 uses for a non-UUID path
+    identifier, applied to the header instead.
+
+    Raises:
+        NetworkError: if ``tenant_id`` is not a UUID.
+    """
+    if not _UUID_RE.match(tenant_id):
+        raise NetworkError(
+            f"acting_tenant: {tenant_id!r} is not a UUID. The server silently ignores an "
+            f"X-Axiam-Tenant value that does not parse and answers for the caller's own "
+            f"tenant instead, reporting success about the wrong tenant — so this is refused "
+            f"client-side, with no wire call (CONTRACT.md §5.2 rule 1)."
+        )
+    return tenant_id
+
+
+@dataclasses.dataclass(frozen=True)
+class _PrincipalScope:
+    """What the last completed login reported about the principal's reach —
+    CONTRACT.md §5.2 and §5.2.3. Held only to gate
+    :meth:`_AxiamClientBase.acting_tenant`; not part of the public API.
+    """
+
+    organization_level: bool
+    reachable_tenant_ids: tuple[str, ...] | None
 
 
 def _principal_scope(user: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +227,7 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         retry_enabled: bool = True,
         decision_memo_ttl_ms: float = 0.0,
         telemetry_hook: TelemetryHook | None = None,
+        acting_tenant: str | None = None,
     ) -> None:
         """Construct the shared client state (CONTRACT.md §5/§6/§6.1/§7/§12).
 
@@ -219,9 +265,24 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         §12.3 rule 6 discovery-cache TTL (floored at 5 minutes) and the
         §12.4 rule 5 ID-token clock skew (capped at 60s) respectively.
 
+        ``acting_tenant`` is the construction-time form of CONTRACT.md §5.2
+        rule 1 (contract 1.51): the tenant UUID an **organization-level**
+        principal acts on, sent as ``X-Axiam-Tenant`` on every ``/api/v1``
+        request this client makes. Nothing is checked here — construction
+        precedes the login that would reveal whether the principal really is
+        organization-level, and a service account never receives a login
+        result at all — so a malformed value is still refused client-side
+        (a non-UUID string), but the organization-level/``reachable_tenant_ids``
+        gate is what :meth:`AxiamClient.acting_tenant`/
+        :meth:`~axiam_sdk.AsyncAxiamClient.acting_tenant` apply once a login
+        result is held. See that method for what the header does and does
+        not reach (not ``X-Tenant-ID``, not a ``{tenant_id}`` path, not
+        gRPC).
+
         Raises:
             AuthError: if ``tenant_slug`` is empty, or if both ``org_slug``
                 and ``org_id`` are supplied.
+            NetworkError: if ``acting_tenant`` is supplied and is not a UUID.
             ValueError: if exactly one of ``client_cert``/``client_key`` is
                 supplied, or if the supplied client identity is not valid PEM.
         """
@@ -267,6 +328,49 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         # organization-level principal that has selected another one. Read by
         # `opaque_enrollment_for_self`. `None` until a login completes.
         self._principal_tenant_id: str | None = None
+        # CONTRACT.md §5.2 rule 1 (contract 1.51) — the tenant THIS HANDLE
+        # acts on. Deliberately an attribute of the handle rather than of
+        # shared session state: `acting_tenant()`/`clear_acting_tenant()`
+        # return a new handle over the same `_session` (cookie jar, refresh
+        # guard, decision memo, principal scope), differing only here, so two
+        # handles acting on two tenants over one session cannot rewrite each
+        # other's header between deciding and sending.
+        self._acting_tenant: str | None = (
+            _validate_acting_tenant(acting_tenant) if acting_tenant is not None else None
+        )
+        # CONTRACT.md §5.2 / §5.2.3 — what the last completed login said
+        # about the principal's reach, when a login said anything at all.
+        #
+        # `None` until a path that lands on `_handle_login_response`'s 200
+        # branch reports a user object, and reset by
+        # `_absorb_session_cookies` (every session-establishing path) and by
+        # `logout`. The server sends that `user` object on `login`,
+        # `verify_mfa`, `login_opaque`, `mfa_setup_confirm` and
+        # `webauthn_setup_register_finish` alike — all five route through
+        # `_handle_login_response`, whose 200 branch sets this right after
+        # `_absorb_session_cookies` resets it — so all five gate
+        # `acting_tenant()` on what that object said.
+        #
+        # WebAuthn *authentication* (`webauthn_login_finish` /
+        # `webauthn_discoverable_finish`), an SSO completion, and the mTLS
+        # device login complete a session with no such object — the first
+        # two call `_absorb_session_cookies` with no follow-up set, the
+        # device login sets this to `None` directly — and neither does an
+        # injected token or a service account from client credentials. It is
+        # `None` on purpose rather than a defaulted `False` for all of
+        # those, because "the server did not say" must not gate
+        # `acting_tenant()` as if the server had said "not
+        # organization-level" (§5.2 rule 1: a client holding no login result
+        # has nothing to gate on, and sends the header regardless, letting
+        # the server's 403 answer).
+        #
+        # Differs from the Rust reference, which resets to unknown on every
+        # one of these paths, OPAQUE and the two setup flows included: their
+        # responses carry a user object too (the same builder as the
+        # password path on OPAQUE's server handler; both setup routes are
+        # typed the same success response), so gating on it here is tighter
+        # than gating on nothing.
+        self._principal_scope: _PrincipalScope | None = None
 
         self._session = _Session(
             base_url=base_url,
@@ -493,6 +597,13 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             # `opaque_enrollment_for_self` seals against the account's own
             # tenant without a second round trip.
             self._principal_tenant_id = result.principal_tenant_id
+            # §5.2 rule 1: this client now holds a login result, so
+            # `acting_tenant()` gates on what it reported. Set AFTER
+            # `_absorb_session_cookies`, which just reset it to `None`.
+            self._principal_scope = _PrincipalScope(
+                organization_level=result.organization_level,
+                reachable_tenant_ids=result.reachable_tenant_ids,
+            )
             return result
         if response.status_code == httpx.codes.ACCEPTED:
             wire = response.json()
@@ -604,6 +715,16 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             self._resolved_tenant_id = tenant_id_claim
 
         self._session.refresh_guard.seed(access, refresh, claims.get("exp"))
+
+        # CONTRACT.md §5.2 rule 1 — a new session is a new principal until
+        # its login says otherwise. `_handle_login_response`'s 200 branch
+        # (login, verify_mfa, login_opaque, mfa_setup_confirm,
+        # webauthn_setup_register_finish) records what the user object says
+        # right after this call. The other paths that land here directly —
+        # WebAuthn *authentication* and an SSO completion — complete a
+        # session without a user object, and must not inherit the previous
+        # principal's reach as a gate on `acting_tenant()`.
+        self._principal_scope = None
 
     # ------------------------------------------------------------------
     # refresh body-building + response handling (shared) — exactly one
@@ -725,13 +846,17 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         return body
 
     def _ensure_open(self) -> None:
-        """Raise if :meth:`close` has been called (§18.1 rule 4).
+        """Raise if :meth:`close` has been called (§18.1 rule 4) — on this
+        handle, or on another handle sharing this session (CONTRACT.md §5.2
+        rule 1: ``acting_tenant()``/``clear_acting_tenant()`` return a new
+        handle over the same ``_session``, and closing any one of them closes
+        the shared transport for all of them).
 
         Use-after-close is an error, not a silent reconnect: a client that
         quietly rebuilt its transport would make ``close()`` meaningless and
         hide the lifecycle bug that caused the call.
         """
-        if self._closed:
+        if self._closed or self._session.closed:
             raise NetworkError("client is closed: this client was shut down with close()")
 
     def _on_credential_change(self) -> None:
@@ -742,6 +867,180 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         decisions.
         """
         self._decision_memo.clear()
+
+    # ------------------------------------------------------------------
+    # acting tenant (CONTRACT.md §5.2 rule 1, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def _apply_acting_tenant(self, request: httpx.Request) -> None:
+        """``X-Axiam-Tenant`` when this handle acts on a tenant, nothing
+        otherwise (§5.2 rule 1). Mutates ``request`` in place, so a retry
+        rebuilt from its headers (``_retry_after_refresh_sync``/``_async``)
+        carries the header along too, and so a request handed to
+        ``_credential_free_request``'s callers stays untouched by this call
+        entirely (those never route through here)."""
+        if self._acting_tenant is not None:
+            request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
+
+    def _apply_bearer_credential(self, request: httpx.Request) -> None:
+        """``Authorization: Bearer <token>`` when this session has adopted a
+        device credential (CONTRACT.md §6.1 rule 6, contract 1.51), nothing
+        otherwise — REST authentication was cookie-only before this rule
+        existed, so a client that never calls ``authenticate_device()``
+        sends byte-for-byte what it sent before.
+
+        Also overrides ``Cookie`` to an explicit empty string, belt-and-
+        suspenders alongside :meth:`~axiam_sdk._session._Session.adopt_bearer_credential`
+        clearing the jar: the server reads the ``axiam_access`` cookie
+        *before* the ``Authorization`` header, so a cookie left from an
+        earlier session would otherwise silently win and the request would
+        run as that session's principal instead of the device's.
+        """
+        token = self._session.bearer_token
+        if token is not None:
+            request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+            request.headers["Cookie"] = ""
+
+    def _rest_send_sync(self, request: httpx.Request) -> httpx.Response:
+        """The choke-point wrapper every sync REST call sends through:
+        applies §5.2 rule 1's header and §6.1 rule 6's bearer credential,
+        then hands off to the shared session's own choke point
+        (``X-Tenant-ID``, CSRF — §5, §3)."""
+        self._apply_acting_tenant(request)
+        self._apply_bearer_credential(request)
+        return self._session._send_sync(request)
+
+    async def _rest_send_async(self, request: httpx.Request) -> httpx.Response:
+        """Async twin of :meth:`_rest_send_sync`."""
+        self._apply_acting_tenant(request)
+        self._apply_bearer_credential(request)
+        return await self._session._send_async(request)
+
+    def _check_acting_tenant_gate(self, tenant_id: str) -> str:
+        """The refusal half of §5.2 rule 1's ``acting_tenant()``: validates
+        the UUID and, when this client holds a login result that reported
+        the principal's reach, refuses client-side — with **no** wire call —
+        rather than offering what the server would refuse.
+
+        A client holding no such result (a service account from client
+        credentials or the device login, an injected token, a session
+        completed without a user object) has nothing to gate on: the
+        normalized tenant id is returned unchanged, and the server's ``403``
+        is the answer.
+
+        Returns:
+            The validated, normalized tenant UUID.
+
+        Raises:
+            NetworkError: if ``tenant_id`` is not a UUID.
+            AuthzError: if the held login result reported
+                ``organization_level: False``, or reported
+                ``reachable_tenant_ids`` that does not contain ``tenant_id``
+                (§5.2.3 rule 4).
+        """
+        tenant_id = _validate_acting_tenant(tenant_id)
+        scope = self._principal_scope
+        if scope is None:
+            return tenant_id
+        if not scope.organization_level:
+            raise AuthzError(
+                "acting_tenant: the signed-in principal is not organization-level, so it "
+                "cannot act on another tenant — the server would answer 403 (CONTRACT.md "
+                "§5.2 rule 1)",
+                resource_id=tenant_id,
+            )
+        if scope.reachable_tenant_ids is not None and tenant_id not in scope.reachable_tenant_ids:
+            raise AuthzError(
+                "acting_tenant: the signed-in principal's roles do not reach this tenant — "
+                "it is not in reachable_tenant_ids, and the server refuses the header with "
+                "403 (CONTRACT.md §5.2.3 rule 4)",
+                resource_id=tenant_id,
+            )
+        return tenant_id
+
+    @property
+    def acting_tenant_id(self) -> str | None:
+        """The tenant this handle acts on, if any (CONTRACT.md §5.2 rule 1).
+
+        ``None`` means no ``X-Axiam-Tenant`` is sent, and the principal acts
+        on its own tenant.
+        """
+        return self._acting_tenant
+
+    # ------------------------------------------------------------------
+    # mTLS device login (CONTRACT.md §6.1 rules 6-10, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def _reachable_only_with_client_cert(self, operation: str) -> None:
+        """§6.1 rule 7: on a client built without a certificate, refuse
+        *client-side*, with **zero** wire calls, rather than going to the
+        wire for a 401 the SDK already knows is coming."""
+        if not self._session.presents_client_certificate:
+            raise AuthError(
+                f"{operation}: this client was not configured with a client certificate "
+                f"(client_cert/client_key) — without one the server would answer 401, so "
+                f"this is refused client-side, with no wire call (CONTRACT.md §6.1 rule 7)"
+            )
+
+    @staticmethod
+    def _device_auth_error_message(response: httpx.Response) -> str:
+        """The server's own message for a failed ``authenticate_device()``
+        call, when the body carries one — rule 8 requires it surfaced
+        verbatim, since it is the only way the caller learns *which*
+        certificate problem this was (unknown, untrusted, expired, revoked,
+        unbound, or a ``Server``-type certificate)."""
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            message = body.get("message")
+            if isinstance(message, str) and message:
+                return message
+        return "authenticate_device failed"
+
+    def _handle_device_auth_response(self, response: httpx.Response) -> DeviceToken:
+        """Parse ``POST /api/v1/auth/device``'s response into a typed
+        :class:`~axiam_sdk._models.DeviceToken` and adopt it as this
+        client's credential (rules 6, 8-10)."""
+        if response.status_code != httpx.codes.OK:
+            message = self._device_auth_error_message(response)
+            # D-15: status code only in the log line, never the body.
+            self._logger.warning(
+                "axiam_sdk: authenticate_device failed: status=%s", response.status_code
+            )
+            if response.status_code == httpx.codes.UNAUTHORIZED:
+                # Rule 8: EVERY refusal is a 401 (unknown/untrusted/expired/
+                # revoked/unbound certificate, or a Server-type one), mapped
+                # to AuthError, verbatim message. This operation IS the
+                # login, so it must never enter the §9 refresh guard — and
+                # it structurally cannot: this call site never routes
+                # through _retry_after_refresh_sync/_async.
+                raise AuthError(message)
+            # A 429 (rate-limited, server T22.2) follows §16 and is NOT an
+            # authentication failure (rule 8) — the ordinary §2 mapping
+            # already answers NetworkError for it, and for every other
+            # status, so no special case is needed here.
+            raise error_from_http_status(response.status_code, message, response=response)
+
+        wire = response.json()
+        result = DeviceToken(
+            access_token=wire["access_token"],
+            token_type=wire["token_type"],
+            expires_in=wire["expires_in"],
+        )
+        # Adopted exactly as a login result is: drop memoized decisions
+        # (§17.1 rule 9), then replace the credential.
+        self._on_credential_change()
+        self._session.adopt_bearer_credential(result.access_token)
+        # §5.2 rule 1, "For C-12" item 5: a device login completes a
+        # session with no user object, so — like WebAuthn authentication and
+        # an SSO completion — it holds no reach to gate acting_tenant() on.
+        # OPAQUE, the forced MFA setup and the WebAuthn *setup* flow are
+        # different: their responses carry a user object too, so they DO
+        # gate (see the `_principal_scope` field comment in `__init__`).
+        self._principal_scope = None
+        return result
 
 
 class AxiamClient(_AxiamClientBase, ManagementNamespaces):
@@ -788,6 +1087,95 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._session.close()
 
     # ------------------------------------------------------------------
+    # acting tenant (CONTRACT.md §5.2 rule 1, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def acting_tenant(self, tenant_id: str) -> AxiamClient:
+        """A handle to this client that acts on ``tenant_id`` — CONTRACT.md
+        §5.2 rule 1 (contract 1.51).
+
+        The returned handle shares everything with ``self`` — session,
+        cookie jar, refresh guard, telemetry, decision memo — and differs
+        only in the ``X-Axiam-Tenant`` it sends. ``self`` is unchanged, so
+        two tasks can act on two tenants at once over one session. Call
+        :meth:`clear_acting_tenant` on the returned handle (or on ``self``)
+        to act on the principal's own tenant again.
+
+        Meaningful only for an **organization-level** principal; see the
+        ``acting_tenant`` constructor parameter for what the header does and
+        does not reach (not ``X-Tenant-ID``, not a ``{tenant_id}`` path, not
+        gRPC).
+
+        Raises:
+            NetworkError: if ``tenant_id`` is not a UUID.
+            AuthzError: when this client holds a login result that reported
+                the principal's reach: if it reported
+                ``organization_level: False`` (an ordinary tenant principal
+                is a principal of one tenant, and the server answers ``403``
+                to anything else), or if it reported ``reachable_tenant_ids``
+                that does not contain ``tenant_id`` (§5.2.3 rule 4). A client
+                holding no such result — a service account from client
+                credentials or the device login, an injected token, a
+                session completed without a user object — has nothing to
+                gate on, so the handle is returned and the server's ``403``
+                is the answer. An organization-level **service account** is
+                a supported design, and the server honours the header for
+                one on the terms it does for a user.
+
+        There is no string-vs-UUID ambiguity to resolve: the server silently
+        ignores a value that is not a UUID and answers for the caller's own
+        tenant instead, so refusing a non-UUID client-side is the refusal.
+        """
+        normalized = self._check_acting_tenant_gate(tenant_id)
+        handle = copy.copy(self)
+        handle._acting_tenant = normalized
+        return handle
+
+    def clear_acting_tenant(self) -> AxiamClient:
+        """A handle to this client that sends **no** ``X-Axiam-Tenant`` — the
+        clear form CONTRACT.md §5.2 rule 1 requires. The principal then acts
+        on its own tenant. Everything else is shared with ``self``, as for
+        :meth:`acting_tenant`."""
+        handle = copy.copy(self)
+        handle._acting_tenant = None
+        return handle
+
+    # ------------------------------------------------------------------
+    # mTLS device login (CONTRACT.md §6.1 rules 6-10, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def authenticate_device(self) -> DeviceToken:
+        """``POST /api/v1/auth/device`` (CONTRACT.md §6.1) — the mTLS device
+        login. No request body; returns a typed :class:`DeviceToken` and
+        adopts ``access_token`` as this client's credential, exactly as a
+        successful :meth:`login` is adopted.
+
+        **Reachable only on a client configured with a client certificate**
+        (``client_cert``/``client_key`` — see the constructor). Without one
+        the server would answer ``401`` regardless, so this refuses
+        client-side instead, with zero wire calls (rule 7).
+
+        There is **no refresh token** (D-6 of the dogfooding remediation
+        plan): a later ``401`` on this credential is surfaced as
+        :class:`~axiam_sdk.AuthError` without a refresh attempt — call this
+        method again, which costs one TLS handshake.
+
+        Raises:
+            AuthError: with zero wire calls, if this client was not built
+                with a client certificate (rule 7); or, from the server,
+                for an unknown, untrusted, expired, revoked or unbound
+                certificate, or a ``Server``-type certificate (rule 8 — every
+                refusal is a ``401``, surfaced with the server's own message).
+            NetworkError: for a ``429`` (rate-limited; not an authentication
+                failure, rule 8) or any other transport/status failure.
+        """
+        self._ensure_open()
+        self._reachable_only_with_client_cert("authenticate_device")
+        request = self._session.sync_client.build_request("POST", DEVICE_AUTH_PATH)
+        response = self._rest_send_sync(request)
+        return self._handle_device_auth_response(response)
+
+    # ------------------------------------------------------------------
     # login / verify_mfa
     # ------------------------------------------------------------------
 
@@ -800,7 +1188,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", LOGIN_PATH, json=self._login_body(email, password)
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_login_response(response)
 
     def login_opaque(self, username_or_email: str, password: str) -> LoginResult:
@@ -879,7 +1267,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             OPAQUE_LOGIN_START_PATH,
             json=self._opaque_login_start_body(username_or_email, exchange.ke1),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "login/start")
         started = OpaqueLoginStart.from_wire(response.json())
@@ -898,7 +1286,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             OPAQUE_LOGIN_FINISH_PATH,
             json={"opaque_session": started.opaque_session, "ke3": ke3},
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
             raise error_from_http_status(response.status_code, "OPAQUE login/finish failed")
         return self._handle_login_response(response)
@@ -975,7 +1363,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             OPAQUE_REGISTER_START_PATH,
             json=self._opaque_register_start_body(exchange.request, principal_tenant_id),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "register/start")
         started = response.json()
@@ -996,7 +1384,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", MFA_VERIFY_PATH, json=self._mfa_verify_body(mfa_token, code)
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_login_response(response)
 
     # ------------------------------------------------------------------
@@ -1034,7 +1422,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", "/api/v1/auth/refresh", json=self._refresh_body(tenant_id, org_id)
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_refresh_response(response)
 
     # ------------------------------------------------------------------
@@ -1049,10 +1437,12 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", LOGOUT_PATH, json={"session_id": session_id}
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
+        self._principal_scope = None
 
     # ------------------------------------------------------------------
     # REST authz: check_access / can / batch_check (Task 3)
@@ -1077,7 +1467,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._ensure_open()
         # §17: consult the memo first. Disabled by default, in which case this
         # is one dict lookup that always misses.
-        key = memo_key(action, resource_id, scope, subject_id)
+        key = memo_key(action, resource_id, scope, subject_id, self._acting_tenant)
         memoized = self._decision_memo.get(key)
         if memoized is not None:
             assert isinstance(memoized, AccessResult)
@@ -1134,7 +1524,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         """One §16 attempt, with its §19 request pair."""
         request = self._session.sync_client.build_request("POST", path, json=body)
         with self._telemetry.request(operation, "POST", path, attempt) as span:
-            response = self._session._send_sync(request)
+            response = self._rest_send_sync(request)
 
             if response.status_code == httpx.codes.UNAUTHORIZED:
                 response = self._retry_after_refresh_sync(request)
@@ -1164,7 +1554,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
                 if k.lower() not in ("content-length", "x-csrf-token")
             },
         )
-        return self._session._send_sync(retry_request)
+        return self._rest_send_sync(retry_request)
 
     # ------------------------------------------------------------------
     # OIDC / SSO relying-party helpers (CONTRACT.md §12, Task T3)
@@ -1180,7 +1570,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             """Perform the actual discovery-document GET; called by the
             discovery cache at most once per cache miss/expiry."""
             request = self._session.sync_client.build_request("GET", DISCOVERY_PATH)
-            response = self._session._send_sync(request)
+            response = self._rest_send_sync(request)
             return self._parse_discovery_response(response)
 
         return self._discovery_cache.get_sync(self._discovery_origin_key(), fetch)
@@ -1257,7 +1647,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         )
         url = self._par_url(config, tenant_id)
         http_request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(http_request)
+        response = self._rest_send_sync(http_request)
         return self._build_pushed_request(response, configuration=config, request=request)
 
     def oidc_exchange(
@@ -1283,7 +1673,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         )
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_token_response(response, config, nonce)
 
     def oidc_refresh(
@@ -1317,7 +1707,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             form = self._refresh_form(refresh_token=refresh_token, scope=scope)
             url = self._token_endpoint_url(config, tenant_id)
             request = self._session.sync_client.build_request("POST", url, data=form)
-            response = self._session._send_sync(request)
+            response = self._rest_send_sync(request)
             # No nonce: rule 6 does not apply to a refresh-issued ID token.
             return self._handle_token_response(response, config, None)
 
@@ -1351,7 +1741,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._client_credentials_form(scope=scope)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         # No nonce: rule 6 does not apply to this grant.
         return self._handle_token_response(response, config, None)
 
@@ -1377,7 +1767,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._device_authorize_form(scope=scope)
         url = self._device_authorization_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         if response.status_code != httpx.codes.OK:
             raise error_from_oauth2_response(
                 response.status_code, response, "device authorization request failed"
@@ -1404,7 +1794,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._device_poll_form(device_code=device_code)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         # No nonce: the device grant has no authorization request to carry one.
         return self._handle_token_response(response, config, None)
 
@@ -1526,7 +1916,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         )
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_exchange_response(response)
 
     def uma_register_resource(self, pat: SecretStr | str, resource: ResourceSet) -> ResourceSet:
@@ -1542,7 +1932,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             json=self._uma_resource_payload(resource),
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         wire = self._handle_uma_protection_response(response, "uma resource registration failed")
         return self._resource_set_from_wire(wire)
 
@@ -1553,7 +1943,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         wire = self._handle_uma_protection_response(response, "uma resource read failed")
         return self._resource_set_from_wire(wire)
 
@@ -1573,7 +1963,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             json=self._uma_resource_payload(resource),
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         wire = self._handle_uma_protection_response(response, "uma resource update failed")
         return self._resource_set_from_wire(wire)
 
@@ -1584,7 +1974,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         self._handle_uma_protection_response(response, "uma resource delete failed")
 
     def uma_list_resources(self, pat: SecretStr | str) -> list[str]:
@@ -1599,7 +1989,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             self._uma_protection_url("/uma2/rreg/resource_set"),
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         wire = self._handle_uma_protection_response(response, "uma resource list failed")
         return cast("list[str]", wire or [])
 
@@ -1623,7 +2013,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             json=body,
             headers=self._uma_protection_headers(pat),
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         wire = cast(
             "dict[str, str]",
             self._handle_uma_protection_response(response, "uma ticket request failed"),
@@ -1675,7 +2065,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._uma_ticket_form(ticket=ticket, claim_token=claim_token)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_rpt_response(response)
 
     def logout_url(
@@ -1767,7 +2157,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._introspect_form(token=token, token_type_hint=token_type_hint)
         url = self._endpoint_url_for_introspect(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_introspect_response(response)
 
     def revoke(
@@ -1786,7 +2176,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         form = self._revoke_form(token=token, token_type_hint=token_type_hint)
         url = self._endpoint_url_for_revoke(config, tenant_id)
         request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         self._handle_revoke_response(response)
 
     def sso_start(
@@ -1812,7 +2202,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             org_slug=org_slug,
         )
         request = self._session.sync_client.build_request("POST", SSO_START_PATH, json=body)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_sso_start_response(response)
 
     def sso_complete(self, *, state: str, code: str) -> SsoCompleteResult:
@@ -1824,7 +2214,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", SSO_CALLBACK_PATH, json={"state": state, "code": code}
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_sso_complete_response(response)
 
     def sso_providers(
@@ -1861,7 +2251,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             tenant_slug=tenant_slug,
         )
         request = self._session.sync_client.build_request("GET", SSO_PROVIDERS_PATH, params=params)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_sso_providers_response(response)
 
     def sso_start_oauth2(
@@ -1900,7 +2290,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             org_slug=org_slug,
         )
         request = self._session.sync_client.build_request("POST", SSO_OAUTH2_START_PATH, json=body)
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_sso_start_oauth2_response(response)
 
     def sso_complete_oauth2(self, *, state: str, code: str) -> SsoCompleteResult:
@@ -1920,7 +2310,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", SSO_OAUTH2_CALLBACK_PATH, json={"state": state, "code": code}
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_federation_session_response(response, "ssoCompleteOauth2")
 
     def sso_complete_handoff(self, *, code: str) -> SsoCompleteResult:
@@ -1946,7 +2336,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", SSO_HANDOFF_PATH, json={"code": code}
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._handle_federation_session_response(response, "ssoCompleteHandoff")
 
     # ------------------------------------------------------------------
@@ -1975,7 +2365,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._ensure_open()
         self._require_webauthn_session("webauthn_register_start")
         request = self._session.sync_client.build_request("POST", self._WA_REGISTER_START, json={})
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._webauthn_challenge(response, "webauthn_register_start")
 
     def webauthn_register_finish(
@@ -1999,7 +2389,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._WA_REGISTER_FINISH, json=body
         )
-        return self._webauthn_credential(self._session._send_sync(request))
+        return self._webauthn_credential(self._rest_send_sync(request))
 
     def webauthn_authenticate_start(self, *, challenge_token: SecretStr | str) -> WebauthnChallenge:
         """``POST /api/v1/auth/webauthn/authenticate/start`` (CONTRACT.md §24.1).
@@ -2016,7 +2406,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._WA_AUTH_START, json={"challenge_token": _expose_token(challenge_token)}
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._webauthn_challenge(response, "webauthn_authenticate_start")
 
     def webauthn_authenticate_finish(
@@ -2050,7 +2440,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._WA_DISCOVERABLE_START, json=body
         )
-        response = self._session._send_sync(request)
+        response = self._rest_send_sync(request)
         return self._webauthn_challenge(response, "webauthn_discoverable_start")
 
     def webauthn_discoverable_finish(
@@ -2080,7 +2470,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         self._on_credential_change()
         body = self._webauthn_finish_body(state_token, response, operation)
         request = self._session.sync_client.build_request("POST", path, json=body)
-        http_response = self._session._send_sync(request)
+        http_response = self._rest_send_sync(request)
         result = self._webauthn_login_result(http_response, operation)
         # The server sets the same axiam_access/axiam_refresh/axiam_csrf triple
         # here as it does on a password login, so adoption is the same call.
@@ -2163,7 +2553,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         """
         self._ensure_open()
         request = self._session.sync_client.build_request("POST", self._AC_MFA_ENROLL, json={})
-        return self._mfa_enrollment(self._session._send_sync(request), "mfa_enroll")
+        return self._mfa_enrollment(self._rest_send_sync(request), "mfa_enroll")
 
     def mfa_confirm(self, *, totp_code: str) -> bool:
         """``POST /api/v1/auth/mfa/confirm`` (CONTRACT.md §25.1) — activate the
@@ -2172,7 +2562,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._AC_MFA_CONFIRM, json={"totp_code": totp_code}
         )
-        return self._mfa_confirmed(self._session._send_sync(request))
+        return self._mfa_confirmed(self._rest_send_sync(request))
 
     def mfa_setup_enroll(self, *, setup_token: SecretStr | str) -> MfaEnrollment:
         """``POST /api/v1/auth/mfa/setup/enroll`` (CONTRACT.md §25.1) — start
@@ -2186,7 +2576,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._AC_MFA_SETUP_ENROLL, json={"setup_token": _expose_token(setup_token)}
         )
-        return self._mfa_enrollment(self._session._send_sync(request), "mfa_setup_enroll")
+        return self._mfa_enrollment(self._rest_send_sync(request), "mfa_setup_enroll")
 
     def mfa_setup_confirm(self, *, setup_token: SecretStr | str, totp_code: str) -> LoginResult:
         """``POST /api/v1/auth/mfa/setup/confirm`` (CONTRACT.md §25.1) — finish
@@ -2202,7 +2592,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             self._AC_MFA_SETUP_CONFIRM,
             json={"setup_token": _expose_token(setup_token), "totp_code": totp_code},
         )
-        return self._handle_login_response(self._session._send_sync(request))
+        return self._handle_login_response(self._rest_send_sync(request))
 
     def verify_email(self, *, token: SecretStr | str, tenant_id: str) -> None:
         """``POST /api/v1/auth/verify-email`` (CONTRACT.md §25.1).
@@ -2218,7 +2608,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             self._AC_VERIFY_EMAIL,
             json={"token": _expose_token(token), "tenant_id": tenant_id},
         )
-        self._expect_no_content(self._session._send_sync(request), "verify_email")
+        self._expect_no_content(self._rest_send_sync(request), "verify_email")
 
     def resend_verification(self, *, email: str, tenant_id: str) -> None:
         """``POST /api/v1/auth/resend-verification`` (CONTRACT.md §25.1) — the
@@ -2238,7 +2628,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._AC_RESEND_VERIFICATION, json={"email": email, "tenant_id": tenant_id}
         )
-        self._expect_no_content(self._session._send_sync(request), "resend_verification")
+        self._expect_no_content(self._rest_send_sync(request), "resend_verification")
 
     def resend_own_verification(self) -> None:
         """``POST /api/v1/users/me/resend-verification`` (CONTRACT.md
@@ -2271,7 +2661,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "POST", self._AC_RESEND_OWN_VERIFICATION, json={}
         )
-        self._expect_no_content(self._session._send_sync(request), "resend_own_verification")
+        self._expect_no_content(self._rest_send_sync(request), "resend_own_verification")
 
     def request_password_reset(
         self,
@@ -2295,7 +2685,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             email=email, org_slug=org_slug, tenant_id=tenant_id, tenant_slug=tenant_slug
         )
         request = self._session.sync_client.build_request("POST", self._AC_RESET, json=body)
-        self._expect_no_content(self._session._send_sync(request), "request_password_reset")
+        self._expect_no_content(self._rest_send_sync(request), "request_password_reset")
 
     def password_reset_context(self, *, token: SecretStr | str) -> PasswordResetContext:
         """``GET /api/v1/auth/reset/context`` (CONTRACT.md §25.1) — the OPAQUE
@@ -2311,7 +2701,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request(
             "GET", self._AC_RESET_CONTEXT, params={"token": _expose_token(token)}
         )
-        return self._reset_context(self._session._send_sync(request))
+        return self._reset_context(self._rest_send_sync(request))
 
     def confirm_password_reset(
         self,
@@ -2327,7 +2717,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             token=token, new_password=new_password, tenant_id=tenant_id, opaque=opaque
         )
         request = self._session.sync_client.build_request("POST", self._AC_RESET_CONFIRM, json=body)
-        self._expect_no_content(self._session._send_sync(request), "confirm_password_reset")
+        self._expect_no_content(self._rest_send_sync(request), "confirm_password_reset")
 
 
 def _expose_token(value: SecretStr | str) -> str:

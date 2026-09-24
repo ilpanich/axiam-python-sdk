@@ -118,6 +118,35 @@ class LoginResult(BaseModel):
     model_config = {"frozen": True}
 
 
+class DeviceToken(BaseModel):
+    """``AxiamClient.authenticate_device()``'s result — CONTRACT.md §6.1
+    rules 6-10 (contract 1.51), the mTLS device login.
+
+    Adopted as the client's credential exactly as a :class:`LoginResult` is:
+    subsequent REST calls carry ``access_token`` as ``Authorization: Bearer``
+    (rule 6). **There is no refresh token** (D-6 of the dogfooding
+    remediation plan): re-authenticating is calling
+    :meth:`~axiam_sdk.AxiamClient.authenticate_device` again, which costs one
+    TLS handshake, so a later ``401`` on this token is surfaced as
+    ``AuthError`` without a refresh attempt.
+    """
+
+    access_token: SecretStr
+    """The bearer credential. Adopted, never returned to a caller who did
+    not ask for it — but unlike a cookie-jar session, this SDK has nowhere
+    else to put it, so it is handed back here, wrapped (§7)."""
+
+    token_type: str
+    """Always ``"Bearer"`` — including for a certificate-bound token: rule 9
+    says boundness is decided from the token's ``cnf`` claim alone, never
+    from this field."""
+
+    expires_in: int
+    """The access-token lifetime in seconds (server default 900)."""
+
+    model_config = {"frozen": True}
+
+
 class User(BaseModel):
     """An authenticated identity, as returned by ``GET /api/v1/auth/me`` or
     resolved locally from a verified JWT's claims."""
@@ -611,6 +640,165 @@ class UserInfo(BaseModel):
     preferred_username: str | None = None
 
     model_config = {"frozen": True}
+
+
+class TokenCnf(BaseModel):
+    """RFC 7800 confirmation, as ``TokenService`` carries it over gRPC
+    (CONTRACT.md §1.1.1 rule 3, §10.3, contract 1.51).
+
+    Present on :attr:`TokenValidation.cnf` / :attr:`TokenIntrospection.cnf`
+    **only** when the inspected token is sender-constrained — absent means
+    unbound, which is why this model is never constructed for an unbound
+    token (the field on the parent model is ``None`` instead). ``x5t_s256``/
+    ``jkt`` are each ``None`` when that half of the confirmation was not set,
+    which happens for an ordinary single-method binding and — per §10.3
+    rule 3 — must NOT be read the same as this whole object being absent: a
+    :class:`TokenCnf` with both members ``None`` names a confirmation method
+    this SDK does not recognise, and :meth:`TokenValidation.verify_possession`
+    / :meth:`TokenIntrospection.verify_possession` refuse it rather than
+    treating it as unconstrained.
+    """
+
+    x5t_s256: str | None = None
+    """RFC 8705 §3.1 — base64url-unpadded SHA-256 of the DER client
+    certificate, when the token is certificate-bound."""
+
+    jkt: str | None = None
+    """RFC 9449 §6.1 — base64url-unpadded RFC 7638 DPoP key thumbprint,
+    when the token is DPoP-bound."""
+
+    model_config = {"frozen": True}
+
+
+def _verify_cnf_possession(
+    cnf: TokenCnf | None,
+    *,
+    certificate_thumbprint: str | None,
+    dpop_thumbprint: str | None,
+) -> None:
+    """Shared by :meth:`TokenValidation.verify_possession` and
+    :meth:`TokenIntrospection.verify_possession`: CONTRACT.md §10.3 rule 1
+    points both back at §10.1 rule 9, so both apply the identical local and
+    gRPC verification. Delegates to :func:`axiam_sdk._jwks.verify_token_binding`
+    by building the same ``{"cnf": {...}}`` claims shape a JWT decode would
+    produce — the rule-9 table lives in exactly one place either way.
+
+    Raises:
+        AuthError: per :func:`~axiam_sdk._jwks.verify_token_binding`.
+    """
+    from axiam_sdk._jwks import verify_token_binding
+
+    claims: dict[str, object] = (
+        {"cnf": {"x5t#S256": cnf.x5t_s256, "jkt": cnf.jkt}} if cnf is not None else {}
+    )
+    verify_token_binding(
+        claims,
+        certificate_thumbprint=certificate_thumbprint,
+        dpop_thumbprint=dpop_thumbprint,
+    )
+
+
+class TokenValidation(BaseModel):
+    """``TokenGrpcClient.validate_token()``'s result — every field
+    ``axiam.v1.TokenService/ValidateToken`` returns (CONTRACT.md §1.1.1
+    rule 3, contract 1.51)."""
+
+    valid: bool
+    """Signature, expiry and tenant check out. **Not** "usable as
+    presented" — see :meth:`verify_possession` (§10.3 rule 2)."""
+
+    subject_id: str | None = None
+    tenant_id: str | None = None
+    org_id: str | None = None
+    exp: int | None = None
+
+    cnf: TokenCnf | None = None
+    """``None`` means unbound. **Boundness is decided from this field
+    alone** — never from :attr:`token_type`, which reads ``"Bearer"`` for a
+    certificate-bound token too (rule 5)."""
+
+    token_type: str | None = None
+    """``"Bearer"`` or ``"DPoP"`` (RFC 9449 §5) — redundant with, and
+    subordinate to, :attr:`cnf` (rule 5)."""
+
+    model_config = {"frozen": True}
+
+    def verify_possession(
+        self,
+        *,
+        certificate_thumbprint: str | None = None,
+        dpop_thumbprint: str | None = None,
+    ) -> None:
+        """CONTRACT.md §10.3 rule 2 / §10.1 rule 9: raise unless the caller
+        proves possession of the key :attr:`cnf` names. A no-op (no
+        exception) when :attr:`cnf` is ``None`` — an unbound token is a
+        bearer token, and this is the accept case, not something to skip
+        calling.
+
+        Args:
+            certificate_thumbprint: The peer certificate's ``x5t#S256`` on
+                *this* connection, or ``None``.
+            dpop_thumbprint: The ``jkt`` of a DPoP proof the caller has
+                already verified for *this* request, or ``None``.
+
+        Raises:
+            AuthError: per :func:`~axiam_sdk._jwks.verify_token_binding`.
+        """
+        _verify_cnf_possession(
+            self.cnf,
+            certificate_thumbprint=certificate_thumbprint,
+            dpop_thumbprint=dpop_thumbprint,
+        )
+
+
+class TokenIntrospection(BaseModel):
+    """``TokenGrpcClient.introspect_token()``'s result — the RFC 7662 set
+    ``axiam.v1.TokenService/IntrospectToken`` returns (CONTRACT.md §1.1.1
+    rule 3, contract 1.51)."""
+
+    active: bool
+    """RFC 7662 §2.2. **Not** "usable as presented" — see
+    :meth:`verify_possession` (§10.3 rule 2)."""
+
+    sub: str | None = None
+    tenant_id: str | None = None
+    org_id: str | None = None
+    iss: str | None = None
+    iat: int | None = None
+    exp: int | None = None
+    jti: str | None = None
+    scope: str | None = None
+    client_id: str | None = None
+
+    token_type: str | None = None
+    """``"Bearer"`` or ``"DPoP"`` — see :attr:`TokenValidation.token_type`;
+    the same rule-5 caution applies."""
+
+    cnf: TokenCnf | None = None
+    """``None`` means unbound — see :attr:`TokenValidation.cnf`."""
+
+    permissions: tuple[RptPermission, ...] = ()
+    """UMA 2.0 (§20) — present only on an RPT."""
+
+    ext_exchange_iss: str | None = None
+    """X4 cross-domain provenance — the foreign issuer whose subject token
+    bought this one, when there was one."""
+
+    model_config = {"frozen": True}
+
+    def verify_possession(
+        self,
+        *,
+        certificate_thumbprint: str | None = None,
+        dpop_thumbprint: str | None = None,
+    ) -> None:
+        """Identical rule to :meth:`TokenValidation.verify_possession`,
+        applied to this operation's :attr:`cnf`."""
+        _verify_cnf_possession(
+            self.cnf,
+            certificate_thumbprint=certificate_thumbprint,
+            dpop_thumbprint=dpop_thumbprint,
+        )
 
 
 class DeviceAuthorization(BaseModel):

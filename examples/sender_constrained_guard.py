@@ -29,11 +29,7 @@ import os
 
 from axiam_sdk._dpop import InMemoryJtiStore, verify_dpop_proof
 from axiam_sdk._errors import AuthError
-from axiam_sdk._jwks import (
-    JwksVerifier,
-    certificate_thumbprint_s256,
-    verify_token_binding,
-)
+from axiam_sdk._jwks import JwksVerifier, certificate_thumbprint_s256
 
 # One store per process. InMemoryJtiStore is per-worker, so a deployment
 # running more than one process needs a shared implementation (Redis, a
@@ -42,13 +38,19 @@ JTI_STORE = InMemoryJtiStore()
 
 
 def guard(request: object, token: str) -> str:
-    """Authorize one request, applying rules 1-9."""
-    verifier = JwksVerifier(os.environ.get("AXIAM_BASE_URL", "https://axiam.example.com"))
+    """Authorize one request, applying rules 1-9 with this connection's
+    evidence.
 
-    # Rules 1-8: signature, expiry, issuer, audience. NOT rule 9 — this call
-    # has no transport to ask, which is exactly why the binding check is
-    # separate rather than something you can forget to opt into.
-    claims = verifier.verify_access_token(token, expected_tenant_id=os.environ["AXIAM_TENANT_ID"])
+    ``verifier.verify_access_token`` — the plain, no-evidence entry point
+    every route guard and framework integration in this SDK uses by default
+    — already applies rule 9 with no evidence, so it refuses EVERY
+    ``cnf``-bearing token outright, bound or not. That is correct for a
+    guard with no transport to ask, and it is why this example, which DOES
+    have one, calls ``verify_with_proofs`` instead: the one call that can
+    ACCEPT a token whose sender constraint this connection can actually
+    prove.
+    """
+    verifier = JwksVerifier(os.environ.get("AXIAM_BASE_URL", "https://axiam.example.com"))
 
     # The thumbprint must come from the connection, never a header the caller
     # can set: a forgeable input makes the mechanism decorative.
@@ -70,10 +72,13 @@ def guard(request: object, token: str) -> str:
             jti_store=JTI_STORE,
         )
 
-    # Rule 9. Returns immediately for an unbound token, so adopting this does
-    # not break existing deployments.
-    verify_token_binding(
-        claims,
+    # Rules 1-8, then the full rule 9 with this connection's evidence in one
+    # call. An unbound token is still accepted with or without either proof
+    # — rule 9 constrains tokens that claim a constraint; it does not make
+    # certificates or DPoP proofs mandatory.
+    claims = verifier.verify_with_proofs(
+        token,
+        expected_tenant_id=os.environ["AXIAM_TENANT_ID"],
         certificate_thumbprint=certificate_thumbprint,
         dpop_thumbprint=dpop_thumbprint,
     )

@@ -318,10 +318,13 @@ def mount_drifted_tenant(router: respx.MockRouter) -> None:
     router.get(f"{BASE_URL}/api/v1/roles").mock(
         return_value=httpx.Response(200, json=_page([_role(ROLE_ID, "Editor", "Edits before")]))
     )
-    for sub in ("permissions", "users", "groups"):
+    for sub in ("permissions", "users", "groups", "service-accounts"):
         router.get(f"{BASE_URL}/api/v1/roles/{ROLE_ID}/{sub}").mock(
             return_value=httpx.Response(200, json=[])
         )
+    router.get(f"{BASE_URL}/api/v1/service-accounts").mock(
+        return_value=httpx.Response(200, json=_page([]))
+    )
     router.get(f"{BASE_URL}/api/v1/groups").mock(
         return_value=httpx.Response(
             200,

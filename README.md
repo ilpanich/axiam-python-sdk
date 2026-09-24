@@ -23,11 +23,11 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.50**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
-§19, §20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS and the §10.1
-minimum local-verification set). §12 is implemented in full at its 1.38 shape: all
-**thirteen** operations, including the four public "Sign in with X" entry points, on
-both clients.
+This SDK conforms to **contract 1.51**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+§19, §20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS, the §10.1
+minimum local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
+implemented in full at its 1.38 shape: all **thirteen** operations, including the
+four public "Sign in with X" entry points, on both clients.
 
 §12.7, §14, §15, §20, §22, §24, §25, §26, §27 and §28 are named rather than folded into
 the range because they landed after this SDK already claimed §1–§13: widening the
@@ -37,12 +37,24 @@ different claim without anyone editing it.
 §28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
 guard built without `resource_metadata_url` is byte-for-byte what it was before §28
 existed. See [MCP resource-server helpers (§28)](#mcp-resource-server-helpers-28).
-The vendored [`CONTRACT.md`](./CONTRACT.md) is synced to contract 1.48, ahead of
-`ilpanich/axiam`'s `main` branch until Phase 21 lands there — §28.10's per-SDK
-posture table in that vendored copy therefore still reads "not yet" for `python`,
-reflecting the source repository's state at sync time rather than this SDK's own.
 
-§27 is the management API — 160 administrative operations across 24 namespaces,
+### Contract 1.51 — the dogfooding remediation
+
+The [`claude_dev/dogfooding-findings-fix-plan.md`](https://github.com/ilpanich/axiam/blob/main/claude_dev/dogfooding-findings-fix-plan.md)
+plan's C-3 task. Shipped:
+
+| Item | Shipped as |
+|---|---|
+| §5.2 rule 1 — the acting tenant | `AxiamClient(acting_tenant=...)` / `AsyncAxiamClient(acting_tenant=...)` at construction; `client.acting_tenant(uuid)` / `client.clear_acting_tenant()` on an existing client (Python's own handle idiom — see [Acting on another tenant](#acting-on-another-tenant-52-rule-1)) |
+| §6.1 rules 6–10 — the mTLS device login | `AxiamClient.authenticate_device()` / `AsyncAxiamClient.authenticate_device()` — see [The mTLS device login](#the-mtls-device-login-61-rules-6-10) |
+| §1.1.1 / §10.3 — gRPC `validate_token` / `introspect_token` | `AuthzGrpcClient.validate_token()`/`.introspect_token()` and the `AsyncAuthzGrpcClient` twins, on the same channel `check_access`/`get_user_info` already use |
+| §10.1 rule 9 at the default entry point | **Fixed, breaking.** `JwksVerifier.verify_access_token` now refuses any `cnf`-bearing token; the new `verify_with_proofs` is the accept-with-evidence path. See [Local token verification (§10.1)](#local-token-verification-101) |
+| §27.6.1 — `resources[].metadata` | Shipped: `ResourceSpec(metadata=...)` |
+| §27.6.1 — the resource-scoped, non-inheriting role binding | Shipped: `ScopedRoleBinding(role=, resource=, inherit=False)`, anywhere a `RoleBinding` is accepted (`GroupSpec.roles`, `UserSpec.roles`, `ServiceAccountSpec.roles`) |
+| §27.6.1 — `service_accounts` in the manifest | Shipped: `ServiceAccountSpec`, `ManagementManifest(service_accounts=...)`, `axiam_service_account` |
+| §27.6 `webhooks` | **Declined.** The contract names it and leaves it unspecified; no consumer has asked for it |
+
+§27 is the management API — 162 administrative operations across 24 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -53,10 +65,15 @@ See [`CONTRACT.md`](./CONTRACT.md) for the full cross-language behavioral contra
 Implemented (Phase 19). `AxiamClient` (sync) and the dedicated
 `AsyncAxiamClient` (async, SDK-Q08) each expose the same canonical operation
 names — `login`, `verify_mfa`, `refresh`, `logout`, `check_access`, `can`,
-`batch_check`, and the thirteen §12 OIDC/SSO relying-party operations (see below)
-— as sync or `async def` methods respectively (never an `async_*`-prefixed
-twin on the sync class). Each client owns its own session, cookie jar, and
-single-flight refresh guard. gRPC (sync `grpcio` + async `grpc.aio`), AMQP
+`batch_check`, `authenticate_device` (§6.1, contract 1.51), and the thirteen
+§12 OIDC/SSO relying-party operations (see below) — as sync or `async def`
+methods respectively (never an `async_*`-prefixed twin on the sync class).
+Both also accept `acting_tenant=` at construction and offer
+`acting_tenant(uuid)`/`clear_acting_tenant()` on an existing client (§5.2
+rule 1, contract 1.51). Each client owns its own session, cookie jar, and
+single-flight refresh guard. gRPC (sync `grpcio` + async `grpc.aio`) covers
+`check_access`/`batch_check`, `get_user_info`, and — contract 1.51 —
+`validate_token`/`introspect_token`, all on the same channel. AMQP
 (async-only `aio-pika`), a FastAPI dependency plus an `oidc_login_router`,
 and a Django middleware plus `oidc_login_views`, are all available. Both
 framework surfaces also carry the §28 MCP resource-server helpers —
@@ -224,6 +241,36 @@ drives the same single-flight refresh-and-retry-once path as `check_access`
 info = client.get_user_info()
 print(info.sub, info.tenant_id, info.org_id, info.email, info.preferred_username)
 ```
+
+#### gRPC token validation — `validate_token` / `introspect_token` (§1.1.1, §10.3, contract 1.51)
+
+The gRPC-only wrappers around `TokenService/ValidateToken` and
+`/IntrospectToken`, on the same channel and interceptor `check_access`/
+`get_user_info` use. **The caller's own token authenticates the call**
+(metadata, via the interceptor); the token being **inspected** is the
+argument, and is never defaulted to the caller's own:
+
+```python
+result = client.validate_token(some_other_access_token)
+if result.cnf is not None:
+    # Sender-constrained: `valid: True` is NOT "usable as presented" (§10.3
+    # rule 2). Prove possession before trusting it.
+    result.verify_possession(certificate_thumbprint=peer_thumbprint)
+print(result.valid, result.subject_id, result.tenant_id, result.token_type)
+
+full = client.introspect_token(some_other_access_token)  # RFC 7662 set + cnf + permissions
+```
+
+- **`result.cnf` decides boundness — never `token_type`**, which reads
+  `"Bearer"` for a certificate-bound token too (rule 5).
+- **`verify_possession(certificate_thumbprint=, dpop_thumbprint=)`** applies
+  CONTRACT.md §10.1 rule 9 with your evidence; called with neither, it
+  raises for any bound token — the same rule the local
+  [`JwksVerifier`](#local-token-verification-101) applies, so a gRPC-validating
+  guard and a JWKS-verifying one never disagree about whether a token is a
+  bearer token.
+- A no-token call (this client's own) raises `AuthError` client-side, with no
+  wire call, exactly like `get_user_info`.
 
 ### AMQP event consumer (§8)
 
@@ -457,6 +504,7 @@ the single entry point `JwksVerifier.verify_access_token(...)`:
 | 5 | `iss` | Checked **only** when `expected_issuer` is configured (optional, unset by default — no issuer is ever assumed) |
 | 6 | `aud` | Checked **only** when `expected_audience` is configured; a user-facing resource server should pass `RECOMMENDED_RESOURCE_SERVER_AUDIENCE` (`"axiam:user"`) |
 | 7 | clock skew | `DEFAULT_CLOCK_SKEW_SECONDS` (60 s), bounded by `MAX_CLOCK_SKEW_SECONDS` — never settable to an unbounded value |
+| 9 | `cnf` (sender-constrained tokens, contract 1.51) | A token carrying `cnf` is refused: this entry point has no transport evidence to accept a certificate- or DPoP-bound token with. `JwksVerifier.verify_with_proofs(token, expected_tenant_id=, certificate_thumbprint=, dpop_thumbprint=)` is the entry point that CAN accept one, given the evidence; `verify_sender_constrained(...)` is its certificate-only shape. An unbound token is unaffected either way — rule 9 constrains tokens that claim a constraint, not every token |
 
 ```python
 from axiam_sdk._jwks import (
@@ -1119,17 +1167,64 @@ global grants apply in every tenant of that organization:
 ```python
 result = client.login(email, password)
 if result.organization_level:
-    # Acts on any tenant of its organization by sending a different
-    # `X-Tenant-ID` on the next request. No re-login: it already is a
-    # principal of every tenant there.
+    # Acts on any tenant of its organization via client.acting_tenant(...)
+    # (§5.2 rule 1, below) — no re-login: it already is a principal of
+    # every tenant there.
     ...
 ```
 
 Check it *before* offering a tenant switch. An ordinary tenant principal is a
-principal of exactly one tenant, and changing the header for one of those
-produces a `403` — so a UI that offers the switch to everyone has turned a
-distinction the server made into a failure the user discovers. `False` against a
-server older than contract 1.31, which is the safe reading of absent.
+principal of exactly one tenant, and switching for one of those produces a
+`403` — so a UI that offers the switch to everyone has turned a distinction
+the server made into a failure the user discovers. `False` against a server
+older than contract 1.31, which is the safe reading of absent.
+
+#### Acting on another tenant (§5.2 rule 1)
+
+`X-Axiam-Tenant` is what actually switches the tenant an organization-level
+principal acts on — **not** `X-Tenant-ID` (§5 rule 2), which every request
+sends unconditionally and which the server does not read as a switch:
+
+```python
+client = AxiamClient(base_url="https://iam.example.com", tenant_slug="organization")
+client.login("root@example.com", password)  # organization_level: True
+
+acme = client.acting_tenant(acme_tenant_id)  # a new handle; `client` is unchanged
+acme.resources.list()  # X-Axiam-Tenant: <acme_tenant_id>
+client.resources.list()  # no X-Axiam-Tenant -- acts on the org's own scope
+
+acme.clear_acting_tenant()  # or: back to the org's own scope
+```
+
+- **Construction-time form**, `AxiamClient(acting_tenant=...)`, is for a client
+  built to always act on a known tenant — a provisioning script, say. Nothing
+  is checked at construction (there is no login yet to check against), so a
+  malformed value is still refused as a non-UUID, but the organization-level /
+  `reachable_tenant_ids` gate below does not apply until a login result is
+  held.
+- **`client.acting_tenant(tenant_id)`** returns a *new handle* sharing the
+  session (cookie jar, refresh guard, decision memo) with `client` — `client`
+  itself is unchanged, so two handles can act on two tenants at once over one
+  session. Once this client holds a login result that reported the
+  principal's reach, it refuses **client-side, with no wire call**
+  (`AuthzError`), unless `organization_level` is `True`, and refuses a
+  tenant outside `reachable_tenant_ids` when the login reported one (§5.2.3
+  rule 4). **What "holds a login result" covers**: `login`, `verify_mfa`,
+  `login_opaque` and `mfa_setup_confirm` all report the principal's reach —
+  so does completing a forced WebAuthn *setup* — because their responses
+  all carry the same user object, through the same internal handler. A
+  client that has only completed a WebAuthn *authentication*, an SSO
+  sign-in, or the mTLS device login — or that holds an injected token or a
+  service account from client credentials — has nothing to gate on: the
+  header is sent regardless, and the server's `403` is the answer. (This
+  differs from the Rust reference, which treats OPAQUE and the setup flows
+  the same as those: their responses carry no less of a user object here,
+  so gating on it is tighter than gating on nothing.)
+- It is **REST-only**: the gRPC interceptor reads no acting-tenant metadata
+  and acts on the token's tenant regardless of what this says.
+- It never changes `X-Tenant-ID`, and never changes a `{tenant_id}` path
+  segment on a management call (§27.4 rule 3) — pass that id explicitly to
+  address a tenant other than the client's own.
 
 #### Signing one in (§5.2.1)
 
@@ -1492,7 +1587,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-160 administrative operations across 24 namespaces, reached as
+162 administrative operations across 24 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 
@@ -1620,12 +1715,76 @@ if not plan.is_converged():
 `define_manifest` validates at the point of declaration, so a dangling key, a
 duplicate, or a cycle in the resource parents fails where the manifest is
 *written* rather than on the first plan against a live tenant. The decorator form
-(`@axiam_resource`, `@axiam_role`, `@axiam_grant`, ... assembled by
-`collect_manifest`) lowers to exactly the same value.
+(`@axiam_resource`, `@axiam_role`, `@axiam_grant`, `@axiam_service_account`, ...
+assembled by `collect_manifest`) lowers to exactly the same value.
 
 Certificates, CA certificates, PGP keys and SCIM tokens are deliberately absent
 from the manifest: they mint one-time secrets, and "ensure a certificate exists"
-either re-mints one on every run or silently accepts drift.
+either re-mints one on every run or silently accepts drift. `webhooks` stays
+named by CONTRACT.md §27.6 but unspecified in contract 1.51 — this SDK declines
+it; no consumer has asked for it.
+
+#### `resources[].metadata`, resource-scoped bindings, and `service_accounts` (§27.6.1, contract 1.51)
+
+```python
+from axiam_sdk.management.manifest import (
+    GroupSpec,
+    ManagementManifest,
+    ResourceSpec,
+    RoleSpec,
+    ScopedRoleBinding,
+    ServiceAccountSpec,
+)
+
+shape = ManagementManifest(
+    resources=[
+        ResourceSpec(
+            key="docs",
+            name="documents",
+            resource_type="collection",
+            metadata={"owner": "platform-team"},  # sent on Create; on Update only when it drifts
+        ),
+    ],
+    roles=[RoleSpec(key="editor", name="Editor", description="Edits documents")],
+    groups=[
+        GroupSpec(
+            key="staff",
+            name="Staff",
+            description="Everyone",
+            roles=(
+                "editor",  # the plain shape -- unchanged, no resource, no inheritance question
+                ScopedRoleBinding(role="editor", resource="docs", inherit=False),
+            ),
+        ),
+    ],
+    service_accounts=[
+        ServiceAccountSpec(key="ci", name="ci-bot", description="CI pipeline", roles=("editor",)),
+    ],
+)
+
+report = client.manifest.apply(shape)
+secret = report.client_secret("ci")  # only set on THIS spec's Create outcome
+if secret is not None:
+    store_for_the_ci_pipeline(secret.get_secret_value())  # returned once -- the only time
+```
+
+- **`metadata` drift is JSON equality of the whole object**, never a
+  key-by-key merge — an `Update` carries the whole stated object, and a
+  `ResourceSpec` that never mentions `metadata` is silent about it, never a
+  request to clear it.
+- **A `RoleBinding`** (`GroupSpec.roles`, `UserSpec.roles`,
+  `ServiceAccountSpec.roles`) **is a role key or a `ScopedRoleBinding`.** A
+  subject holds one role at most once — binding the same role twice, plain
+  and scoped included, is rejected by `plan()`/`apply()` before any request.
+  Changing a binding's resource is an unassign then an assign; if the assign
+  fails, the previous binding is re-assigned and the step's outcome names
+  both. `inherit` reaches the wire only as `False`.
+- **`service_accounts` is reconciled by `name`**, which the server does not
+  enforce uniqueness on: `plan()` fails, before any write, when a stated
+  name matches more than one existing account. A `Create`'s one-time
+  `client_secret` is on `ApplyReport.client_secret(key)` — set even when a
+  *later* step of the same `apply` fails — and `apply` never rotates one to
+  reconcile: a second `apply` against an unchanged tenant is `NoChange`.
 
 ### Regenerating the surface
 
@@ -1737,6 +1896,51 @@ private key is secret material: it is loaded straight into the TLS stack and is
 never logged, stored as a public attribute, or exposed via a getter (`§6.1`
 rule 3 / `§7`). The gRPC authorization clients accept the same
 `client_cert=`/`client_key=` parameters.
+
+#### The mTLS device login (§6.1 rules 6–10, contract 1.51)
+
+`authenticate_device()` is the operation the identity above is *for*:
+`POST /api/v1/auth/device`, no body, no password, no cookie — the certificate
+alone authenticates.
+
+```python
+device = AxiamClient(
+    base_url="https://axiam.example.com",
+    tenant_slug="acme",
+    client_cert=client_cert,
+    client_key=client_key,
+)
+token = device.authenticate_device()
+print(f"expires in {token.expires_in}s")
+
+device.can("telemetry:publish", f"device/{device_name}")  # adopted, like a login result
+```
+
+- **Reachable only on a client built with a certificate.** Without one, this
+  raises `AuthError` before any wire call — going to the wire would only get
+  a `401` the SDK already knows is coming.
+- **Adopted as the credential**, replacing the cookie jar rather than living
+  beside it: the server sets no cookie on this route and reads
+  `axiam_access` before `Authorization`, so a cookie left from an earlier
+  `login()` on the same client would otherwise silently win. Every request
+  made after `authenticate_device()` carries `Authorization: Bearer <token>`
+  plus an explicit empty `Cookie` header.
+- **There is no refresh token** (D-6 of the dogfooding remediation plan). A
+  later `401` on this credential is `AuthError`, with no refresh attempt —
+  call `authenticate_device()` again, which costs one TLS handshake.
+- **Every refusal is a `401`** — unknown, untrusted, expired, revoked or
+  unbound certificate, or a `Server`-type one — mapped to `AuthError` with
+  the server's own message. A `429` (the route is rate-limited per client
+  IP) is a `NetworkError`, not an authentication failure, and is not
+  retried.
+- The token is a service-account token (`aud: axiam:m2m`): it works with
+  `check_access`/`batch_check` and the §27 management families a service
+  account may use (§27.13 S-9) — not with `users`/`groups`/self-service
+  routes.
+
+Worked example:
+[`examples/device_mtls_provisioning.py`](examples/device_mtls_provisioning.py)
+(`run`).
 
 #### RFC 8705 §5 `mtls_endpoint_aliases` (contract 1.40, CONTRACT.md §21.3 rule 2)
 

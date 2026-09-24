@@ -147,6 +147,14 @@ def run(device_name: str) -> None:
     No password, no management surface, no secret in the environment — the
     private key on disk *is* the credential. Presenting it never relaxes server
     verification (§6.1 rule 2): strict TLS stays fully on.
+
+    ``authenticate_device()`` (CONTRACT.md §6.1 rules 6-10, contract 1.51) is
+    the mTLS device login: it issues ``POST /api/v1/auth/device`` — no
+    password, no cookie — and adopts the returned access token as this
+    client's credential, exactly as a successful ``login()`` would be. There
+    is no refresh token (D-6 of the dogfooding remediation plan): a device
+    re-authenticates by calling ``authenticate_device()`` again, which costs
+    one TLS handshake — cheap next to the private key it already holds.
     """
     cert_path = IDENTITY_DIR / f"{device_name}-cert.pem"
     key_path = IDENTITY_DIR / f"{device_name}-key.pem"
@@ -160,6 +168,9 @@ def run(device_name: str) -> None:
         client_cert=cert_path.read_bytes(),
         client_key=key_path.read_bytes(),
     ) as device:
+        token = device.authenticate_device()
+        print(f"authenticated as {device_name}; token expires in {token.expires_in}s")
+
         allowed = device.can("telemetry:publish", f"device/{device_name}")
         print(f"{device_name} may publish telemetry: {allowed}")
 

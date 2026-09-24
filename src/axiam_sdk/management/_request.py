@@ -97,7 +97,7 @@ def send_management(client: AxiamClient, call: ManagementCall) -> Any:
             call.method, call.path, params=call.params(), json=call.body
         )
         with client._telemetry.request(call.operation, call.method, call.path_template, n) as span:
-            response = client._session._send_sync(request)
+            response = client._rest_send_sync(request)
             if response.status_code == httpx.codes.UNAUTHORIZED:
                 response = client._retry_after_refresh_sync(request)
             span.status = response.status_code
@@ -126,7 +126,7 @@ async def send_management_async(client: AsyncAxiamClient, call: ManagementCall) 
             call.method, call.path, params=call.params(), json=call.body
         )
         with client._telemetry.request(call.operation, call.method, call.path_template, n) as span:
-            response = await client._session._send_async(request)
+            response = await client._rest_send_async(request)
             if response.status_code == httpx.codes.UNAUTHORIZED:
                 response = await client._retry_after_refresh_async(request)
             span.status = response.status_code

@@ -10,7 +10,7 @@
       "name": "Apache-2.0"
     },
     "version": "1.0.0-beta16",
-    "x-axiam-spec-digest": "sha256:c48b156f6f610f479da977a24ef4bdd7ae6cc864e64aaa40332c3b635a557d03"
+    "x-axiam-spec-digest": "sha256:3d096f0aaff9cdad0bc48e3a47e8ac5149a7b930765e4ad252aba92bce879210"
   },
   "paths": {
     "/.well-known/oauth-authorization-server": {
@@ -895,7 +895,7 @@
         "operationId": "device_auth",
         "responses": {
           "200": {
-            "description": "Device authenticated",
+            "description": "Device authenticated. The access token is bound to the presented certificate (RFC 8705 `cnf.x5t#S256`) whenever AXIAM itself terminated the TLS handshake",
             "content": {
               "application/json": {
                 "schema": {
@@ -905,10 +905,7 @@
             }
           },
           "401": {
-            "description": "Invalid or missing certificate"
-          },
-          "403": {
-            "description": "Certificate not bound to a service account"
+            "description": "The certificate is missing, unknown, untrusted, expired, revoked, or bound to no service account. A certificate bound to no principal identifies nobody, so it is unauthenticated rather than forbidden; the body says which case it was"
           }
         }
       }
@@ -2165,6 +2162,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -2208,6 +2208,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -2315,6 +2318,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -2344,11 +2350,20 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid request: the subject is not a common name, the validity exceeds a cap, or the names are refused — `subject_alt_names` on a type other than `Server`, a `Server` request with none, or a SAN or common name not admitted by the tenant's `server_cert_allowed_names` (empty by default, which refuses every `Server` request)"
+          },
+          "404": {
+            "description": "No such issuing CA within this caller's reach: it belongs to another organization, to another tenant, or is the organization CA and the caller is not an organization principal"
           }
         },
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -2383,7 +2398,7 @@
             }
           },
           "400": {
-            "description": "The request is not a PEM PKCS#10 CSR, its signature does not verify against the public key it carries, its key is outside AXIAM's policy (Ed25519, or RSA with a modulus of at least 4096 bits), it asks for a `subjectAltName`, `keyUsage` or `extendedKeyUsage` extension, or the validity exceeds the tenant cap, the 825-day hard cap, or the issuer's own expiry"
+            "description": "The request is not a PEM PKCS#10 CSR, its signature does not verify against the public key it carries, its key is outside AXIAM's policy (Ed25519, or RSA with a modulus of at least 4096 bits), it asks for a `subjectAltName`, `keyUsage` or `extendedKeyUsage` extension, the validity exceeds the tenant cap, the 825-day hard cap, or the issuer's own expiry, or the names are refused (see `POST /api/v1/certificates`; a `Server` request is also refused under a `vault_pki` CA)"
           },
           "401": {
             "description": "Unauthorized"
@@ -2392,12 +2407,15 @@
             "description": "Forbidden — `certificates:generate` required"
           },
           "404": {
-            "description": "No such issuing CA in this organization"
+            "description": "No such issuing CA within this caller's reach: it belongs to another organization, to another tenant, or is the organization CA and the caller is not an organization principal"
           }
         },
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -2436,6 +2454,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -2467,6 +2488,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3226,6 +3250,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -3260,6 +3287,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3301,6 +3331,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -3350,6 +3383,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -3382,6 +3418,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3550,6 +3589,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -3589,6 +3631,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3630,6 +3675,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3672,6 +3720,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3815,6 +3866,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -3860,6 +3914,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -3901,6 +3958,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -5148,7 +5208,7 @@
                           },
                           "subject": {
                             "type": "string",
-                            "description": "The certificate subject (e.g., `CN=ACME Corp Root CA`)."
+                            "description": "The CA's common name, e.g. `ACME Corp Root CA`.\n\nThe normalised value: a `CN=` prefix in the request is understood and\nstripped, so this always says what the certificate's subject DN says\n(DF-023)."
                           },
                           "tenant_id": {
                             "type": [
@@ -6303,7 +6363,7 @@
                           },
                           "subject": {
                             "type": "string",
-                            "description": "The certificate subject (e.g., `CN=ACME Corp Root CA`)."
+                            "description": "The CA's common name, e.g. `ACME Corp Root CA`.\n\nThe normalised value: a `CN=` prefix in the request is understood and\nstripped, so this always says what the certificate's subject DN says\n(DF-023)."
                           },
                           "tenant_id": {
                             "type": [
@@ -6585,6 +6645,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -6619,6 +6682,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -6660,6 +6726,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -6709,6 +6778,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -6741,6 +6813,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7560,6 +7635,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -7594,6 +7672,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7635,6 +7716,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -7684,6 +7768,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -7716,6 +7803,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7757,6 +7847,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7798,6 +7891,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7839,6 +7935,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -7885,6 +7984,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -7936,6 +8038,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -7995,6 +8100,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8037,6 +8145,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8164,6 +8275,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8198,6 +8312,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8239,6 +8356,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8288,6 +8408,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8320,6 +8443,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8362,6 +8488,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8401,6 +8530,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8455,6 +8587,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8496,6 +8631,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8535,6 +8673,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8576,6 +8717,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8617,6 +8761,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8659,6 +8806,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8713,6 +8863,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8755,6 +8908,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -8794,6 +8950,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -8848,6 +9007,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9079,6 +9241,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -9113,6 +9278,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9154,6 +9322,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -9203,6 +9374,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -9235,6 +9409,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9271,11 +9448,17 @@
         "responses": {
           "200": {
             "description": "Certificate bound to service account"
+          },
+          "400": {
+            "description": "The certificate cannot authenticate anything: it is not Active, it has expired, or it is a `Server` certificate"
           }
         },
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9317,6 +9500,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9358,6 +9544,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -9402,6 +9591,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -10402,6 +10594,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -10629,6 +10824,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -10663,6 +10861,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -10701,6 +10902,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -10747,6 +10951,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       },
@@ -10776,6 +10983,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "service_account": []
           }
         ]
       }
@@ -12104,6 +12314,13 @@
             "type": "string",
             "format": "uuid"
           },
+          "inherit": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the assignment also reaches the descendants of `resource_id`.\n\nOmitted — the default — or `true` is today's behaviour: a\nresource-scoped assignment applies at its resource and everywhere below\nit. `false` applies it at `resource_id` only, \"here and no further\",\nfor allow and deny grants alike.\n\nRefused with 400 when `false` is sent with no `resource_id` (a\ntenant-wide assignment has no node to stop at) or for a role with\n`is_global: true` (a global role applies everywhere by definition).\nThe flag is part of the assignment: to change it, unassign and assign\nagain."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -12130,6 +12347,13 @@
           "service_account_id"
         ],
         "properties": {
+          "inherit": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the assignment also reaches the descendants of `resource_id`.\n\nOmitted — the default — or `true` is today's behaviour: a\nresource-scoped assignment applies at its resource and everywhere below\nit. `false` applies it at `resource_id` only, \"here and no further\",\nfor allow and deny grants alike.\n\nRefused with 400 when `false` is sent with no `resource_id` (a\ntenant-wide assignment has no node to stop at) or for a role with\n`is_global: true` (a global role applies everywhere by definition).\nThe flag is part of the assignment: to change it, unassign and assign\nagain."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -12160,6 +12384,13 @@
           "user_id"
         ],
         "properties": {
+          "inherit": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the assignment also reaches the descendants of `resource_id`.\n\nOmitted — the default — or `true` is today's behaviour: a\nresource-scoped assignment applies at its resource and everywhere below\nit. `false` applies it at `resource_id` only, \"here and no further\",\nfor allow and deny grants alike.\n\nRefused with 400 when `false` is sent with no `resource_id` (a\ntenant-wide assignment has no node to stop at) or for a role with\n`is_global: true` (a global role applies everywhere by definition).\nThe flag is part of the assignment: to change it, unassign and assign\nagain."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -12523,7 +12754,7 @@
           },
           "subject": {
             "type": "string",
-            "description": "The certificate subject (e.g., `CN=ACME Corp Root CA`)."
+            "description": "The CA's common name, e.g. `ACME Corp Root CA`.\n\nThe normalised value: a `CN=` prefix in the request is understood and\nstripped, so this always says what the certificate's subject DN says\n(DF-023)."
           },
           "tenant_id": {
             "type": [
@@ -12599,7 +12830,7 @@
           },
           "subject": {
             "type": "string",
-            "description": "The certificate subject (e.g., `CN=device-001`)."
+            "description": "The certificate's common name, e.g. `device-001`.\n\nThe normalised value: a `CN=` prefix in the request is understood and\nstripped, so this always says what the certificate's subject DN says\n(DF-023)."
           },
           "tenant_id": {
             "type": "string",
@@ -12648,6 +12879,13 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "server_cert_allowed_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names a `Server` certificate may be issued for (S-7, DF-001): DNS\nsuffixes (`.lakeside.internal`, strictly below), exact hosts\n(`lakeside.internal`) and IP prefixes (`10.0.0.0/8`, `fd00::/8`). See\n[`crate::models::server_names`] for the matching rules.\n\n**Empty by default, and empty refuses every `Server` request** (I1).\nA certificate for a name, signed under the organization root, is trusted\nby every relying party that trusts that root, so the list is written\nwhere the root is owned. A tenant override may only remove an entry or\nnarrow one; when the baseline later shrinks, the tenant's effective list\nis the intersection of the two."
           }
         }
       },
@@ -12666,7 +12904,8 @@
         "enum": [
           "User",
           "Service",
-          "Device"
+          "Device",
+          "Server"
         ]
       },
       "CertificationLevel": {
@@ -13009,7 +13248,8 @@
             "format": "uuid"
           },
           "subject": {
-            "type": "string"
+            "type": "string",
+            "description": "The CA's common name, e.g. `ACME Corp Root CA`.\n\nA **common name**, not a distinguished name. A single `CN=` prefix is\naccepted and stripped; anything else containing `=` — `O=Acme,\nCN=ACME Corp Root CA` — is refused with `400`, because the certificate\nhas one CN and silently discarding the rest would be worse than saying\nso."
           },
           "validity_days": {
             "type": "integer",
@@ -13051,7 +13291,8 @@
             "$ref": "#/components/schemas/KeyAlgorithm"
           },
           "subject": {
-            "type": "string"
+            "type": "string",
+            "description": "The CA's common name, e.g. `ACME Corp Root CA`.\n\nA **common name**, not a distinguished name. A single `CN=` prefix is\naccepted and stripped; anything else containing `=` — `O=Acme,\nCN=ACME Corp Root CA` — is refused with `400`."
           },
           "validity_days": {
             "type": "integer",
@@ -13084,7 +13325,15 @@
           },
           "metadata": {},
           "subject": {
-            "type": "string"
+            "type": "string",
+            "description": "The certificate's common name, e.g. `device-001`.\n\nA **common name**, not a distinguished name. A single `CN=` prefix is\naccepted and stripped; anything else containing `=` is refused with\n`400`."
+          },
+          "subject_alt_names": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubjectAltName"
+            },
+            "description": "The names a `Server` certificate is issued for. Required, and only\naccepted, for `cert_type: Server`; every entry must be admitted by the\ntenant's effective `server_cert_allowed_names`."
           },
           "tenant_id": {
             "type": "string",
@@ -13121,6 +13370,16 @@
           "metadata": {},
           "subject": {
             "type": "string"
+          },
+          "subject_alt_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SubjectAltName"
+            },
+            "description": "The names a `Server` certificate is issued for, as\n`[{\"dns\": \"api.lakeside.internal\"}, {\"ip\": \"10.0.0.5\"}]`. Required for\n`cert_type: Server` and refused for every other type. Each name, and\nthe common name, must be admitted by the tenant's effective\n`server_cert_allowed_names`, which is empty — refusing every `Server`\nrequest — until an organization administrator lists names."
           },
           "validity_days": {
             "type": "integer",
@@ -13347,7 +13606,7 @@
           },
           "subject": {
             "type": "string",
-            "description": "The intermediate's subject (e.g., `CN=ACME R&D Signing CA`)."
+            "description": "The intermediate's common name, e.g. `ACME R&D Signing CA`.\n\nA **common name**, not a distinguished name; see\n[`CreateCaCertificate::subject`] for what is accepted."
           },
           "tenant_id": {
             "type": "string",
@@ -13382,7 +13641,7 @@
           },
           "subject": {
             "type": "string",
-            "description": "Subject for the signing CA, e.g. `CN=ACME R&D Signing CA`."
+            "description": "The signing CA's common name, e.g. `ACME R&D Signing CA`.\n\nA **common name**, not a distinguished name. A single `CN=` prefix is\naccepted and stripped; anything else containing `=` is refused with\n`400`."
           },
           "validity_days": {
             "type": "integer",
@@ -18427,6 +18686,10 @@
           "role"
         ],
         "properties": {
+          "inherit": {
+            "type": "boolean",
+            "description": "Whether the assignment reaches the descendants of `resource_id` as\nwell as the resource itself (`true`, the default, and the value of every\nassignment written before the field existed) or applies at that\nresource only (`false`)."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -18455,12 +18718,17 @@
         "type": "object",
         "description": "A group together with the resource scope of its assignment of this role.",
         "required": [
-          "group"
+          "group",
+          "inherit"
         ],
         "properties": {
           "group": {
             "$ref": "#/components/schemas/Group",
             "description": "The assigned group."
+          },
+          "inherit": {
+            "type": "boolean",
+            "description": "Whether the assignment also reaches the descendants of `resource_id`\n(`true`, the default) or applies at that resource only (`false`)."
           },
           "resource_id": {
             "type": [
@@ -18487,9 +18755,14 @@
         "type": "object",
         "description": "A service account together with the resource scope of its assignment.",
         "required": [
-          "service_account"
+          "service_account",
+          "inherit"
         ],
         "properties": {
+          "inherit": {
+            "type": "boolean",
+            "description": "Whether the assignment also reaches the descendants of `resource_id`\n(`true`, the default) or applies at that resource only (`false`)."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -18519,9 +18792,14 @@
         "type": "object",
         "description": "A user together with the resource scope of their assignment of this role.",
         "required": [
-          "user"
+          "user",
+          "inherit"
         ],
         "properties": {
+          "inherit": {
+            "type": "boolean",
+            "description": "Whether the assignment also reaches the descendants of `resource_id`\n(`true`, the default) or applies at that resource only (`false`)."
+          },
           "resource_id": {
             "type": [
               "string",
@@ -19209,6 +19487,13 @@
             "type": "boolean",
             "example": false
           },
+          "server_cert_allowed_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "S-7 — defaulted to empty, so an API client written before the field\nlands on \"no `Server` certificate is issued\" (I1)."
+          },
           "webauthn_user_verification": {
             "type": "string",
             "example": "preferred"
@@ -19298,6 +19583,13 @@
             "description": "The signing CA that issues it. Must be Active, in its validity window,\nand hold a key AXIAM can sign with."
           },
           "metadata": {},
+          "subject_alt_names": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubjectAltName"
+            },
+            "description": "See [`CreateCertificate::subject_alt_names`]. Stated here, never in the\nCSR: a CSR requesting `subjectAltName` is refused."
+          },
           "tenant_id": {
             "type": "string",
             "format": "uuid",
@@ -19333,6 +19625,16 @@
             "format": "uuid"
           },
           "metadata": {},
+          "subject_alt_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SubjectAltName"
+            },
+            "description": "See [`CreateCertificateRequest::subject_alt_names`]. Stated here and\nnever in the CSR, which is still refused if it requests a\n`subjectAltName`. Under a CA whose key is held by `vault_pki` a `Server`\nrequest on this path is refused; use `POST /api/v1/certificates`."
+          },
           "validity_days": {
             "type": "integer",
             "format": "int32",
@@ -19586,6 +19888,37 @@
             "type": "string"
           }
         }
+      },
+      "SubjectAltName": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A DNS name, e.g. `api.lakeside.internal` or `*.lakeside.internal`.",
+            "required": [
+              "dns"
+            ],
+            "properties": {
+              "dns": {
+                "type": "string",
+                "description": "A DNS name, e.g. `api.lakeside.internal` or `*.lakeside.internal`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An IPv4 or IPv6 address, e.g. `10.0.0.5`.",
+            "required": [
+              "ip"
+            ],
+            "properties": {
+              "ip": {
+                "type": "string",
+                "description": "An IPv4 or IPv6 address, e.g. `10.0.0.5`."
+              }
+            }
+          }
+        ],
+        "description": "A name to put in a `Server` certificate's `subjectAltName`.\n\nStated explicitly in the request, never read from a CSR: a CSR asking for a\n`subjectAltName` extension is still refused. URI and e-mail names are not\noffered — nothing in AXIAM consumes them yet."
       },
       "Tenant": {
         "type": "object",
@@ -19892,6 +20225,16 @@
               "boolean",
               "null"
             ]
+          },
+          "server_cert_allowed_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "S-7 — tighten-only: every entry must be covered by an organization\nentry. An empty list means this tenant issues no `Server` certificate\nat all, which is different from an absent field (inherit the\norganization's list)."
           },
           "webauthn_user_verification": {
             "type": [
@@ -21802,7 +22145,14 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "JWT"
+        "bearerFormat": "JWT",
+        "description": "An AXIAM access token issued to a user (`aud` = `axiam:user`), from the `axiam_access` cookie or the `Authorization` header."
+      },
+      "service_account": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An AXIAM access token issued to a service account (`aud` = `axiam:m2m`, `sub_kind` = `service_account`), from client credentials or the mTLS device login. Accepted only by the operations that list this scheme — the management families resources, scopes, permissions, roles, groups, service accounts, certificates and webhooks, and the authorization checks — and authorized there by the roles assigned to the account, exactly as a user is. `X-Axiam-Tenant` is honoured only for an account living in the organization scope, as for a user; a service account never issues under the organization CA. A certificate-bound token (`cnf.x5t#S256`) must be presented over mTLS with that certificate."
       }
     }
   },

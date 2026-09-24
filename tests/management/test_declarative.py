@@ -20,6 +20,7 @@ from axiam_sdk.management.manifest import (
     ResourceSpec,
     RoleSpec,
     ScopeSpec,
+    ServiceAccountSpec,
     UserSpec,
     axiam_grant,
     axiam_group,
@@ -27,6 +28,7 @@ from axiam_sdk.management.manifest import (
     axiam_resource,
     axiam_role,
     axiam_scope,
+    axiam_service_account,
     axiam_user,
     collect_manifest,
     define_manifest,
@@ -232,3 +234,23 @@ def test_a_declared_password_stays_out_of_every_rendering() -> None:
     password = manifest.users[0].initial_password
     assert password is not None
     assert password.get_secret_value() == "correct-horse-battery"
+
+
+# ---------------------------------------------------------------------------
+# axiam_service_account (CONTRACT §27.6.1 addition 3, contract 1.51)
+# ---------------------------------------------------------------------------
+
+CI_BOT = ServiceAccountSpec(key="bot", name="ci-bot", description="CI")
+"""The service account both forms declare."""
+
+
+@axiam_service_account(CI_BOT)
+class CiBot:
+    """A service account, declared with the same decorator shape as a user."""
+
+
+def test_a_decorated_service_account_assembles_like_its_value_form() -> None:
+    collected = collect_manifest(CiBot)
+    literal = define_manifest(service_accounts=[CI_BOT])
+    assert collected == literal
+    assert collected.service_accounts == (CI_BOT,)

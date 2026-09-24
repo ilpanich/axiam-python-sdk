@@ -35,10 +35,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROTO_DIR="${REPO_ROOT}/proto/axiam/v1"
 OUT_DIR="${REPO_ROOT}/src/axiam_sdk/grpc/gen"
 # Every service proto that gets Python client stubs. `userinfo.proto`
-# (CONTRACT.md §1.1, added 2026-07) joins `authorization.proto` here; both
-# emit flat into OUT_DIR and both need the Pitfall-1 package-relative import
-# fixup below on their generated `_pb2_grpc.py`.
-PROTO_FILES=("authorization.proto" "userinfo.proto")
+# (CONTRACT.md §1.1, added 2026-07) joins `authorization.proto` here; `token.proto`
+# (CONTRACT.md §1.1.1 / §10.3, contract 1.51) joins them for `validate_token`/
+# `introspect_token`. All three emit flat into OUT_DIR and all need the
+# Pitfall-1 package-relative import fixup below on their generated
+# `_pb2_grpc.py`.
+PROTO_FILES=("authorization.proto" "userinfo.proto" "token.proto")
 
 mkdir -p "${OUT_DIR}"
 

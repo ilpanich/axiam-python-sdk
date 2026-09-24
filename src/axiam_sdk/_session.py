@@ -29,6 +29,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from pydantic import SecretStr
 
 from axiam_sdk._tls_identity import normalize_pem, validate_client_identity
 from axiam_sdk.token.refresh_guard import RefreshGuard
@@ -175,11 +176,58 @@ class _Session:
         self._sync_client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
 
+        # CONTRACT.md §18 shutdown flag, shared by every AxiamClient/
+        # AsyncAxiamClient handle over this session (CONTRACT.md §5.2 rule 1
+        # -- `acting_tenant()`/`clear_acting_tenant()` return a new handle
+        # over the SAME session). A handle keeps its own `_closed` too, for
+        # `close()` called on that handle directly; this one is what makes a
+        # close on ANY handle close the shared httpx transport for all of
+        # them, so a sibling handle fails with the clean `_ensure_open`
+        # NetworkError rather than a raw closed-transport error from httpx.
+        self.closed = False
+
         # Shared single-flight refresh guard (19-02) — one instance for
         # both the sync and async REST call paths on this session.
         self.refresh_guard = RefreshGuard()
 
         self._logger = logger
+
+        # CONTRACT.md §6.1 rule 6 (contract 1.51) — the mTLS device login's
+        # adopted credential, sent as `Authorization: Bearer` on every
+        # subsequent request rather than through the cookie jar. `None`
+        # until `authenticate_device()` adopts one. Held here, not on the
+        # AxiamClient/AsyncAxiamClient handle, for the same reason the
+        # cookie jar is: it names the SESSION's identity, and every handle
+        # sharing this session (CONTRACT.md §5.2 rule 1) shares one identity.
+        self.bearer_token: SecretStr | None = None
+
+    def adopt_bearer_credential(self, token: SecretStr) -> None:
+        """Adopt *token* as this session's credential (§6.1 rule 6) in place
+        of the cookie jar.
+
+        The jar is cleared first. The server sets no cookie on
+        ``POST /api/v1/auth/device``, and REST authentication until 1.51 was
+        cookie-only — so a cookie left from an EARLIER session would
+        otherwise silently win over the bearer header at the point the
+        request actually reaches the server (§4/§5's own choke point merges
+        jar cookies into every request at build time), and the request would
+        run as that earlier session's principal. Clearing removes that
+        possibility rather than relying on every call site to override it;
+        :meth:`~axiam_sdk._client._AxiamClientBase._apply_bearer_credential`
+        additionally sends an explicit empty ``Cookie`` header on every
+        request while a bearer credential is held, so the two defences do
+        not depend on each other. The refresh guard is reset too: §6.1 rule
+        6 gives this credential no refresh token, so an earlier session's
+        `observed` baseline must not survive into one that has nothing to
+        refresh against.
+        """
+        self._cookies.jar.clear()
+        self.refresh_guard = RefreshGuard()
+        self.bearer_token = token
+
+    def clear_bearer_credential(self) -> None:
+        """Forget the adopted device credential, if any."""
+        self.bearer_token = None
 
     def _build_mtls_context(
         self,
@@ -428,11 +476,13 @@ class _Session:
     def close(self) -> None:
         """Close the sync httpx client, if constructed (D-19). Never
         constructs a client merely to close it."""
+        self.closed = True
         if self._sync_client is not None:
             self._sync_client.close()
 
     async def aclose(self) -> None:
         """Close the async httpx client, if constructed (D-19). Never
         constructs a client merely to close it."""
+        self.closed = True
         if self._async_client is not None:
             await self._async_client.aclose()

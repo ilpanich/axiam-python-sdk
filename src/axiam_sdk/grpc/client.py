@@ -17,14 +17,24 @@ from typing import cast
 
 import grpc
 import grpc.aio
+from pydantic import SecretStr
 
 from axiam_sdk._errors import AuthError, error_from_grpc_status
-from axiam_sdk._models import AccessResult, UserInfo
+from axiam_sdk._models import (
+    AccessResult,
+    RptPermission,
+    TokenCnf,
+    TokenIntrospection,
+    TokenValidation,
+    UserInfo,
+)
 from axiam_sdk.grpc._interceptor import AsyncAuthInterceptor, SyncAuthInterceptor
 from axiam_sdk.grpc._tls import build_channel_credentials
 from axiam_sdk.grpc.gen import (
     authorization_pb2,
     authorization_pb2_grpc,
+    token_pb2,
+    token_pb2_grpc,
     userinfo_pb2,
     userinfo_pb2_grpc,
 )
@@ -109,6 +119,79 @@ def _to_user_info(response: userinfo_pb2.GetUserInfoResponse) -> UserInfo:
     )
 
 
+def _expose(value: SecretStr | str) -> str:
+    """Unwrap a ``SecretStr`` at the point of handing it to the transport
+    (§7) — a local one-shot rather than importing
+    ``axiam_sdk._client._expose_token``, which this module's docstring
+    already commits to never importing (no import cycle, D-12)."""
+    return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+
+def _to_cnf(
+    response: token_pb2.ValidateTokenResponse | token_pb2.IntrospectTokenResponse,
+) -> TokenCnf | None:
+    """Map a response's ``cnf`` sub-message to a typed
+    :class:`~axiam_sdk._models.TokenCnf`, or ``None`` when the field was not
+    set at all (CONTRACT.md §10.3 rule 3): absence of the whole ``cnf``
+    message means unbound, distinct from a present-but-empty one (which
+    :meth:`~axiam_sdk._models.TokenValidation.verify_possession` refuses,
+    never reading as unconstrained). ``HasField`` is what tells the two
+    apart — proto3 cannot distinguish an absent scalar from an empty one,
+    but ``cnf`` is a message field, which has explicit presence.
+    """
+    if not response.HasField("cnf"):
+        return None
+    return TokenCnf(
+        x5t_s256=response.cnf.x5t_s256 or None,
+        jkt=response.cnf.jkt or None,
+    )
+
+
+def _to_validation(response: token_pb2.ValidateTokenResponse) -> TokenValidation:
+    """Map a ``ValidateTokenResponse`` protobuf message to a typed
+    :class:`~axiam_sdk._models.TokenValidation` (CONTRACT.md §1.1.1 rule 3)
+    — every field the response defines, ``cnf`` included."""
+    return TokenValidation(
+        valid=response.valid,
+        subject_id=response.subject_id or None,
+        tenant_id=response.tenant_id or None,
+        org_id=response.org_id or None,
+        exp=response.exp or None,
+        cnf=_to_cnf(response),
+        token_type=response.token_type or None,
+    )
+
+
+def _to_introspection(response: token_pb2.IntrospectTokenResponse) -> TokenIntrospection:
+    """Map an ``IntrospectTokenResponse`` protobuf message to a typed
+    :class:`~axiam_sdk._models.TokenIntrospection` (CONTRACT.md §1.1.1
+    rule 3) — the RFC 7662 set, ``cnf``, ``permissions`` and
+    ``ext_exchange_iss`` included."""
+    return TokenIntrospection(
+        active=response.active,
+        sub=response.sub or None,
+        tenant_id=response.tenant_id or None,
+        org_id=response.org_id or None,
+        iss=response.iss or None,
+        iat=response.iat or None,
+        exp=response.exp or None,
+        jti=response.jti or None,
+        scope=response.scope or None,
+        client_id=response.client_id or None,
+        token_type=response.token_type or None,
+        cnf=_to_cnf(response),
+        permissions=tuple(
+            RptPermission(
+                resource_id=p.resource_id,
+                resource_scopes=list(p.resource_scopes),
+                exp=p.exp,
+            )
+            for p in response.permissions
+        ),
+        ext_exchange_iss=response.ext_exchange_iss or None,
+    )
+
+
 class AuthzGrpcClient:
     """Sync (``grpcio``) authorization client for ``CheckAccess``/
     ``BatchCheckAccess`` (CONTRACT.md §1).
@@ -170,10 +253,76 @@ class AuthzGrpcClient:
         self._userinfo_stub = userinfo_pb2_grpc.UserInfoServiceStub(  # type: ignore[no-untyped-call]
             self._channel
         )
+        self._token_stub = token_pb2_grpc.TokenServiceStub(  # type: ignore[no-untyped-call]
+            self._channel
+        )
 
     def close(self) -> None:
         """Close the underlying gRPC channel."""
         self._channel.close()
+
+    def validate_token(self, access_token: SecretStr | str) -> TokenValidation:
+        """``TokenService/ValidateToken`` — the gRPC-only token-validation
+        operation (CONTRACT.md §1.1.1, §10.3, contract 1.51).
+
+        *This client's own* bearer token authenticates the call, through the
+        interceptor, exactly as every other RPC on this channel. ``access_token``
+        is a **different** credential — the token being inspected — and
+        travels in the request message; the two are never the same value by
+        default (rule 1).
+
+        A no-token call (this client's own) raises
+        :class:`~axiam_sdk._errors.AuthError` client-side, **without** a wire
+        call (§1.1 rule 3, via §1.1.1 rule 2) — the interceptor's
+        UNAUTHENTICATED would otherwise send the call into the refresh guard
+        with nothing to refresh. On UNAUTHENTICATED for the caller's own
+        token, invokes the caller-supplied ``refresh_fn`` exactly once then
+        retries the RPC exactly once (§9.3), sharing
+        :meth:`check_access`'s single-flight-retry path.
+
+        The returned :class:`~axiam_sdk._models.TokenValidation` carries
+        **every** field the response defines, ``cnf`` included (rule 3):
+        ``valid: true`` means the signature/expiry/tenant check out, and is
+        **not** "usable as presented" — call
+        :meth:`~axiam_sdk._models.TokenValidation.verify_possession` before
+        trusting a result whose ``cnf`` is set (rule 4). A token from
+        another tenant decodes as ``valid: False`` with the other fields
+        empty, not an error (rule 6).
+        """
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = token_pb2.ValidateTokenRequest(access_token=_expose(access_token))
+        try:
+            response = self._token_stub.ValidateToken(wire)
+        except grpc.RpcError as exc:
+            response = self._retry_after_refresh(exc, lambda: self._token_stub.ValidateToken(wire))
+        return _to_validation(cast(token_pb2.ValidateTokenResponse, response))
+
+    def introspect_token(self, access_token: SecretStr | str) -> TokenIntrospection:
+        """``TokenService/IntrospectToken`` — the RFC 7662-shaped gRPC-only
+        introspection operation (CONTRACT.md §1.1.1, §10.3, contract 1.51).
+        See :meth:`validate_token` for the caller-token-vs-inspected-token
+        rules, the pre-flight ``AuthError``, and the retry path, which are
+        identical here.
+
+        The returned :class:`~axiam_sdk._models.TokenIntrospection` carries
+        the full RFC 7662 set plus ``cnf``, ``permissions`` (UMA 2.0, §20)
+        and ``ext_exchange_iss`` (X4 cross-domain provenance) — every field
+        the response defines (rule 3). ``active: true`` is **not** "usable
+        as presented"; call
+        :meth:`~axiam_sdk._models.TokenIntrospection.verify_possession`
+        before trusting a result whose ``cnf`` is set (rule 4).
+        """
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = token_pb2.IntrospectTokenRequest(access_token=_expose(access_token))
+        try:
+            response = self._token_stub.IntrospectToken(wire)
+        except grpc.RpcError as exc:
+            response = self._retry_after_refresh(
+                exc, lambda: self._token_stub.IntrospectToken(wire)
+            )
+        return _to_introspection(cast(token_pb2.IntrospectTokenResponse, response))
 
     def check_access(
         self, subject_id: str, action: str, resource_id: str, scope: str | None = None
@@ -292,11 +441,40 @@ class AsyncAuthzGrpcClient:
         self._userinfo_stub = userinfo_pb2_grpc.UserInfoServiceStub(  # type: ignore[no-untyped-call]
             self._channel
         )
+        self._token_stub = token_pb2_grpc.TokenServiceStub(  # type: ignore[no-untyped-call]
+            self._channel
+        )
 
     async def close(self) -> None:
         """Async twin of :meth:`AuthzGrpcClient.close` — closes the
         underlying ``grpc.aio`` channel."""
         await self._channel.close()
+
+    async def validate_token(self, access_token: SecretStr | str) -> TokenValidation:
+        """Async twin of :meth:`AuthzGrpcClient.validate_token`."""
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = token_pb2.ValidateTokenRequest(access_token=_expose(access_token))
+        try:
+            response = await self._token_stub.ValidateToken(wire)
+        except grpc.RpcError as exc:
+            response = await self._retry_after_refresh(
+                exc, lambda: self._token_stub.ValidateToken(wire)
+            )
+        return _to_validation(cast(token_pb2.ValidateTokenResponse, response))
+
+    async def introspect_token(self, access_token: SecretStr | str) -> TokenIntrospection:
+        """Async twin of :meth:`AuthzGrpcClient.introspect_token`."""
+        if not self._token_fn():
+            raise AuthError("no access token available; call login() first")
+        wire = token_pb2.IntrospectTokenRequest(access_token=_expose(access_token))
+        try:
+            response = await self._token_stub.IntrospectToken(wire)
+        except grpc.RpcError as exc:
+            response = await self._retry_after_refresh(
+                exc, lambda: self._token_stub.IntrospectToken(wire)
+            )
+        return _to_introspection(cast(token_pb2.IntrospectTokenResponse, response))
 
     async def check_access(
         self, subject_id: str, action: str, resource_id: str, scope: str | None = None

@@ -277,6 +277,84 @@ def discriminated(schema: Any) -> tuple[str, list[tuple[str, Any]]] | None:
     return (tag or "", arms)
 
 
+def externally_tagged(schema: Any) -> list[tuple[str, Any, str | None]] | None:
+    """Detect an **externally-tagged** ``oneOf``: a union whose variants carry
+    no shared discriminator field at all -- the wire key IS the tag, e.g.
+    ``SubjectAltName``'s ``{"dns": "..."}`` \\| ``{"ip": "..."}`` (CONTRACT
+    §27.13 S-7 rule 1, contract 1.51).
+
+    This is a different shape from :func:`discriminated`'s internally-tagged
+    union, where every variant carries the SAME field name set to a distinct
+    enum value. Here each variant is an object with exactly one *required*
+    property, and that property's *name* differs between variants -- there is
+    nothing else to distinguish them by. A schema of this shape that fell
+    through to :func:`flatten` would merge to no ``properties`` at all (no
+    variant has a top-level ``properties``/``allOf`` of its own to absorb),
+    producing a class with zero fields that serializes as ``{}`` -- which the
+    server refuses. (This was exactly that defect, caught re-vendoring
+    contract 1.51: fixed here rather than worked around at a call site, so
+    every schema of this shape gets it, not only this one.)
+
+    Returns one ``(key, value_schema, description)`` per variant, in
+    ``oneOf`` order, or ``None`` if the schema does not have this shape
+    (including: fewer than two variants, a variant that resolves to
+    something other than a plain object, a variant with zero or more than one
+    required property, a variant whose non-required properties differ from
+    its required one, or two variants naming the same key).
+    """
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list) or len(variants) < 2:
+        return None
+    arms: list[tuple[str, Any, str | None]] = []
+    seen: set[str] = set()
+    for variant in variants:
+        resolved = resolve_ref(variant) if "$ref" in variant else variant
+        if resolved.get("type") != "object":
+            return None
+        required = resolved.get("required") or []
+        props = resolved.get("properties") or {}
+        if len(required) != 1 or set(props) != set(required):
+            return None
+        key = required[0]
+        if key in seen:
+            return None
+        seen.add(key)
+        arms.append((key, props[key], resolved.get("description")))
+    return arms
+
+
+#: Hand-authored extra members appended to specific generated classes, keyed
+#: by the schema's PascalCase name. Used sparingly -- only where the wire
+#: shape alone cannot express a rule this contract states (as opposed to
+#: DEFAULT_TRUE_FIELDS above, which handles the case where a field's own
+#: default already can).
+#:
+#: ``RoleAssignment`` (the *subject*-side listings -- ``users.list_roles``,
+#: ``groups.list_roles``, ``service_accounts.list_roles``) carries `inherit`
+#: as genuinely **optional** on the wire (CONTRACT §27.13 S-10 rule 3), unlike
+#: the three role-side listings DEFAULT_TRUE_FIELDS covers -- so `None` is a
+#: real, correctly-decoded value here, not a defaulting gap. The rule is
+#: still "absent means true, never false", and that is a *reading* of the
+#: field, not the field's default; the model exposes it as a property so a
+#: caller who reads `.inherits` instead of `.inherit` cannot get it wrong.
+EXTRA_METHODS: dict[str, list[str]] = {
+    "RoleAssignment": [
+        "    @property",
+        "    def inherits(self) -> bool:",
+        '        """Whether this assignment reaches the descendants of ``resource_id``',
+        "        as well as the resource itself.",
+        "",
+        "        ``inherit`` is optional on this subject-side listing, and CONTRACT",
+        "        §27.13 S-10 rule 3 requires an absent value to be read as ``True`` --",
+        "        what every assignment meant before the field existed -- never as",
+        "        ``False``. Prefer this over reading :attr:`inherit` directly.",
+        '        """',
+        "        return True if self.inherit is None else self.inherit",
+        "",
+    ],
+}
+
+
 def sensitive_map() -> dict[str, set[str]]:
     """Which fields of which schemas carry a secret, per the registry."""
     out: dict[str, set[str]] = {}
@@ -349,6 +427,23 @@ Three shapes recur and are worth knowing before reading:
 '''
 
 
+#: Fields that are marked ``required`` in the schema but must still decode a
+#: response that omits them, because the server documents the omission as
+#: meaningful rather than as "this SDK's copy of the spec is stale"
+#: (CONTRACT §27.13 S-10 rule 3, contract 1.51). ``inherit`` is required on
+#: the three role-side assignment listings (``RoleUserAssignment``,
+#: ``RoleGroupAssignment``, ``RoleServiceAccountAssignment``) -- but a server
+#: older than contract 1.51 omits it, and its documented meaning by omission
+#: is ``true`` (an inheritable assignment is what every assignment meant
+#: before the field existed). Treating "required" literally would fail the
+#: *whole* listing against such a server, which is also the manifest's
+#: planning read. Keyed by field name alone rather than by schema name: any
+#: schema that later reuses this field name inherits the same
+#: absent-means-true reading, which is the reading the name itself commits
+#: this contract to.
+DEFAULT_TRUE_FIELDS = {"inherit"}
+
+
 def field_lines(
     name: str,
     schema: Any,
@@ -360,8 +455,11 @@ def field_lines(
     annotation = "SecretStr" if secret else py_type(schema)
     ident = safe(name)
     alias = f'Field(alias="{name}")' if ident != name else None
+    default_true = required and name in DEFAULT_TRUE_FIELDS
 
-    if required:
+    if default_true:
+        default = f' = Field(default=True, alias="{name}")' if alias else " = True"
+    elif required:
         default = f" = {alias}" if alias else ""
     elif annotation.endswith("| None"):
         default = f' = Field(default=None, alias="{name}")' if alias else " = None"
@@ -370,6 +468,13 @@ def field_lines(
         default = f' = Field(default=None, alias="{name}")' if alias else " = None"
 
     text = schema.get("description") or f"``{name}``."
+    if default_true:
+        text += (
+            "\n\n**Defaults to ``True`` when absent from the wire**, even though the "
+            "schema marks it required: a server older than contract 1.51 omits it, and "
+            "an inheritable assignment is what every assignment meant before this field "
+            "existed (CONTRACT §27.13 S-10 rule 3)."
+        )
     if secret:
         text += (
             "\n\n**Secret.** Redacted from every string, log and JSON rendering; "
@@ -529,6 +634,35 @@ def emit_models() -> str:
             out.append("")
             continue
 
+        ext = externally_tagged(schema)
+        if ext:
+            arm_names = []
+            for key, value_schema, desc in ext:
+                arm = f"{rname}{pascal(key)}"
+                arm_names.append(arm)
+                field = field_lines(key, value_schema, required=True, secret=False)
+                out.append(f"class {arm}(ManagementModel):")
+                out.extend(
+                    docstring(
+                        desc or f"The ``{key}`` arm of :data:`{rname}`.",
+                        "    ",
+                    )
+                )
+                out.append("")
+                out.extend(field)
+                out.append("")
+                classes.append(arm)
+            text = schema.get("description") or (
+                f"``{rname}`` -- a union tagged by which key is present "
+                f"({' vs. '.join(k for k, _, _ in ext)}), not by a shared field "
+                f"(CONTRACT §27.13 S-7 rule 1)."
+            )
+            out.append(f"{rname} = " + " | ".join(arm_names))
+            out.extend(field_doc(text, ""))
+            out.append("")
+            out.append("")
+            continue
+
         props, required, description = flatten(name)
         props = dict(props)
         for add in projections.get(name, []):
@@ -548,7 +682,14 @@ def emit_models() -> str:
                 ),
             }
         out.extend(
-            emit_model_class(rname, props, required, description, secrets.get(name, set()), [])
+            emit_model_class(
+                rname,
+                props,
+                required,
+                description,
+                secrets.get(name, set()),
+                EXTRA_METHODS.get(rname, []),
+            )
         )
         out.append("")
         classes.append(rname)
