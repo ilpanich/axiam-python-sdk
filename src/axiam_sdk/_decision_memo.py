@@ -62,14 +62,28 @@ def memo_key(
     resource_id: str,
     scope: str | None = None,
     subject_id: str | None = None,
+    acting_tenant: str | None = None,
 ) -> str:
-    """The §17.1 rule 3 key: all four components, absent distinguished from present."""
+    """The §17.1 rule 3 key: all four components, absent distinguished from
+    present -- plus the acting tenant (CONTRACT.md §5.2 rule 1, contract
+    1.51, "For C-12" question 2).
+
+    A handle acting on tenant A and one acting on tenant B over the same
+    session share one memo, and the server can answer the same
+    ``(subject_id, resource_id, action, scope)`` question differently per
+    tenant. Omitting the acting tenant from the key would let a decision
+    memoized for tenant A be served back for tenant B within the TTL —
+    silently, and worse the longer the TTL is configured. ``None`` (no
+    ``X-Axiam-Tenant`` sent — the principal's own tenant) is its own distinct
+    key component, exactly as an absent ``scope``/``subject_id`` is.
+    """
     return _SEP.join(
         (
             subject_id if subject_id is not None else _ABSENT,
             resource_id,
             action,
             scope if scope is not None else _ABSENT,
+            acting_tenant if acting_tenant is not None else _ABSENT,
         )
     )
 

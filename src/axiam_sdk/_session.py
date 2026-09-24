@@ -175,6 +175,16 @@ class _Session:
         self._sync_client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
 
+        # CONTRACT.md §18 shutdown flag, shared by every AxiamClient/
+        # AsyncAxiamClient handle over this session (CONTRACT.md §5.2 rule 1
+        # -- `acting_tenant()`/`clear_acting_tenant()` return a new handle
+        # over the SAME session). A handle keeps its own `_closed` too, for
+        # `close()` called on that handle directly; this one is what makes a
+        # close on ANY handle close the shared httpx transport for all of
+        # them, so a sibling handle fails with the clean `_ensure_open`
+        # NetworkError rather than a raw closed-transport error from httpx.
+        self.closed = False
+
         # Shared single-flight refresh guard (19-02) — one instance for
         # both the sync and async REST call paths on this session.
         self.refresh_guard = RefreshGuard()
@@ -428,11 +438,13 @@ class _Session:
     def close(self) -> None:
         """Close the sync httpx client, if constructed (D-19). Never
         constructs a client merely to close it."""
+        self.closed = True
         if self._sync_client is not None:
             self._sync_client.close()
 
     async def aclose(self) -> None:
         """Close the async httpx client, if constructed (D-19). Never
         constructs a client merely to close it."""
+        self.closed = True
         if self._async_client is not None:
             await self._async_client.aclose()

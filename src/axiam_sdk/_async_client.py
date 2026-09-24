@@ -15,6 +15,7 @@ call path are specific to this class. Mirrors ``the Go SDK's client.go`` +
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
@@ -131,6 +132,37 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         await self._session.aclose()
 
     # ------------------------------------------------------------------
+    # acting tenant (CONTRACT.md §5.2 rule 1, contract 1.51)
+    # ------------------------------------------------------------------
+
+    def acting_tenant(self, tenant_id: str) -> AsyncAxiamClient:
+        """A handle to this client that acts on ``tenant_id`` — CONTRACT.md
+        §5.2 rule 1 (contract 1.51).
+
+        Synchronous — it performs no I/O, only a client-side gate — and
+        otherwise identical to :meth:`axiam_sdk.AxiamClient.acting_tenant`:
+        the returned handle shares session, cookie jar, refresh guard,
+        telemetry and decision memo with ``self``, and differs only in the
+        ``X-Axiam-Tenant`` it sends. See that method's docstring for the
+        gating rules and what the header does and does not reach.
+
+        Raises:
+            NetworkError: if ``tenant_id`` is not a UUID.
+            AuthzError: per :meth:`axiam_sdk.AxiamClient.acting_tenant`.
+        """
+        normalized = self._check_acting_tenant_gate(tenant_id)
+        handle = copy.copy(self)
+        handle._acting_tenant = normalized
+        return handle
+
+    def clear_acting_tenant(self) -> AsyncAxiamClient:
+        """A handle to this client that sends **no** ``X-Axiam-Tenant``. See
+        :meth:`axiam_sdk.AxiamClient.clear_acting_tenant`."""
+        handle = copy.copy(self)
+        handle._acting_tenant = None
+        return handle
+
+    # ------------------------------------------------------------------
     # login / verify_mfa
     # ------------------------------------------------------------------
 
@@ -143,7 +175,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", LOGIN_PATH, json=self._login_body(email, password)
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_login_response(response)
 
     async def login_opaque(self, username_or_email: str, password: str) -> LoginResult:
@@ -175,7 +207,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             OPAQUE_LOGIN_START_PATH,
             json=self._opaque_login_start_body(username_or_email, exchange.ke1),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "login/start")
         started = OpaqueLoginStart.from_wire(response.json())
@@ -194,7 +226,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             OPAQUE_LOGIN_FINISH_PATH,
             json={"opaque_session": started.opaque_session, "ke3": ke3},
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         if response.status_code not in (httpx.codes.OK, httpx.codes.ACCEPTED):
             raise error_from_http_status(response.status_code, "OPAQUE login/finish failed")
         return self._handle_login_response(response)
@@ -236,7 +268,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             OPAQUE_REGISTER_START_PATH,
             json=self._opaque_register_start_body(exchange.request, principal_tenant_id),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         if response.status_code != httpx.codes.OK:
             raise self._opaque_start_error(response, "register/start")
         started = response.json()
@@ -257,7 +289,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", MFA_VERIFY_PATH, json=self._mfa_verify_body(mfa_token, code)
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_login_response(response)
 
     # ------------------------------------------------------------------
@@ -296,7 +328,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", "/api/v1/auth/refresh", json=self._refresh_body(tenant_id, org_id)
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_refresh_response(response)
 
     # ------------------------------------------------------------------
@@ -311,10 +343,12 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", LOGOUT_PATH, json={"session_id": session_id}
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
+        self._principal_scope = None
 
     # ------------------------------------------------------------------
     # REST authz: check_access / can / batch_check
@@ -340,7 +374,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         self._ensure_open()
         # §17: consult the memo first. Disabled by default, in which case this
         # is one dict lookup that always misses.
-        key = memo_key(action, resource_id, scope, subject_id)
+        key = memo_key(action, resource_id, scope, subject_id, self._acting_tenant)
         memoized = self._decision_memo.get(key)
         if memoized is not None:
             assert isinstance(memoized, AccessResult)
@@ -397,7 +431,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         """One §16 attempt, with its §19 request pair."""
         request = self._session.async_client.build_request("POST", path, json=body)
         with self._telemetry.request(operation, "POST", path, attempt) as span:
-            response = await self._session._send_async(request)
+            response = await self._rest_send_async(request)
 
             if response.status_code == httpx.codes.UNAUTHORIZED:
                 response = await self._retry_after_refresh_async(request)
@@ -427,7 +461,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
                 if k.lower() not in ("content-length", "x-csrf-token")
             },
         )
-        return await self._session._send_async(retry_request)
+        return await self._rest_send_async(retry_request)
 
     # ------------------------------------------------------------------
     # OIDC / SSO relying-party helpers (CONTRACT.md §12, Task T3, SDK-Q08)
@@ -443,7 +477,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             """Perform the actual discovery-document GET; called by the
             discovery cache at most once per cache miss/expiry."""
             request = self._session.async_client.build_request("GET", DISCOVERY_PATH)
-            response = await self._session._send_async(request)
+            response = await self._rest_send_async(request)
             return self._parse_discovery_response(response)
 
         return await self._discovery_cache.get_async(self._discovery_origin_key(), fetch)
@@ -522,7 +556,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         )
         url = self._par_url(config, tenant_id)
         http_request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(http_request)
+        response = await self._rest_send_async(http_request)
         return self._build_pushed_request(response, configuration=config, request=request)
 
     async def oidc_exchange(
@@ -548,7 +582,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         )
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_token_response(response, config, nonce)
 
     async def oidc_refresh(
@@ -582,7 +616,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             form = self._refresh_form(refresh_token=refresh_token, scope=scope)
             url = self._token_endpoint_url(config, tenant_id)
             request = self._session.async_client.build_request("POST", url, data=form)
-            response = await self._session._send_async(request)
+            response = await self._rest_send_async(request)
             # No nonce: rule 6 does not apply to a refresh-issued ID token.
             return self._handle_token_response(response, config, None)
 
@@ -618,7 +652,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._client_credentials_form(scope=scope)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         # No nonce: rule 6 does not apply to this grant.
         return self._handle_token_response(response, config, None)
 
@@ -643,7 +677,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._device_authorize_form(scope=scope)
         url = self._device_authorization_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         if response.status_code != httpx.codes.OK:
             raise error_from_oauth2_response(
                 response.status_code, response, "device authorization request failed"
@@ -668,7 +702,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._device_poll_form(device_code=device_code)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_token_response(response, config, None)
 
     async def device_login(
@@ -753,7 +787,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         )
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_exchange_response(response)
 
     async def uma_register_resource(
@@ -771,7 +805,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             json=self._uma_resource_payload(resource),
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         wire = self._handle_uma_protection_response(response, "uma resource registration failed")
         return self._resource_set_from_wire(wire)
 
@@ -782,7 +816,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         wire = self._handle_uma_protection_response(response, "uma resource read failed")
         return self._resource_set_from_wire(wire)
 
@@ -802,7 +836,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             json=self._uma_resource_payload(resource),
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         wire = self._handle_uma_protection_response(response, "uma resource update failed")
         return self._resource_set_from_wire(wire)
 
@@ -813,7 +847,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             self._uma_protection_url(f"/uma2/rreg/resource_set/{resource_id}"),
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         self._handle_uma_protection_response(response, "uma resource delete failed")
 
     async def uma_list_resources(self, pat: SecretStr | str) -> list[str]:
@@ -828,7 +862,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             self._uma_protection_url("/uma2/rreg/resource_set"),
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         wire = self._handle_uma_protection_response(response, "uma resource list failed")
         return cast("list[str]", wire or [])
 
@@ -852,7 +886,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             json=body,
             headers=self._uma_protection_headers(pat),
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         wire = cast(
             "dict[str, str]",
             self._handle_uma_protection_response(response, "uma ticket request failed"),
@@ -906,7 +940,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._uma_ticket_form(ticket=ticket, claim_token=claim_token)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_rpt_response(response)
 
     async def logout_url(
@@ -964,7 +998,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._introspect_form(token=token, token_type_hint=token_type_hint)
         url = self._endpoint_url_for_introspect(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_introspect_response(response)
 
     async def revoke(
@@ -983,7 +1017,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         form = self._revoke_form(token=token, token_type_hint=token_type_hint)
         url = self._endpoint_url_for_revoke(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         self._handle_revoke_response(response)
 
     async def sso_start(
@@ -1009,7 +1043,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             org_slug=org_slug,
         )
         request = self._session.async_client.build_request("POST", SSO_START_PATH, json=body)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_sso_start_response(response)
 
     async def sso_complete(self, *, state: str, code: str) -> SsoCompleteResult:
@@ -1021,7 +1055,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", SSO_CALLBACK_PATH, json={"state": state, "code": code}
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_sso_complete_response(response)
 
     async def sso_providers(
@@ -1058,7 +1092,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             tenant_slug=tenant_slug,
         )
         request = self._session.async_client.build_request("GET", SSO_PROVIDERS_PATH, params=params)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_sso_providers_response(response)
 
     async def sso_start_oauth2(
@@ -1097,7 +1131,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             org_slug=org_slug,
         )
         request = self._session.async_client.build_request("POST", SSO_OAUTH2_START_PATH, json=body)
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_sso_start_oauth2_response(response)
 
     async def sso_complete_oauth2(self, *, state: str, code: str) -> SsoCompleteResult:
@@ -1117,7 +1151,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", SSO_OAUTH2_CALLBACK_PATH, json={"state": state, "code": code}
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_federation_session_response(response, "ssoCompleteOauth2")
 
     async def sso_complete_handoff(self, *, code: str) -> SsoCompleteResult:
@@ -1143,7 +1177,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", SSO_HANDOFF_PATH, json={"code": code}
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._handle_federation_session_response(response, "ssoCompleteHandoff")
 
     # ------------------------------------------------------------------
@@ -1172,7 +1206,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         self._ensure_open()
         self._require_webauthn_session("webauthn_register_start")
         request = self._session.async_client.build_request("POST", self._WA_REGISTER_START, json={})
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._webauthn_challenge(response, "webauthn_register_start")
 
     async def webauthn_register_finish(
@@ -1196,7 +1230,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._WA_REGISTER_FINISH, json=body
         )
-        return self._webauthn_credential(await self._session._send_async(request))
+        return self._webauthn_credential(await self._rest_send_async(request))
 
     async def webauthn_authenticate_start(
         self, *, challenge_token: SecretStr | str
@@ -1215,7 +1249,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._WA_AUTH_START, json={"challenge_token": _expose_token(challenge_token)}
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._webauthn_challenge(response, "webauthn_authenticate_start")
 
     async def webauthn_authenticate_finish(
@@ -1249,7 +1283,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._WA_DISCOVERABLE_START, json=body
         )
-        response = await self._session._send_async(request)
+        response = await self._rest_send_async(request)
         return self._webauthn_challenge(response, "webauthn_discoverable_start")
 
     async def webauthn_discoverable_finish(
@@ -1279,7 +1313,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         self._on_credential_change()
         body = self._webauthn_finish_body(state_token, response, operation)
         request = self._session.async_client.build_request("POST", path, json=body)
-        http_response = await self._session._send_async(request)
+        http_response = await self._rest_send_async(request)
         result = self._webauthn_login_result(http_response, operation)
         # The server sets the same axiam_access/axiam_refresh/axiam_csrf triple
         # here as it does on a password login, so adoption is the same call.
@@ -1364,7 +1398,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         """
         self._ensure_open()
         request = self._session.async_client.build_request("POST", self._AC_MFA_ENROLL, json={})
-        return self._mfa_enrollment(await self._session._send_async(request), "mfa_enroll")
+        return self._mfa_enrollment(await self._rest_send_async(request), "mfa_enroll")
 
     async def mfa_confirm(self, *, totp_code: str) -> bool:
         """``POST /api/v1/auth/mfa/confirm`` (CONTRACT.md §25.1) — activate the
@@ -1373,7 +1407,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._AC_MFA_CONFIRM, json={"totp_code": totp_code}
         )
-        return self._mfa_confirmed(await self._session._send_async(request))
+        return self._mfa_confirmed(await self._rest_send_async(request))
 
     async def mfa_setup_enroll(self, *, setup_token: SecretStr | str) -> MfaEnrollment:
         """``POST /api/v1/auth/mfa/setup/enroll`` (CONTRACT.md §25.1) — start
@@ -1387,7 +1421,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._AC_MFA_SETUP_ENROLL, json={"setup_token": _expose_token(setup_token)}
         )
-        return self._mfa_enrollment(await self._session._send_async(request), "mfa_setup_enroll")
+        return self._mfa_enrollment(await self._rest_send_async(request), "mfa_setup_enroll")
 
     async def mfa_setup_confirm(
         self, *, setup_token: SecretStr | str, totp_code: str
@@ -1405,7 +1439,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             self._AC_MFA_SETUP_CONFIRM,
             json={"setup_token": _expose_token(setup_token), "totp_code": totp_code},
         )
-        return self._handle_login_response(await self._session._send_async(request))
+        return self._handle_login_response(await self._rest_send_async(request))
 
     async def verify_email(self, *, token: SecretStr | str, tenant_id: str) -> None:
         """``POST /api/v1/auth/verify-email`` (CONTRACT.md §25.1).
@@ -1421,7 +1455,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             self._AC_VERIFY_EMAIL,
             json={"token": _expose_token(token), "tenant_id": tenant_id},
         )
-        self._expect_no_content(await self._session._send_async(request), "verify_email")
+        self._expect_no_content(await self._rest_send_async(request), "verify_email")
 
     async def resend_verification(self, *, email: str, tenant_id: str) -> None:
         """``POST /api/v1/auth/resend-verification`` (CONTRACT.md §25.1) — the
@@ -1441,7 +1475,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._AC_RESEND_VERIFICATION, json={"email": email, "tenant_id": tenant_id}
         )
-        self._expect_no_content(await self._session._send_async(request), "resend_verification")
+        self._expect_no_content(await self._rest_send_async(request), "resend_verification")
 
     async def resend_own_verification(self) -> None:
         """``POST /api/v1/users/me/resend-verification`` (CONTRACT.md
@@ -1474,7 +1508,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._AC_RESEND_OWN_VERIFICATION, json={}
         )
-        self._expect_no_content(await self._session._send_async(request), "resend_own_verification")
+        self._expect_no_content(await self._rest_send_async(request), "resend_own_verification")
 
     async def request_password_reset(
         self,
@@ -1498,7 +1532,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             email=email, org_slug=org_slug, tenant_id=tenant_id, tenant_slug=tenant_slug
         )
         request = self._session.async_client.build_request("POST", self._AC_RESET, json=body)
-        self._expect_no_content(await self._session._send_async(request), "request_password_reset")
+        self._expect_no_content(await self._rest_send_async(request), "request_password_reset")
 
     async def password_reset_context(self, *, token: SecretStr | str) -> PasswordResetContext:
         """``GET /api/v1/auth/reset/context`` (CONTRACT.md §25.1) — the OPAQUE
@@ -1514,7 +1548,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "GET", self._AC_RESET_CONTEXT, params={"token": _expose_token(token)}
         )
-        return self._reset_context(await self._session._send_async(request))
+        return self._reset_context(await self._rest_send_async(request))
 
     async def confirm_password_reset(
         self,
@@ -1532,4 +1566,4 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request(
             "POST", self._AC_RESET_CONFIRM, json=body
         )
-        self._expect_no_content(await self._session._send_async(request), "confirm_password_reset")
+        self._expect_no_content(await self._rest_send_async(request), "confirm_password_reset")
