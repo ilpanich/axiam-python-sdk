@@ -7,24 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **CONTRACT.md re-vendored at contract 1.52.** Copied byte for byte from axiam `80bc7aa`
-  (sha256 `c7954eec…`), the merge of the C-12 cross-SDK conformance review
-  (ilpanich/axiam#500). 1.52 changes no wire behaviour: it writes rules N1–N6, which
-  this SDK's C-12 fixes (#90) already implement. The README's conformance line
-  moves to 1.52.
-
-Contract **1.51**, the dogfooding remediation
-([`claude_dev/dogfooding-findings-fix-plan.md`](https://github.com/ilpanich/axiam/blob/main/claude_dev/dogfooding-findings-fix-plan.md)'s
-C-3 task; CONTRACT.md §1.1.1, §5.2 rule 1, §6.1 rules 6-10, §10.1 rule 9,
-§27.6.1, §27.13). `CONTRACT.md`, `openapi.json` and `management-registry.json`
-are re-vendored byte-for-byte from `ilpanich/axiam@56fbe44`; `proto/` was
-already identical. The §27 surface (162 operations, up from 160) and the
-gRPC stubs (`token.proto` added to `scripts/gen_grpc.sh`) are regenerated
-from them.
+## [1.0.0-beta17] - 2026-09-25
 
 ### Added
+
+- Metadata, two-shape role bindings, service accounts (CONTRACT §27.6.1, contract 1.51)
+
+- Validate_token / introspect_token (CONTRACT §1.1.1, §10.3, contract 1.51)
+
+- Authenticate_device(), the mTLS device login (CONTRACT §6.1 rules 6-10)
+
+- Acting tenant, X-Axiam-Tenant (CONTRACT §5.2 rule 1, contract 1.51)
+
+- Re-vendor contract 1.51 and regenerate the §27 surface
 
 - **Acting tenant** (§5.2 rule 1). `AxiamClient(acting_tenant=...)` /
   `AsyncAxiamClient(acting_tenant=...)` at construction, and
@@ -49,6 +44,7 @@ from them.
   than the Rust reference, which resets to unknown on OPAQUE and the setup
   flows too. The §17 decision-memo key includes the acting tenant.
   REST-only: the gRPC interceptor reads no acting-tenant metadata.
+
 - **`authenticate_device()`** on both clients, the mTLS device login (§6.1
   rules 6-10): `POST /api/v1/auth/device`, no body, returns
   `DeviceToken(access_token: SecretStr, token_type, expires_in)`. Reachable
@@ -62,6 +58,7 @@ from them.
   `AuthError` with no refresh attempt; a `429` is `NetworkError`, not an
   authentication failure, and is not retried. New example:
   [`examples/device_mtls_provisioning.py`](examples/device_mtls_provisioning.py).
+
 - **gRPC `validate_token()` / `introspect_token()`** (§1.1.1, §10.3) on
   `AuthzGrpcClient` and `AsyncAuthzGrpcClient`, on the same channel and
   interceptor `check_access`/`get_user_info` already use. Every response
@@ -73,11 +70,13 @@ from them.
   gRPC-validating guard and a JWKS-verifying one never disagree about
   whether a token is a bearer token. A no-token call raises `AuthError`
   client-side, exactly like `get_user_info`.
+
 - **`JwksVerifier.verify_with_proofs(token, *, expected_tenant_id,
   certificate_thumbprint=, dpop_thumbprint=)`**, the full §10.1 set
   including rule-9 evidence in one call, replacing the
   `verify_access_token()` + separate `verify_token_binding()` pairing the
   now-fixed default entry point made unsafe (see Breaking).
+
 - **Manifest additions** (§27.6.1, §27.5 rule 5):
   - `ResourceSpec.metadata: dict[str, Any] | None`, sent on Create; on
     Update only when stated and it differs from the server's value as a
@@ -109,6 +108,7 @@ from them.
     `collect_manifest`.
   - `webhooks` stays unspecified in contract 1.51 and is **declined** — see
     Declined below.
+
 - **Contract 1.51 model changes** (§27.13), from the regenerated surface:
   `SubjectAltNameDns` / `SubjectAltNameIp` (`SubjectAltName` is their
   union); `inherit` on `RoleGroupAssignment`, `RoleUserAssignment` and
@@ -117,7 +117,60 @@ from them.
   what every assignment meant before the field existed); `RoleAssignment`
   gained an `.inherits` property reading the same way.
 
+### Changed
+
+- Re-vendor CONTRACT.md at contract 1.52
+
+- C-12 conformance review (contract 1.52) — README and CHANGELOG
+
+- C-12 conformance regression suite (contract 1.52 N4.7, N4.4, N5.3, N5.1, N4.5, N4.2)
+
+- The acting-tenant gate records OPAQUE and the setup flows, as the code does
+
+- The global-role refusal and plain-over-scoped rebind
+
+- Contract 1.51 in README/CHANGELOG (acting tenant, device login, gRPC token, rule 9, manifest)
+
+- Update grpcio requirement from <1.84,>=1.78 to >=1.78,<1.85
+
+- Update grpcio-tools requirement
+
+- **CONTRACT.md re-vendored at contract 1.52.** Copied byte for byte from axiam `80bc7aa`
+  (sha256 `c7954eec…`), the merge of the C-12 cross-SDK conformance review
+  (ilpanich/axiam#500). 1.52 changes no wire behaviour: it writes rules N1–N6, which
+  this SDK's C-12 fixes (#90) already implement. The README's conformance line
+  moves to 1.52.
+
+Contract **1.51**, the dogfooding remediation
+([`claude_dev/dogfooding-findings-fix-plan.md`](https://github.com/ilpanich/axiam/blob/main/claude_dev/dogfooding-findings-fix-plan.md)'s
+C-3 task; CONTRACT.md §1.1.1, §5.2 rule 1, §6.1 rules 6-10, §10.1 rule 9,
+§27.6.1, §27.13). `CONTRACT.md`, `openapi.json` and `management-registry.json`
+are re-vendored byte-for-byte from `ilpanich/axiam@56fbe44`; `proto/` was
+already identical. The §27 surface (162 operations, up from 160) and the
+gRPC stubs (`token.proto` added to `scripts/gen_grpc.sh`) are regenerated
+from them.
+
 ### Fixed
+
+- Acting_tenant() decides reach on UUIDs, not letter case (CONTRACT 1.52 N5.6)
+
+- Refuse a malformed 200 on authenticate_device()
+
+- A device credential's 401 surfaces the server's message, not the refresh guard's
+
+- Withhold X-Axiam-Tenant and the bearer credential off-origin
+
+- One acting-tenant gate per session, not per handle
+
+- Release an adopted device credential on the next session
+
+- Accept a held device credential for management's session check
+
+- Withhold the jar on the device-login POST itself
+
+- Expose a failed rebind's restore outcome as structured data
+
+- JwksVerifier.verify_access_token enforces §10.1 rule 9 (contract 1.51)
 
 - **`acting_tenant()` decides reach on UUIDs, not on letter case (CONTRACT 1.52 N5.6, C-12).**
   `reachable_tenant_ids` was matched with a plain string `in`. The UUID check accepts either
@@ -134,10 +187,12 @@ from them.
   refuses. A new `externally_tagged()` detector fixes the generation; the
   regenerated `SubjectAltNameDns | SubjectAltNameIp` union is the "Added"
   entry above.
+
 - **The same generator would have produced a required `inherit` field**,
   which fails to decode a role-side assignment listing from a server older
   than contract 1.51 (which omits it). `DEFAULT_TRUE_FIELDS` makes the
   generator emit `= True` for it instead, matching §27.13's S-10 rule 3.
+
 - **A failed manifest role rebind reported the restore outcome only inside
   a free-text failure message, never as data** (CONTRACT.md §27.6.1: "If
   the assign fails, the SDK MUST attempt to assign the previous binding
@@ -156,6 +211,7 @@ from them.
   `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field`,
   `test_a_failed_rebind_whose_restore_also_fails_reports_restore_error`,
   `test_a_failed_rebind_reports_restore_succeeded_as_a_structured_field_async`.)
+
 - **`authenticate_device()`'s own `POST /api/v1/auth/device` carried a
   prior session's `axiam_access` cookie.** The call builds its request
   straight from the shared httpx client (`_session.sync_client`/
@@ -188,6 +244,7 @@ SDK's own C-12 findings, plus two `N4` violations no SDK's findings list named
   accepts a bearer credential and every other REST call already worked
   under one. It now accepts either. (`tests/test_c12_conformance.py`:
   `test_management_call_reaches_the_wire_with_the_device_bearer`[`_async`].)
+
 - **CONTRACT 1.52 N4.4 — an adopted device credential was never released.**
   `_Session.clear_bearer_credential` existed but had no caller: a `login()`
   (or `verify_mfa`/OPAQUE/a WebAuthn authentication/an SSO completion —
@@ -206,6 +263,7 @@ SDK's own C-12 findings, plus two `N4` violations no SDK's findings list named
   `test_logout_clears_a_held_device_credential`[`_async`],
   `test_a_second_device_login_replaces_the_first` — the I4 twin, pinning
   the case `adopt_bearer_credential` already got right.)
+
 - **CONTRACT 1.52 N5.3 — the acting-tenant gate was per handle, not per
   session.** `_AxiamClientBase.__init__` stored `_principal_scope` as a
   plain instance attribute; `acting_tenant()`/`clear_acting_tenant()`
@@ -222,6 +280,7 @@ SDK's own C-12 findings, plus two `N4` violations no SDK's findings list named
   `test_the_acting_tenant_gate_is_shared_across_every_handle_over_one_session`[`_async`],
   `test_the_acting_tenant_gate_is_not_shared_across_two_independent_clients`
   — the I4 twin, pinning that the fix is session-scoped, not global.)
+
 - **CONTRACT 1.52 N5.1 — `X-Axiam-Tenant` and the bearer credential had no
   same-origin guard.** `_apply_acting_tenant`/`_apply_bearer_credential`
   attached their header unconditionally; `_Session._prepare_request`
@@ -250,6 +309,7 @@ every `N1`-`N6` rule per the wave instructions:
   held, leaving the server's response to reach the caller's own status
   check. (`tests/test_c12_conformance.py`:
   `test_a_401_under_the_device_credential_surfaces_the_servers_message`.)
+
 - **CONTRACT 1.52 N4 rule 2 — a malformed `200` on `authenticate_device()`
   was adopted.** `_handle_device_auth_response` read `wire["access_token"]`
   straight into the adopted credential with no check; an absent key raised
@@ -286,10 +346,12 @@ every `N1`-`N6` rule per the wave instructions:
   defect — is inverted to
   `test_verify_access_token_applies_rule_9_with_no_evidence`, asserting the
   refusal.
+
 - `GroupSpec.roles`, `UserSpec.roles` and `ServiceAccountSpec.roles` are
   `tuple[RoleBinding, ...]`, not `tuple[str, ...]`. A bare role key still
   compiles and compares equal to a plain binding; code that iterates the
   tuple assuming every element is a `str` has to change.
+
 - `ManagementManifest` gains `service_accounts`, and `ResourceSpec` gains
   `metadata`. Both are dataclasses with defaults, so positional
   construction is unaffected; a caller that lists every field by keyword
