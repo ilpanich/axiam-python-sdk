@@ -591,6 +591,15 @@ async def protected(user: AxiamUser = Depends(authenticated_user)):
 
 See [`examples/fastapi_dependency.py`](./examples/fastapi_dependency.py).
 
+`require_authenticated_user` verifies through
+`JwksVerifier.verify_access_token` (CONTRACT.md §10.1 rule 9) — the guard has
+no way to obtain mTLS/DPoP transport evidence from a framework request in a
+generic dependency, so it refuses **every** device- or DPoP-bound (`cnf`)
+access token outright, not only unbound ones. A caller who needs to accept a
+sender-constrained token in FastAPI verifies with
+`JwksVerifier.verify_with_proofs`/`verify_sender_constrained` directly,
+supplying the certificate/DPoP proof this dependency cannot.
+
 ### Django middleware (§10) — `axiam-sdk[django]`
 
 ```python
@@ -613,6 +622,11 @@ def protected_view(request):
 ```
 
 See [`examples/django_middleware.py`](./examples/django_middleware.py).
+
+`AxiamAuthMiddleware` verifies the same way, through
+`JwksVerifier.verify_access_token` (CONTRACT.md §10.1 rule 9): it too has no
+transport evidence to offer, so it refuses every `cnf`-bound access token
+(device or DPoP) rather than accepting it unchecked.
 
 ### Declarative authorization helpers (§11)
 
@@ -1193,8 +1207,15 @@ acme = client.acting_tenant(acme_tenant_id)  # a new handle; `client` is unchang
 acme.resources.list()  # X-Axiam-Tenant: <acme_tenant_id>
 client.resources.list()  # no X-Axiam-Tenant -- acts on the org's own scope
 
-acme.clear_acting_tenant()  # or: back to the org's own scope
+own_scope = acme.clear_acting_tenant()  # a new handle, again -- `acme` itself is unchanged
 ```
+
+`acting_tenant()`/`clear_acting_tenant()` always return a **new** handle rather
+than mutating the one they were called on (§5.2 rule 1) — the return value must
+be kept, exactly as `acme` itself had to be above. `acme.clear_acting_tenant()`
+on its own, with the result discarded, builds and immediately drops a handle
+that acts on the org's own scope; `acme` keeps sending `X-Axiam-Tenant` for
+`acme_tenant_id` regardless.
 
 - **Construction-time form**, `AxiamClient(acting_tenant=...)`, is for a client
   built to always act on a known tenant — a provisioning script, say. Nothing
@@ -1745,7 +1766,10 @@ shape = ManagementManifest(
             metadata={"owner": "platform-team"},  # sent on Create; on Update only when it drifts
         ),
     ],
-    roles=[RoleSpec(key="editor", name="Editor", description="Edits documents")],
+    roles=[
+        RoleSpec(key="editor", name="Editor", description="Edits documents"),
+        RoleSpec(key="reviewer", name="Reviewer", description="Reviews documents"),
+    ],
     groups=[
         GroupSpec(
             key="staff",
@@ -1753,7 +1777,12 @@ shape = ManagementManifest(
             description="Everyone",
             roles=(
                 "editor",  # the plain shape -- unchanged, no resource, no inheritance question
-                ScopedRoleBinding(role="editor", resource="docs", inherit=False),
+                # a DIFFERENT role: the server keys a binding on (subject, role) with no
+                # resource component, so binding "editor" a second time here -- plain,
+                # scoped, or one of each -- describes a state the server cannot hold, and
+                # `plan()`/`apply()` refuse it client-side before any request (CONTRACT.md
+                # §27.6.1).
+                ScopedRoleBinding(role="reviewer", resource="docs", inherit=False),
             ),
         ),
     ],
@@ -1776,9 +1805,18 @@ if secret is not None:
   `ServiceAccountSpec.roles`) **is a role key or a `ScopedRoleBinding`.** A
   subject holds one role at most once — binding the same role twice, plain
   and scoped included, is rejected by `plan()`/`apply()` before any request.
-  Changing a binding's resource is an unassign then an assign; if the assign
-  fails, the previous binding is re-assigned and the step's outcome names
-  both. `inherit` reaches the wire only as `False`.
+  **A role the manifest declares `RoleSpec(is_global=True, ...)` also refuses
+  a `ScopedRoleBinding(..., inherit=False)`** client-side, before any request:
+  the server answers `400` to a non-inheriting binding of a global role, so
+  this SDK checks it up front rather than failing mid-`apply`. Changing a
+  binding's resource is an unassign then an assign; if the assign fails, the
+  previous binding is re-assigned and the step's outcome names both, as
+  data, not only a message: `StepOutcome.restore_succeeded` (`True`/`False`,
+  `None` for every other step) and `StepOutcome.restore_error` (the restore
+  attempt's own error, set only when `restore_succeeded` is `False`).
+  `inherit` reaches the wire only as `False`; a *stated* `inherit=True` is
+  accepted and planned exactly like an omitted one, and is never sent
+  either.
 - **`service_accounts` is reconciled by `name`**, which the server does not
   enforce uniqueness on: `plan()` fails, before any write, when a stated
   name matches more than one existing account. A `Create`'s one-time

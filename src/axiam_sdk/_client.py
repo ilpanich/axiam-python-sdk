@@ -340,37 +340,14 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         )
         # CONTRACT.md §5.2 / §5.2.3 — what the last completed login said
         # about the principal's reach, when a login said anything at all.
-        #
-        # `None` until a path that lands on `_handle_login_response`'s 200
-        # branch reports a user object, and reset by
-        # `_absorb_session_cookies` (every session-establishing path) and by
-        # `logout`. The server sends that `user` object on `login`,
-        # `verify_mfa`, `login_opaque`, `mfa_setup_confirm` and
-        # `webauthn_setup_register_finish` alike — all five route through
-        # `_handle_login_response`, whose 200 branch sets this right after
-        # `_absorb_session_cookies` resets it — so all five gate
-        # `acting_tenant()` on what that object said.
-        #
-        # WebAuthn *authentication* (`webauthn_login_finish` /
-        # `webauthn_discoverable_finish`), an SSO completion, and the mTLS
-        # device login complete a session with no such object — the first
-        # two call `_absorb_session_cookies` with no follow-up set, the
-        # device login sets this to `None` directly — and neither does an
-        # injected token or a service account from client credentials. It is
-        # `None` on purpose rather than a defaulted `False` for all of
-        # those, because "the server did not say" must not gate
-        # `acting_tenant()` as if the server had said "not
-        # organization-level" (§5.2 rule 1: a client holding no login result
-        # has nothing to gate on, and sends the header regardless, letting
-        # the server's 403 answer).
-        #
-        # Differs from the Rust reference, which resets to unknown on every
-        # one of these paths, OPAQUE and the two setup flows included: their
-        # responses carry a user object too (the same builder as the
-        # password path on OPAQUE's server handler; both setup routes are
-        # typed the same success response), so gating on it here is tighter
-        # than gating on nothing.
-        self._principal_scope: _PrincipalScope | None = None
+        # This is `self._session.principal_scope` (CONTRACT 1.52 N5.3, "one
+        # gate per session") reached through the `_principal_scope`
+        # property below; see `_Session.__init__` for the full field
+        # comment (`None` until a path that lands on
+        # `_handle_login_response`'s 200 branch reports a user object, and
+        # reset by `_absorb_session_cookies`/`logout`) and it for why it is
+        # `None` rather than a defaulted `False` for the paths that
+        # complete a session without a user object.
 
         self._session = _Session(
             base_url=base_url,
@@ -716,6 +693,17 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
 
         self._session.refresh_guard.seed(access, refresh, claims.get("exp"))
 
+        # CONTRACT.md §6.1 rule 6 / CONTRACT 1.52 N4.4 — this is a
+        # session-establishing call (login, verify_mfa, OPAQUE finish, MFA
+        # setup confirm, the WebAuthn setup pair, a WebAuthn
+        # *authentication*, or an SSO completion — every path that lands
+        # here). Its cookie session REPLACES a device credential adopted by
+        # an earlier `authenticate_device()`, exactly as a later
+        # `authenticate_device()` itself replaces one (rule 4): the cookie
+        # session just captured above is what every request must use from
+        # here on, not a stale bearer token from before.
+        self._session.clear_bearer_credential()
+
         # CONTRACT.md §5.2 rule 1 — a new session is a new principal until
         # its login says otherwise. `_handle_login_response`'s 200 branch
         # (login, verify_mfa, login_opaque, mfa_setup_confirm,
@@ -802,11 +790,21 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         """Resolve the current session id (the access token's ``jti`` claim)
         to send as ``POST /api/v1/auth/logout``'s ``session_id``.
 
+        A held device credential (CONTRACT.md §6.1 rule 6) is read too, not
+        only the cookie session: CONTRACT 1.52 N4.4/N4 rule 3 lists
+        ``logout`` among the requests a device credential is the credential
+        of, so a client that authenticated with ``authenticate_device()``
+        and never held a cookie session at all must still be able to log
+        out, exactly as it must still reach the management API (N4.7).
+
         Raises:
             AuthError: if there is no active session (no ``axiam_access``
-                cookie), or the access token carries no ``jti`` claim.
+                cookie and no held bearer credential), or the access token
+                carries no ``jti`` claim.
         """
         access = self._session.cookie_value(ACCESS_COOKIE)
+        if not access and self._session.bearer_token is not None:
+            access = self._session.bearer_token.get_secret_value()
         if not access:
             raise AuthError("no active session to log out")
         claims = _decode_unverified_claims(access)
@@ -872,15 +870,48 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
     # acting tenant (CONTRACT.md §5.2 rule 1, contract 1.51)
     # ------------------------------------------------------------------
 
+    @property
+    def _principal_scope(self) -> _PrincipalScope | None:
+        """What the last completed login on ANY handle over this session
+        reported about the principal's reach (CONTRACT.md §5.2 / §5.2.3).
+
+        A thin forwarding property over ``self._session.principal_scope``
+        (CONTRACT 1.52 N5.3, "one gate per session"): the field itself is
+        held on the shared session rather than on this handle, so a login
+        performed through one handle (``acting_tenant()``/
+        ``clear_acting_tenant()`` return a new handle over the same
+        ``_session``) changes what every handle sharing that session gates
+        ``acting_tenant()`` on, exactly as ``_ensure_open``'s shared
+        ``closed`` flag does for close().
+        """
+        return self._session.principal_scope
+
+    @_principal_scope.setter
+    def _principal_scope(self, value: _PrincipalScope | None) -> None:
+        """Write through to ``self._session.principal_scope`` — see the
+        getter above."""
+        self._session.principal_scope = value
+
     def _apply_acting_tenant(self, request: httpx.Request) -> None:
         """``X-Axiam-Tenant`` when this handle acts on a tenant, nothing
         otherwise (§5.2 rule 1). Mutates ``request`` in place, so a retry
         rebuilt from its headers (``_retry_after_refresh_sync``/``_async``)
         carries the header along too, and so a request handed to
         ``_credential_free_request``'s callers stays untouched by this call
-        entirely (those never route through here)."""
-        if self._acting_tenant is not None:
-            request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
+        entirely (those never route through here).
+
+        Same-origin guard (CONTRACT 1.52 N5.1): the header names a tenant
+        and is refused off-origin exactly like ``X-Tenant-ID``
+        (``_Session._prepare_request``) — a request built against a host
+        other than this session's own (a discovered ``/oauth2`` endpoint on
+        another host, say, or a followed redirect) gets neither.
+        """
+        if self._acting_tenant is None:
+            return
+        req_host = request.url.host
+        if req_host and req_host != self._session._base_host:
+            return
+        request.headers[ACTING_TENANT_HEADER] = self._acting_tenant
 
     def _apply_bearer_credential(self, request: httpx.Request) -> None:
         """``Authorization: Bearer <token>`` when this session has adopted a
@@ -895,11 +926,20 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         *before* the ``Authorization`` header, so a cookie left from an
         earlier session would otherwise silently win and the request would
         run as that session's principal instead of the device's.
+
+        Same-origin guard (CONTRACT 1.52 N5.1): a request built against a
+        host other than this session's own gets no credential at all — the
+        bearer token, like ``X-Tenant-ID``/``X-Axiam-Tenant``, MUST NOT
+        reach a host other than the configured base URL.
         """
         token = self._session.bearer_token
-        if token is not None:
-            request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
-            request.headers["Cookie"] = ""
+        if token is None:
+            return
+        req_host = request.url.host
+        if req_host and req_host != self._session._base_host:
+            return
+        request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+        request.headers["Cookie"] = ""
 
     def _rest_send_sync(self, request: httpx.Request) -> httpx.Response:
         """The choke-point wrapper every sync REST call sends through:
@@ -949,7 +989,13 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
                 "§5.2 rule 1)",
                 resource_id=tenant_id,
             )
-        if scope.reachable_tenant_ids is not None and tenant_id not in scope.reachable_tenant_ids:
+        # CONTRACT 1.52 N5.6 (C-12): reach is decided on UUIDs, never on
+        # letter case. `tenant_id` passed the case-insensitive UUID check
+        # above, and the server writes `reachable_tenant_ids` in lower case,
+        # so both sides are compared in one canonical case.
+        if scope.reachable_tenant_ids is not None and tenant_id.lower() not in {
+            reachable.lower() for reachable in scope.reachable_tenant_ids
+        }:
             raise AuthzError(
                 "acting_tenant: the signed-in principal's roles do not reach this tenant — "
                 "it is not in reachable_tenant_ids, and the server refuses the header with "
@@ -1024,8 +1070,19 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
             raise error_from_http_status(response.status_code, message, response=response)
 
         wire = response.json()
+        access_token = wire.get("access_token")
+        # CONTRACT.md §6.1 rule 8 / CONTRACT 1.52 N4.2: a malformed 200 (no
+        # usable access_token) is refused client-side, with NO credential
+        # adopted and no other client state touched — same "changes no
+        # client state" guarantee rule 2 gives an outright refusal, just
+        # reached from the success status rather than a 401.
+        if not access_token:
+            raise NetworkError(
+                "authenticate_device: malformed response — 200 with no access_token "
+                "(CONTRACT.md §6.1 rule 8); refused client-side, no credential adopted"
+            )
         result = DeviceToken(
-            access_token=wire["access_token"],
+            access_token=access_token,
             token_type=wire["token_type"],
             expires_in=wire["expires_in"],
         )
@@ -1449,6 +1506,9 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # CONTRACT.md §6.1 rule 4 / CONTRACT 1.52 N4.4: logout clears a
+        # held device credential, same as it clears the cookie session.
+        self._session.clear_bearer_credential()
         # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
         self._principal_scope = None
 
@@ -1534,7 +1594,15 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         with self._telemetry.request(operation, "POST", path, attempt) as span:
             response = self._rest_send_sync(request)
 
-            if response.status_code == httpx.codes.UNAUTHORIZED:
+            # CONTRACT.md §6.1 rule 5 / CONTRACT 1.52 N4.5: a device
+            # credential is never refreshed, on either transport. Leaving
+            # `response` as the server's own 401 when one is held means the
+            # status check below raises with the SERVER's message, never
+            # the refresh guard's "no access token to refresh".
+            if (
+                response.status_code == httpx.codes.UNAUTHORIZED
+                and self._session.bearer_token is None
+            ):
                 response = self._retry_after_refresh_sync(request)
 
             span.status = response.status_code

@@ -367,6 +367,9 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         if response.status_code >= 300:
             raise error_from_http_status(response.status_code, "logout failed", response=response)
         self._session.refresh_guard = type(self._session.refresh_guard)()
+        # CONTRACT.md §6.1 rule 4 / CONTRACT 1.52 N4.4: logout clears a
+        # held device credential, same as it clears the cookie session.
+        self._session.clear_bearer_credential()
         # §5.2 rule 1: no session, no reach to gate `acting_tenant()` on.
         self._principal_scope = None
 
@@ -453,7 +456,15 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         with self._telemetry.request(operation, "POST", path, attempt) as span:
             response = await self._rest_send_async(request)
 
-            if response.status_code == httpx.codes.UNAUTHORIZED:
+            # CONTRACT.md §6.1 rule 5 / CONTRACT 1.52 N4.5: a device
+            # credential is never refreshed, on either transport. Leaving
+            # `response` as the server's own 401 when one is held means the
+            # status check below raises with the SERVER's message, never
+            # the refresh guard's "no access token to refresh".
+            if (
+                response.status_code == httpx.codes.UNAUTHORIZED
+                and self._session.bearer_token is None
+            ):
                 response = await self._retry_after_refresh_async(request)
 
             span.status = response.status_code

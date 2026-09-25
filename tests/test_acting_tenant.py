@@ -513,3 +513,31 @@ async def test_an_sso_completion_after_an_org_level_false_login_resets_the_stale
         handle = client.acting_tenant(TENANT_A)
         assert handle.acting_tenant_id == TENANT_A
         await client.aclose()
+
+
+# CONTRACT 1.52 N5.6 (C-12): tenant ids compare as UUIDs, never as strings.
+# The server writes `reachable_tenant_ids` in lower case; a caller may pass
+# the same UUID in upper case, which `acting_tenant()`'s UUID check accepts.
+# The all-digit constants above cannot show this, so these use hex letters.
+TENANT_HEX = "abcdef01-2345-4678-9abc-def012345678"
+
+
+def test_reach_is_decided_on_uuids_not_on_letter_case() -> None:
+    with respx.mock(assert_all_called=False) as router:
+        mount_login_as(router, organization_level=True, reachable_tenant_ids=[TENANT_HEX])
+        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client.login("a@example.test", "password123")
+        handle = client.acting_tenant(TENANT_HEX.upper())
+        assert handle.acting_tenant_id is not None
+        assert handle.acting_tenant_id.lower() == TENANT_HEX
+        client.close()
+
+
+def test_reach_still_refuses_an_unreachable_tenant_in_any_case() -> None:
+    with respx.mock(assert_all_called=False) as router:
+        mount_login_as(router, organization_level=True, reachable_tenant_ids=[TENANT_HEX])
+        client = AxiamClient(base_url=BASE_URL, tenant_slug=TENANT_SLUG)
+        client.login("a@example.test", "password123")
+        with pytest.raises(AuthzError, match="reachable_tenant_ids"):
+            client.acting_tenant(TENANT_A.upper())
+        client.close()

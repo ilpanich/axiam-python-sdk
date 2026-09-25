@@ -111,6 +111,13 @@ from them.
 
 ### Fixed
 
+- **`acting_tenant()` decides reach on UUIDs, not on letter case (CONTRACT 1.52 N5.6, C-12).**
+  `reachable_tenant_ids` was matched with a plain string `in`. The UUID check accepts either
+  case, and the server writes lower case, so an upper-case spelling of a tenant the principal
+  does reach was refused client-side. Both sides are now compared in one canonical case.
+  Pinned by `test_reach_is_decided_on_uuids_not_on_letter_case` and its twin
+  `test_reach_still_refuses_an_unreachable_tenant_in_any_case`, in `tests/test_acting_tenant.py`.
+
 - **`scripts/gen_management.py` generated `SubjectAltName` — an externally
   tagged `oneOf` (`{"dns": ...}` vs `{"ip": ...}`, no shared discriminator
   field) — as an empty class with no fields**, because the generator's
@@ -160,6 +167,92 @@ from them.
   (`tests/test_device_auth.py`:
   `test_the_device_login_post_itself_carries_no_stale_cookie`[`_async`],
   `test_a_refused_device_login_leaves_the_prior_session_untouched`[`_async`].)
+
+C-12 conformance review, contract 1.52 (draft, `N1`-`N6`; the review found this
+SDK's own C-12 findings, plus two `N4` violations no SDK's findings list named
+— see "Not found by the review" below):
+
+- **CONTRACT 1.52 N4.7 — a held device credential could not reach the
+  management API.** `management/_request.py`'s `_require_session` (§27.4
+  rule 1) checked only the `axiam_access` cookie, so every management call
+  made after `authenticate_device()` — which never sets that cookie — was
+  refused client-side with "no active session", even though §27.4 rule 1
+  accepts a bearer credential and every other REST call already worked
+  under one. It now accepts either. (`tests/test_c12_conformance.py`:
+  `test_management_call_reaches_the_wire_with_the_device_bearer`[`_async`].)
+- **CONTRACT 1.52 N4.4 — an adopted device credential was never released.**
+  `_Session.clear_bearer_credential` existed but had no caller: a `login()`
+  (or `verify_mfa`/OPAQUE/a WebAuthn authentication/an SSO completion —
+  every path through `_absorb_session_cookies`) performed after
+  `authenticate_device()` established a fresh cookie session, but the
+  device bearer token stayed adopted underneath it, and
+  `_apply_bearer_credential` prefers a held bearer token — so every
+  request kept authenticating as the device, silently, never as the new
+  session. `logout()` had the same gap. Both now clear it.
+  `_session_id_for_logout` also read only the cookie jar, so `logout()`
+  itself could not even be called under a device-only credential — CONTRACT
+  1.52 N4 rule 3 lists `logout` among the requests the device credential is
+  the credential of; it now reads a held bearer token too, matching N4.7.
+  (`tests/test_c12_conformance.py`:
+  `test_a_login_after_a_device_login_sends_the_logins_cookie_and_no_bearer`[`_async`],
+  `test_logout_clears_a_held_device_credential`[`_async`],
+  `test_a_second_device_login_replaces_the_first` — the I4 twin, pinning
+  the case `adopt_bearer_credential` already got right.)
+- **CONTRACT 1.52 N5.3 — the acting-tenant gate was per handle, not per
+  session.** `_AxiamClientBase.__init__` stored `_principal_scope` as a
+  plain instance attribute; `acting_tenant()`/`clear_acting_tenant()`
+  `copy.copy` a new handle sharing the session, but a *plain* attribute is
+  copied by value at that instant and diverges afterward — a login
+  performed through one handle never updated what a sibling handle (or the
+  original) gated `acting_tenant()` on, contradicting §5.2 rule 1's "one
+  gate per session" (and the client's own — inaccurate, until now —
+  `_acting_tenant` field comment, which already described the scope as
+  shared). `_principal_scope` is now a property forwarding to
+  `_Session.principal_scope`, so every existing `self._principal_scope =
+  ...` call site writes through to the session every handle shares.
+  (`tests/test_c12_conformance.py`:
+  `test_the_acting_tenant_gate_is_shared_across_every_handle_over_one_session`[`_async`],
+  `test_the_acting_tenant_gate_is_not_shared_across_two_independent_clients`
+  — the I4 twin, pinning that the fix is session-scoped, not global.)
+- **CONTRACT 1.52 N5.1 — `X-Axiam-Tenant` and the bearer credential had no
+  same-origin guard.** `_apply_acting_tenant`/`_apply_bearer_credential`
+  attached their header unconditionally; `_Session._prepare_request`
+  already withholds `X-Tenant-ID`/the CSRF echo off-origin, but these two
+  — added after that guard existed — did not, so a request built against a
+  host other than the client's own base URL (a discovered `/oauth2`
+  endpoint on another host, or a followed redirect) still carried the
+  tenant identifier and, worse, the bearer credential. Both now carry the
+  same guard. (`tests/test_c12_conformance.py`:
+  `test_acting_tenant_and_bearer_credential_do_not_reach_an_off_origin_host`[`_async`].)
+
+Not found by the review, found and fixed while checking this SDK against
+every `N1`-`N6` rule per the wave instructions:
+
+- **CONTRACT 1.52 N4 rule 5 — a 401 on the device credential entered the §9
+  refresh guard.** The choke point (`_Session._send_sync`/`_send_async`)
+  has no 401-interceptor by design (F-14); 401-triggers-refresh is opt-in
+  at each of the four call sites (`check_access`/`can`/`batch_check`, and
+  `send_management`/`send_management_async`), and none of them excluded a
+  held device credential. The refresh guard's own `refresh()` does refuse
+  before any wire call (no `axiam_access` cookie to refresh), so no actual
+  refresh request was sent — but that refusal's `AuthError("no access
+  token to refresh — call login() first")` then propagated as the visible
+  failure, masking the server's own 401 body/message entirely. All four
+  call sites now skip the refresh-guard branch when a bearer credential is
+  held, leaving the server's response to reach the caller's own status
+  check. (`tests/test_c12_conformance.py`:
+  `test_a_401_under_the_device_credential_surfaces_the_servers_message`.)
+- **CONTRACT 1.52 N4 rule 2 — a malformed `200` on `authenticate_device()`
+  was adopted.** `_handle_device_auth_response` read `wire["access_token"]`
+  straight into the adopted credential with no check; an absent key raised
+  an unhandled `KeyError` (before any state changed, but with the wrong
+  exception type), and an empty string was adopted outright — every
+  subsequent request would then silently carry `Authorization: Bearer `.
+  A missing/empty `access_token` on a `200` is now refused client-side
+  (`NetworkError`), with no credential adopted, matching rule 2's "a
+  refused or malformed device login changes no client state".
+  (`tests/test_c12_conformance.py`:
+  `test_a_malformed_200_on_device_login_is_refused_and_adopts_no_credential`.)
 
 ### Breaking
 
