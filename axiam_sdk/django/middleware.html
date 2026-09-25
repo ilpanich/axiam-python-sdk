@@ -463,68 +463,70 @@ applied to the Spring integration.</p>
 </span><span id="L-342"><a href="#L-342"><span class="linenos">342</span></a><span class="sd">        :meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` — signature</span>
 </span><span id="L-343"><a href="#L-343"><span class="linenos">343</span></a><span class="sd">        (EdDSA-pinned before key lookup), required numeric ``exp``, ``nbf``</span>
 </span><span id="L-344"><a href="#L-344"><span class="linenos">344</span></a><span class="sd">        when present, required ``tenant_id`` matched against the configured</span>
-</span><span id="L-345"><a href="#L-345"><span class="linenos">345</span></a><span class="sd">        tenant (T-19-19/T-19-20), and ``iss``/``aud`` when configured — before</span>
-</span><span id="L-346"><a href="#L-346"><span class="linenos">346</span></a><span class="sd">        attaching ``request.axiam_user``.</span>
-</span><span id="L-347"><a href="#L-347"><span class="linenos">347</span></a>
-</span><span id="L-348"><a href="#L-348"><span class="linenos">348</span></a><span class="sd">        Returns:</span>
-</span><span id="L-349"><a href="#L-349"><span class="linenos">349</span></a><span class="sd">            ``None`` on success (``request.axiam_user`` has been set, or the</span>
-</span><span id="L-350"><a href="#L-350"><span class="linenos">350</span></a><span class="sd">            request is CONTRACT.md §28.3's exempted metadata-document GET/HEAD),</span>
-</span><span id="L-351"><a href="#L-351"><span class="linenos">351</span></a><span class="sd">            or a standardized 401/403 :class:`~django.http.JsonResponse` on</span>
-</span><span id="L-352"><a href="#L-352"><span class="linenos">352</span></a><span class="sd">            any failure — never propagating the raw token value (T-19-21).</span>
-</span><span id="L-353"><a href="#L-353"><span class="linenos">353</span></a><span class="sd">        """</span>
-</span><span id="L-354"><a href="#L-354"><span class="linenos">354</span></a>        <span class="c1"># CONTRACT.md §28.3 rule 2: the metadata document MUST answer without</span>
-</span><span id="L-355"><a href="#L-355"><span class="linenos">355</span></a>        <span class="c1"># a credential, and this middleware guards every request globally —</span>
-</span><span id="L-356"><a href="#L-356"><span class="linenos">356</span></a>        <span class="c1"># so the exemption is here, explicit, and derived from the one path</span>
-</span><span id="L-357"><a href="#L-357"><span class="linenos">357</span></a>        <span class="c1"># AXIAM_RESOURCE_METADATA_URL names. A no-op (returns False) when §28</span>
-</span><span id="L-358"><a href="#L-358"><span class="linenos">358</span></a>        <span class="c1"># is not configured.</span>
-</span><span id="L-359"><a href="#L-359"><span class="linenos">359</span></a>        <span class="k">if</span> <span class="n">is_metadata_document_request</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">path</span><span class="p">):</span>
-</span><span id="L-360"><a href="#L-360"><span class="linenos">360</span></a>            <span class="k">return</span> <span class="kc">None</span>
-</span><span id="L-361"><a href="#L-361"><span class="linenos">361</span></a>
-</span><span id="L-362"><a href="#L-362"><span class="linenos">362</span></a>        <span class="n">credential</span> <span class="o">=</span> <span class="n">_extract_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="L-363"><a href="#L-363"><span class="linenos">363</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">credential</span><span class="p">:</span>
-</span><span id="L-364"><a href="#L-364"><span class="linenos">364</span></a>            <span class="c1"># §28.4: no credential is not a bad credential, so the challenge</span>
-</span><span id="L-365"><a href="#L-365"><span class="linenos">365</span></a>            <span class="c1"># names no error code (RFC 6750 §3).</span>
-</span><span id="L-366"><a href="#L-366"><span class="linenos">366</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="L-367"><a href="#L-367"><span class="linenos">367</span></a>                <span class="s2">"missing authentication credentials"</span><span class="p">,</span>
-</span><span id="L-368"><a href="#L-368"><span class="linenos">368</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span>
-</span><span id="L-369"><a href="#L-369"><span class="linenos">369</span></a>                <span class="n">credential_presented</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="L-370"><a href="#L-370"><span class="linenos">370</span></a>            <span class="p">)</span>
-</span><span id="L-371"><a href="#L-371"><span class="linenos">371</span></a>
-</span><span id="L-372"><a href="#L-372"><span class="linenos">372</span></a>        <span class="k">if</span> <span class="n">credential</span><span class="o">.</span><span class="n">from_cookie</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_SAFE_METHODS</span><span class="p">:</span>
-</span><span id="L-373"><a href="#L-373"><span class="linenos">373</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_csrf_valid</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
-</span><span id="L-374"><a href="#L-374"><span class="linenos">374</span></a>                <span class="k">return</span> <span class="n">_csrf_error_response</span><span class="p">(</span><span class="s2">"CSRF validation failed"</span><span class="p">)</span>
-</span><span id="L-375"><a href="#L-375"><span class="linenos">375</span></a>
-</span><span id="L-376"><a href="#L-376"><span class="linenos">376</span></a>        <span class="n">token</span> <span class="o">=</span> <span class="n">credential</span><span class="o">.</span><span class="n">value</span>
+</span><span id="L-345"><a href="#L-345"><span class="linenos">345</span></a><span class="sd">        tenant (T-19-19/T-19-20), ``iss``/``aud`` when configured, and rule 9</span>
+</span><span id="L-346"><a href="#L-346"><span class="linenos">346</span></a><span class="sd">        (contract 1.51): a token carrying ``cnf`` is refused here, since this</span>
+</span><span id="L-347"><a href="#L-347"><span class="linenos">347</span></a><span class="sd">        entry point has no transport evidence to accept a bound one with —</span>
+</span><span id="L-348"><a href="#L-348"><span class="linenos">348</span></a><span class="sd">        before attaching ``request.axiam_user``.</span>
+</span><span id="L-349"><a href="#L-349"><span class="linenos">349</span></a>
+</span><span id="L-350"><a href="#L-350"><span class="linenos">350</span></a><span class="sd">        Returns:</span>
+</span><span id="L-351"><a href="#L-351"><span class="linenos">351</span></a><span class="sd">            ``None`` on success (``request.axiam_user`` has been set, or the</span>
+</span><span id="L-352"><a href="#L-352"><span class="linenos">352</span></a><span class="sd">            request is CONTRACT.md §28.3's exempted metadata-document GET/HEAD),</span>
+</span><span id="L-353"><a href="#L-353"><span class="linenos">353</span></a><span class="sd">            or a standardized 401/403 :class:`~django.http.JsonResponse` on</span>
+</span><span id="L-354"><a href="#L-354"><span class="linenos">354</span></a><span class="sd">            any failure — never propagating the raw token value (T-19-21).</span>
+</span><span id="L-355"><a href="#L-355"><span class="linenos">355</span></a><span class="sd">        """</span>
+</span><span id="L-356"><a href="#L-356"><span class="linenos">356</span></a>        <span class="c1"># CONTRACT.md §28.3 rule 2: the metadata document MUST answer without</span>
+</span><span id="L-357"><a href="#L-357"><span class="linenos">357</span></a>        <span class="c1"># a credential, and this middleware guards every request globally —</span>
+</span><span id="L-358"><a href="#L-358"><span class="linenos">358</span></a>        <span class="c1"># so the exemption is here, explicit, and derived from the one path</span>
+</span><span id="L-359"><a href="#L-359"><span class="linenos">359</span></a>        <span class="c1"># AXIAM_RESOURCE_METADATA_URL names. A no-op (returns False) when §28</span>
+</span><span id="L-360"><a href="#L-360"><span class="linenos">360</span></a>        <span class="c1"># is not configured.</span>
+</span><span id="L-361"><a href="#L-361"><span class="linenos">361</span></a>        <span class="k">if</span> <span class="n">is_metadata_document_request</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">path</span><span class="p">):</span>
+</span><span id="L-362"><a href="#L-362"><span class="linenos">362</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="L-363"><a href="#L-363"><span class="linenos">363</span></a>
+</span><span id="L-364"><a href="#L-364"><span class="linenos">364</span></a>        <span class="n">credential</span> <span class="o">=</span> <span class="n">_extract_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="L-365"><a href="#L-365"><span class="linenos">365</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">credential</span><span class="p">:</span>
+</span><span id="L-366"><a href="#L-366"><span class="linenos">366</span></a>            <span class="c1"># §28.4: no credential is not a bad credential, so the challenge</span>
+</span><span id="L-367"><a href="#L-367"><span class="linenos">367</span></a>            <span class="c1"># names no error code (RFC 6750 §3).</span>
+</span><span id="L-368"><a href="#L-368"><span class="linenos">368</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="L-369"><a href="#L-369"><span class="linenos">369</span></a>                <span class="s2">"missing authentication credentials"</span><span class="p">,</span>
+</span><span id="L-370"><a href="#L-370"><span class="linenos">370</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span>
+</span><span id="L-371"><a href="#L-371"><span class="linenos">371</span></a>                <span class="n">credential_presented</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="L-372"><a href="#L-372"><span class="linenos">372</span></a>            <span class="p">)</span>
+</span><span id="L-373"><a href="#L-373"><span class="linenos">373</span></a>
+</span><span id="L-374"><a href="#L-374"><span class="linenos">374</span></a>        <span class="k">if</span> <span class="n">credential</span><span class="o">.</span><span class="n">from_cookie</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_SAFE_METHODS</span><span class="p">:</span>
+</span><span id="L-375"><a href="#L-375"><span class="linenos">375</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_csrf_valid</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+</span><span id="L-376"><a href="#L-376"><span class="linenos">376</span></a>                <span class="k">return</span> <span class="n">_csrf_error_response</span><span class="p">(</span><span class="s2">"CSRF validation failed"</span><span class="p">)</span>
 </span><span id="L-377"><a href="#L-377"><span class="linenos">377</span></a>
-</span><span id="L-378"><a href="#L-378"><span class="linenos">378</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="L-379"><a href="#L-379"><span class="linenos">379</span></a>            <span class="c1"># CONTRACT.md §10.1: a single call applying every rule. Any rule</span>
-</span><span id="L-380"><a href="#L-380"><span class="linenos">380</span></a>            <span class="c1"># violation — including a token with no ``exp`` at all, which the</span>
-</span><span id="L-381"><a href="#L-381"><span class="linenos">381</span></a>            <span class="c1"># previous ``exp``-if-present check accepted (SEC-080) — degrades</span>
-</span><span id="L-382"><a href="#L-382"><span class="linenos">382</span></a>            <span class="c1"># to the standardized 401 below, never a 500 and never a silent</span>
-</span><span id="L-383"><a href="#L-383"><span class="linenos">383</span></a>            <span class="c1"># accept.</span>
-</span><span id="L-384"><a href="#L-384"><span class="linenos">384</span></a>            <span class="n">claims</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verifier</span><span class="o">.</span><span class="n">verify_access_token</span><span class="p">(</span>
-</span><span id="L-385"><a href="#L-385"><span class="linenos">385</span></a>                <span class="n">token</span><span class="p">,</span> <span class="n">expected_tenant_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_configured_tenant</span>
-</span><span id="L-386"><a href="#L-386"><span class="linenos">386</span></a>            <span class="p">)</span>
-</span><span id="L-387"><a href="#L-387"><span class="linenos">387</span></a>        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-</span><span id="L-388"><a href="#L-388"><span class="linenos">388</span></a>            <span class="c1"># §28.4: a credential was presented and rejected. Expired, wrong</span>
-</span><span id="L-389"><a href="#L-389"><span class="linenos">389</span></a>            <span class="c1"># tenant, wrong audience, bad signature — all `invalid_token`,</span>
-</span><span id="L-390"><a href="#L-390"><span class="linenos">390</span></a>            <span class="c1"># indistinguishably.</span>
-</span><span id="L-391"><a href="#L-391"><span class="linenos">391</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="L-392"><a href="#L-392"><span class="linenos">392</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="L-393"><a href="#L-393"><span class="linenos">393</span></a>            <span class="p">)</span>
-</span><span id="L-394"><a href="#L-394"><span class="linenos">394</span></a>
-</span><span id="L-395"><a href="#L-395"><span class="linenos">395</span></a>        <span class="c1"># WR-02: a malformed-but-signed claim shape (e.g. scope: null) must</span>
-</span><span id="L-396"><a href="#L-396"><span class="linenos">396</span></a>        <span class="c1"># degrade to the standardized 401, never an unhandled 500.</span>
-</span><span id="L-397"><a href="#L-397"><span class="linenos">397</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="L-398"><a href="#L-398"><span class="linenos">398</span></a>            <span class="n">request</span><span class="o">.</span><span class="n">axiam_user</span> <span class="o">=</span> <span class="n">_build_user</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span>
-</span><span id="L-399"><a href="#L-399"><span class="linenos">399</span></a>        <span class="k">except</span> <span class="n">_MalformedClaims</span><span class="p">:</span>
-</span><span id="L-400"><a href="#L-400"><span class="linenos">400</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="L-401"><a href="#L-401"><span class="linenos">401</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="L-402"><a href="#L-402"><span class="linenos">402</span></a>            <span class="p">)</span>
-</span><span id="L-403"><a href="#L-403"><span class="linenos">403</span></a>        <span class="k">return</span> <span class="kc">None</span>
-</span><span id="L-404"><a href="#L-404"><span class="linenos">404</span></a>
-</span><span id="L-405"><a href="#L-405"><span class="linenos">405</span></a>
-</span><span id="L-406"><a href="#L-406"><span class="linenos">406</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"AxiamAuthMiddleware"</span><span class="p">]</span>
+</span><span id="L-378"><a href="#L-378"><span class="linenos">378</span></a>        <span class="n">token</span> <span class="o">=</span> <span class="n">credential</span><span class="o">.</span><span class="n">value</span>
+</span><span id="L-379"><a href="#L-379"><span class="linenos">379</span></a>
+</span><span id="L-380"><a href="#L-380"><span class="linenos">380</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="L-381"><a href="#L-381"><span class="linenos">381</span></a>            <span class="c1"># CONTRACT.md §10.1: a single call applying every rule. Any rule</span>
+</span><span id="L-382"><a href="#L-382"><span class="linenos">382</span></a>            <span class="c1"># violation — including a token with no ``exp`` at all, which the</span>
+</span><span id="L-383"><a href="#L-383"><span class="linenos">383</span></a>            <span class="c1"># previous ``exp``-if-present check accepted (SEC-080) — degrades</span>
+</span><span id="L-384"><a href="#L-384"><span class="linenos">384</span></a>            <span class="c1"># to the standardized 401 below, never a 500 and never a silent</span>
+</span><span id="L-385"><a href="#L-385"><span class="linenos">385</span></a>            <span class="c1"># accept.</span>
+</span><span id="L-386"><a href="#L-386"><span class="linenos">386</span></a>            <span class="n">claims</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verifier</span><span class="o">.</span><span class="n">verify_access_token</span><span class="p">(</span>
+</span><span id="L-387"><a href="#L-387"><span class="linenos">387</span></a>                <span class="n">token</span><span class="p">,</span> <span class="n">expected_tenant_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_configured_tenant</span>
+</span><span id="L-388"><a href="#L-388"><span class="linenos">388</span></a>            <span class="p">)</span>
+</span><span id="L-389"><a href="#L-389"><span class="linenos">389</span></a>        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+</span><span id="L-390"><a href="#L-390"><span class="linenos">390</span></a>            <span class="c1"># §28.4: a credential was presented and rejected. Expired, wrong</span>
+</span><span id="L-391"><a href="#L-391"><span class="linenos">391</span></a>            <span class="c1"># tenant, wrong audience, bad signature — all `invalid_token`,</span>
+</span><span id="L-392"><a href="#L-392"><span class="linenos">392</span></a>            <span class="c1"># indistinguishably.</span>
+</span><span id="L-393"><a href="#L-393"><span class="linenos">393</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="L-394"><a href="#L-394"><span class="linenos">394</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="L-395"><a href="#L-395"><span class="linenos">395</span></a>            <span class="p">)</span>
+</span><span id="L-396"><a href="#L-396"><span class="linenos">396</span></a>
+</span><span id="L-397"><a href="#L-397"><span class="linenos">397</span></a>        <span class="c1"># WR-02: a malformed-but-signed claim shape (e.g. scope: null) must</span>
+</span><span id="L-398"><a href="#L-398"><span class="linenos">398</span></a>        <span class="c1"># degrade to the standardized 401, never an unhandled 500.</span>
+</span><span id="L-399"><a href="#L-399"><span class="linenos">399</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="L-400"><a href="#L-400"><span class="linenos">400</span></a>            <span class="n">request</span><span class="o">.</span><span class="n">axiam_user</span> <span class="o">=</span> <span class="n">_build_user</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span>
+</span><span id="L-401"><a href="#L-401"><span class="linenos">401</span></a>        <span class="k">except</span> <span class="n">_MalformedClaims</span><span class="p">:</span>
+</span><span id="L-402"><a href="#L-402"><span class="linenos">402</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="L-403"><a href="#L-403"><span class="linenos">403</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="L-404"><a href="#L-404"><span class="linenos">404</span></a>            <span class="p">)</span>
+</span><span id="L-405"><a href="#L-405"><span class="linenos">405</span></a>        <span class="k">return</span> <span class="kc">None</span>
+</span><span id="L-406"><a href="#L-406"><span class="linenos">406</span></a>
+</span><span id="L-407"><a href="#L-407"><span class="linenos">407</span></a>
+</span><span id="L-408"><a href="#L-408"><span class="linenos">408</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"AxiamAuthMiddleware"</span><span class="p">]</span>
 </span></pre></div>
 
 
@@ -668,65 +670,67 @@ applied to the Spring integration.</p>
 </span><span id="AxiamAuthMiddleware-343"><a href="#AxiamAuthMiddleware-343"><span class="linenos">343</span></a><span class="sd">        :meth:`~axiam_sdk._jwks.JwksVerifier.verify_access_token` — signature</span>
 </span><span id="AxiamAuthMiddleware-344"><a href="#AxiamAuthMiddleware-344"><span class="linenos">344</span></a><span class="sd">        (EdDSA-pinned before key lookup), required numeric ``exp``, ``nbf``</span>
 </span><span id="AxiamAuthMiddleware-345"><a href="#AxiamAuthMiddleware-345"><span class="linenos">345</span></a><span class="sd">        when present, required ``tenant_id`` matched against the configured</span>
-</span><span id="AxiamAuthMiddleware-346"><a href="#AxiamAuthMiddleware-346"><span class="linenos">346</span></a><span class="sd">        tenant (T-19-19/T-19-20), and ``iss``/``aud`` when configured — before</span>
-</span><span id="AxiamAuthMiddleware-347"><a href="#AxiamAuthMiddleware-347"><span class="linenos">347</span></a><span class="sd">        attaching ``request.axiam_user``.</span>
-</span><span id="AxiamAuthMiddleware-348"><a href="#AxiamAuthMiddleware-348"><span class="linenos">348</span></a>
-</span><span id="AxiamAuthMiddleware-349"><a href="#AxiamAuthMiddleware-349"><span class="linenos">349</span></a><span class="sd">        Returns:</span>
-</span><span id="AxiamAuthMiddleware-350"><a href="#AxiamAuthMiddleware-350"><span class="linenos">350</span></a><span class="sd">            ``None`` on success (``request.axiam_user`` has been set, or the</span>
-</span><span id="AxiamAuthMiddleware-351"><a href="#AxiamAuthMiddleware-351"><span class="linenos">351</span></a><span class="sd">            request is CONTRACT.md §28.3's exempted metadata-document GET/HEAD),</span>
-</span><span id="AxiamAuthMiddleware-352"><a href="#AxiamAuthMiddleware-352"><span class="linenos">352</span></a><span class="sd">            or a standardized 401/403 :class:`~django.http.JsonResponse` on</span>
-</span><span id="AxiamAuthMiddleware-353"><a href="#AxiamAuthMiddleware-353"><span class="linenos">353</span></a><span class="sd">            any failure — never propagating the raw token value (T-19-21).</span>
-</span><span id="AxiamAuthMiddleware-354"><a href="#AxiamAuthMiddleware-354"><span class="linenos">354</span></a><span class="sd">        """</span>
-</span><span id="AxiamAuthMiddleware-355"><a href="#AxiamAuthMiddleware-355"><span class="linenos">355</span></a>        <span class="c1"># CONTRACT.md §28.3 rule 2: the metadata document MUST answer without</span>
-</span><span id="AxiamAuthMiddleware-356"><a href="#AxiamAuthMiddleware-356"><span class="linenos">356</span></a>        <span class="c1"># a credential, and this middleware guards every request globally —</span>
-</span><span id="AxiamAuthMiddleware-357"><a href="#AxiamAuthMiddleware-357"><span class="linenos">357</span></a>        <span class="c1"># so the exemption is here, explicit, and derived from the one path</span>
-</span><span id="AxiamAuthMiddleware-358"><a href="#AxiamAuthMiddleware-358"><span class="linenos">358</span></a>        <span class="c1"># AXIAM_RESOURCE_METADATA_URL names. A no-op (returns False) when §28</span>
-</span><span id="AxiamAuthMiddleware-359"><a href="#AxiamAuthMiddleware-359"><span class="linenos">359</span></a>        <span class="c1"># is not configured.</span>
-</span><span id="AxiamAuthMiddleware-360"><a href="#AxiamAuthMiddleware-360"><span class="linenos">360</span></a>        <span class="k">if</span> <span class="n">is_metadata_document_request</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">path</span><span class="p">):</span>
-</span><span id="AxiamAuthMiddleware-361"><a href="#AxiamAuthMiddleware-361"><span class="linenos">361</span></a>            <span class="k">return</span> <span class="kc">None</span>
-</span><span id="AxiamAuthMiddleware-362"><a href="#AxiamAuthMiddleware-362"><span class="linenos">362</span></a>
-</span><span id="AxiamAuthMiddleware-363"><a href="#AxiamAuthMiddleware-363"><span class="linenos">363</span></a>        <span class="n">credential</span> <span class="o">=</span> <span class="n">_extract_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-364"><a href="#AxiamAuthMiddleware-364"><span class="linenos">364</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">credential</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-365"><a href="#AxiamAuthMiddleware-365"><span class="linenos">365</span></a>            <span class="c1"># §28.4: no credential is not a bad credential, so the challenge</span>
-</span><span id="AxiamAuthMiddleware-366"><a href="#AxiamAuthMiddleware-366"><span class="linenos">366</span></a>            <span class="c1"># names no error code (RFC 6750 §3).</span>
-</span><span id="AxiamAuthMiddleware-367"><a href="#AxiamAuthMiddleware-367"><span class="linenos">367</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="AxiamAuthMiddleware-368"><a href="#AxiamAuthMiddleware-368"><span class="linenos">368</span></a>                <span class="s2">"missing authentication credentials"</span><span class="p">,</span>
-</span><span id="AxiamAuthMiddleware-369"><a href="#AxiamAuthMiddleware-369"><span class="linenos">369</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span>
-</span><span id="AxiamAuthMiddleware-370"><a href="#AxiamAuthMiddleware-370"><span class="linenos">370</span></a>                <span class="n">credential_presented</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-</span><span id="AxiamAuthMiddleware-371"><a href="#AxiamAuthMiddleware-371"><span class="linenos">371</span></a>            <span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-372"><a href="#AxiamAuthMiddleware-372"><span class="linenos">372</span></a>
-</span><span id="AxiamAuthMiddleware-373"><a href="#AxiamAuthMiddleware-373"><span class="linenos">373</span></a>        <span class="k">if</span> <span class="n">credential</span><span class="o">.</span><span class="n">from_cookie</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_SAFE_METHODS</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-374"><a href="#AxiamAuthMiddleware-374"><span class="linenos">374</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_csrf_valid</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
-</span><span id="AxiamAuthMiddleware-375"><a href="#AxiamAuthMiddleware-375"><span class="linenos">375</span></a>                <span class="k">return</span> <span class="n">_csrf_error_response</span><span class="p">(</span><span class="s2">"CSRF validation failed"</span><span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-376"><a href="#AxiamAuthMiddleware-376"><span class="linenos">376</span></a>
-</span><span id="AxiamAuthMiddleware-377"><a href="#AxiamAuthMiddleware-377"><span class="linenos">377</span></a>        <span class="n">token</span> <span class="o">=</span> <span class="n">credential</span><span class="o">.</span><span class="n">value</span>
+</span><span id="AxiamAuthMiddleware-346"><a href="#AxiamAuthMiddleware-346"><span class="linenos">346</span></a><span class="sd">        tenant (T-19-19/T-19-20), ``iss``/``aud`` when configured, and rule 9</span>
+</span><span id="AxiamAuthMiddleware-347"><a href="#AxiamAuthMiddleware-347"><span class="linenos">347</span></a><span class="sd">        (contract 1.51): a token carrying ``cnf`` is refused here, since this</span>
+</span><span id="AxiamAuthMiddleware-348"><a href="#AxiamAuthMiddleware-348"><span class="linenos">348</span></a><span class="sd">        entry point has no transport evidence to accept a bound one with —</span>
+</span><span id="AxiamAuthMiddleware-349"><a href="#AxiamAuthMiddleware-349"><span class="linenos">349</span></a><span class="sd">        before attaching ``request.axiam_user``.</span>
+</span><span id="AxiamAuthMiddleware-350"><a href="#AxiamAuthMiddleware-350"><span class="linenos">350</span></a>
+</span><span id="AxiamAuthMiddleware-351"><a href="#AxiamAuthMiddleware-351"><span class="linenos">351</span></a><span class="sd">        Returns:</span>
+</span><span id="AxiamAuthMiddleware-352"><a href="#AxiamAuthMiddleware-352"><span class="linenos">352</span></a><span class="sd">            ``None`` on success (``request.axiam_user`` has been set, or the</span>
+</span><span id="AxiamAuthMiddleware-353"><a href="#AxiamAuthMiddleware-353"><span class="linenos">353</span></a><span class="sd">            request is CONTRACT.md §28.3's exempted metadata-document GET/HEAD),</span>
+</span><span id="AxiamAuthMiddleware-354"><a href="#AxiamAuthMiddleware-354"><span class="linenos">354</span></a><span class="sd">            or a standardized 401/403 :class:`~django.http.JsonResponse` on</span>
+</span><span id="AxiamAuthMiddleware-355"><a href="#AxiamAuthMiddleware-355"><span class="linenos">355</span></a><span class="sd">            any failure — never propagating the raw token value (T-19-21).</span>
+</span><span id="AxiamAuthMiddleware-356"><a href="#AxiamAuthMiddleware-356"><span class="linenos">356</span></a><span class="sd">        """</span>
+</span><span id="AxiamAuthMiddleware-357"><a href="#AxiamAuthMiddleware-357"><span class="linenos">357</span></a>        <span class="c1"># CONTRACT.md §28.3 rule 2: the metadata document MUST answer without</span>
+</span><span id="AxiamAuthMiddleware-358"><a href="#AxiamAuthMiddleware-358"><span class="linenos">358</span></a>        <span class="c1"># a credential, and this middleware guards every request globally —</span>
+</span><span id="AxiamAuthMiddleware-359"><a href="#AxiamAuthMiddleware-359"><span class="linenos">359</span></a>        <span class="c1"># so the exemption is here, explicit, and derived from the one path</span>
+</span><span id="AxiamAuthMiddleware-360"><a href="#AxiamAuthMiddleware-360"><span class="linenos">360</span></a>        <span class="c1"># AXIAM_RESOURCE_METADATA_URL names. A no-op (returns False) when §28</span>
+</span><span id="AxiamAuthMiddleware-361"><a href="#AxiamAuthMiddleware-361"><span class="linenos">361</span></a>        <span class="c1"># is not configured.</span>
+</span><span id="AxiamAuthMiddleware-362"><a href="#AxiamAuthMiddleware-362"><span class="linenos">362</span></a>        <span class="k">if</span> <span class="n">is_metadata_document_request</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="p">,</span> <span class="n">request</span><span class="o">.</span><span class="n">path</span><span class="p">):</span>
+</span><span id="AxiamAuthMiddleware-363"><a href="#AxiamAuthMiddleware-363"><span class="linenos">363</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="AxiamAuthMiddleware-364"><a href="#AxiamAuthMiddleware-364"><span class="linenos">364</span></a>
+</span><span id="AxiamAuthMiddleware-365"><a href="#AxiamAuthMiddleware-365"><span class="linenos">365</span></a>        <span class="n">credential</span> <span class="o">=</span> <span class="n">_extract_token</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-366"><a href="#AxiamAuthMiddleware-366"><span class="linenos">366</span></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">credential</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-367"><a href="#AxiamAuthMiddleware-367"><span class="linenos">367</span></a>            <span class="c1"># §28.4: no credential is not a bad credential, so the challenge</span>
+</span><span id="AxiamAuthMiddleware-368"><a href="#AxiamAuthMiddleware-368"><span class="linenos">368</span></a>            <span class="c1"># names no error code (RFC 6750 §3).</span>
+</span><span id="AxiamAuthMiddleware-369"><a href="#AxiamAuthMiddleware-369"><span class="linenos">369</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="AxiamAuthMiddleware-370"><a href="#AxiamAuthMiddleware-370"><span class="linenos">370</span></a>                <span class="s2">"missing authentication credentials"</span><span class="p">,</span>
+</span><span id="AxiamAuthMiddleware-371"><a href="#AxiamAuthMiddleware-371"><span class="linenos">371</span></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span>
+</span><span id="AxiamAuthMiddleware-372"><a href="#AxiamAuthMiddleware-372"><span class="linenos">372</span></a>                <span class="n">credential_presented</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="AxiamAuthMiddleware-373"><a href="#AxiamAuthMiddleware-373"><span class="linenos">373</span></a>            <span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-374"><a href="#AxiamAuthMiddleware-374"><span class="linenos">374</span></a>
+</span><span id="AxiamAuthMiddleware-375"><a href="#AxiamAuthMiddleware-375"><span class="linenos">375</span></a>        <span class="k">if</span> <span class="n">credential</span><span class="o">.</span><span class="n">from_cookie</span> <span class="ow">and</span> <span class="n">request</span><span class="o">.</span><span class="n">method</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_SAFE_METHODS</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-376"><a href="#AxiamAuthMiddleware-376"><span class="linenos">376</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_csrf_valid</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+</span><span id="AxiamAuthMiddleware-377"><a href="#AxiamAuthMiddleware-377"><span class="linenos">377</span></a>                <span class="k">return</span> <span class="n">_csrf_error_response</span><span class="p">(</span><span class="s2">"CSRF validation failed"</span><span class="p">)</span>
 </span><span id="AxiamAuthMiddleware-378"><a href="#AxiamAuthMiddleware-378"><span class="linenos">378</span></a>
-</span><span id="AxiamAuthMiddleware-379"><a href="#AxiamAuthMiddleware-379"><span class="linenos">379</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-380"><a href="#AxiamAuthMiddleware-380"><span class="linenos">380</span></a>            <span class="c1"># CONTRACT.md §10.1: a single call applying every rule. Any rule</span>
-</span><span id="AxiamAuthMiddleware-381"><a href="#AxiamAuthMiddleware-381"><span class="linenos">381</span></a>            <span class="c1"># violation — including a token with no ``exp`` at all, which the</span>
-</span><span id="AxiamAuthMiddleware-382"><a href="#AxiamAuthMiddleware-382"><span class="linenos">382</span></a>            <span class="c1"># previous ``exp``-if-present check accepted (SEC-080) — degrades</span>
-</span><span id="AxiamAuthMiddleware-383"><a href="#AxiamAuthMiddleware-383"><span class="linenos">383</span></a>            <span class="c1"># to the standardized 401 below, never a 500 and never a silent</span>
-</span><span id="AxiamAuthMiddleware-384"><a href="#AxiamAuthMiddleware-384"><span class="linenos">384</span></a>            <span class="c1"># accept.</span>
-</span><span id="AxiamAuthMiddleware-385"><a href="#AxiamAuthMiddleware-385"><span class="linenos">385</span></a>            <span class="n">claims</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verifier</span><span class="o">.</span><span class="n">verify_access_token</span><span class="p">(</span>
-</span><span id="AxiamAuthMiddleware-386"><a href="#AxiamAuthMiddleware-386"><span class="linenos">386</span></a>                <span class="n">token</span><span class="p">,</span> <span class="n">expected_tenant_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_configured_tenant</span>
-</span><span id="AxiamAuthMiddleware-387"><a href="#AxiamAuthMiddleware-387"><span class="linenos">387</span></a>            <span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-388"><a href="#AxiamAuthMiddleware-388"><span class="linenos">388</span></a>        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-389"><a href="#AxiamAuthMiddleware-389"><span class="linenos">389</span></a>            <span class="c1"># §28.4: a credential was presented and rejected. Expired, wrong</span>
-</span><span id="AxiamAuthMiddleware-390"><a href="#AxiamAuthMiddleware-390"><span class="linenos">390</span></a>            <span class="c1"># tenant, wrong audience, bad signature — all `invalid_token`,</span>
-</span><span id="AxiamAuthMiddleware-391"><a href="#AxiamAuthMiddleware-391"><span class="linenos">391</span></a>            <span class="c1"># indistinguishably.</span>
-</span><span id="AxiamAuthMiddleware-392"><a href="#AxiamAuthMiddleware-392"><span class="linenos">392</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="AxiamAuthMiddleware-393"><a href="#AxiamAuthMiddleware-393"><span class="linenos">393</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="AxiamAuthMiddleware-394"><a href="#AxiamAuthMiddleware-394"><span class="linenos">394</span></a>            <span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-395"><a href="#AxiamAuthMiddleware-395"><span class="linenos">395</span></a>
-</span><span id="AxiamAuthMiddleware-396"><a href="#AxiamAuthMiddleware-396"><span class="linenos">396</span></a>        <span class="c1"># WR-02: a malformed-but-signed claim shape (e.g. scope: null) must</span>
-</span><span id="AxiamAuthMiddleware-397"><a href="#AxiamAuthMiddleware-397"><span class="linenos">397</span></a>        <span class="c1"># degrade to the standardized 401, never an unhandled 500.</span>
-</span><span id="AxiamAuthMiddleware-398"><a href="#AxiamAuthMiddleware-398"><span class="linenos">398</span></a>        <span class="k">try</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-399"><a href="#AxiamAuthMiddleware-399"><span class="linenos">399</span></a>            <span class="n">request</span><span class="o">.</span><span class="n">axiam_user</span> <span class="o">=</span> <span class="n">_build_user</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-400"><a href="#AxiamAuthMiddleware-400"><span class="linenos">400</span></a>        <span class="k">except</span> <span class="n">_MalformedClaims</span><span class="p">:</span>
-</span><span id="AxiamAuthMiddleware-401"><a href="#AxiamAuthMiddleware-401"><span class="linenos">401</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
-</span><span id="AxiamAuthMiddleware-402"><a href="#AxiamAuthMiddleware-402"><span class="linenos">402</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="AxiamAuthMiddleware-403"><a href="#AxiamAuthMiddleware-403"><span class="linenos">403</span></a>            <span class="p">)</span>
-</span><span id="AxiamAuthMiddleware-404"><a href="#AxiamAuthMiddleware-404"><span class="linenos">404</span></a>        <span class="k">return</span> <span class="kc">None</span>
+</span><span id="AxiamAuthMiddleware-379"><a href="#AxiamAuthMiddleware-379"><span class="linenos">379</span></a>        <span class="n">token</span> <span class="o">=</span> <span class="n">credential</span><span class="o">.</span><span class="n">value</span>
+</span><span id="AxiamAuthMiddleware-380"><a href="#AxiamAuthMiddleware-380"><span class="linenos">380</span></a>
+</span><span id="AxiamAuthMiddleware-381"><a href="#AxiamAuthMiddleware-381"><span class="linenos">381</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-382"><a href="#AxiamAuthMiddleware-382"><span class="linenos">382</span></a>            <span class="c1"># CONTRACT.md §10.1: a single call applying every rule. Any rule</span>
+</span><span id="AxiamAuthMiddleware-383"><a href="#AxiamAuthMiddleware-383"><span class="linenos">383</span></a>            <span class="c1"># violation — including a token with no ``exp`` at all, which the</span>
+</span><span id="AxiamAuthMiddleware-384"><a href="#AxiamAuthMiddleware-384"><span class="linenos">384</span></a>            <span class="c1"># previous ``exp``-if-present check accepted (SEC-080) — degrades</span>
+</span><span id="AxiamAuthMiddleware-385"><a href="#AxiamAuthMiddleware-385"><span class="linenos">385</span></a>            <span class="c1"># to the standardized 401 below, never a 500 and never a silent</span>
+</span><span id="AxiamAuthMiddleware-386"><a href="#AxiamAuthMiddleware-386"><span class="linenos">386</span></a>            <span class="c1"># accept.</span>
+</span><span id="AxiamAuthMiddleware-387"><a href="#AxiamAuthMiddleware-387"><span class="linenos">387</span></a>            <span class="n">claims</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verifier</span><span class="o">.</span><span class="n">verify_access_token</span><span class="p">(</span>
+</span><span id="AxiamAuthMiddleware-388"><a href="#AxiamAuthMiddleware-388"><span class="linenos">388</span></a>                <span class="n">token</span><span class="p">,</span> <span class="n">expected_tenant_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_configured_tenant</span>
+</span><span id="AxiamAuthMiddleware-389"><a href="#AxiamAuthMiddleware-389"><span class="linenos">389</span></a>            <span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-390"><a href="#AxiamAuthMiddleware-390"><span class="linenos">390</span></a>        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-391"><a href="#AxiamAuthMiddleware-391"><span class="linenos">391</span></a>            <span class="c1"># §28.4: a credential was presented and rejected. Expired, wrong</span>
+</span><span id="AxiamAuthMiddleware-392"><a href="#AxiamAuthMiddleware-392"><span class="linenos">392</span></a>            <span class="c1"># tenant, wrong audience, bad signature — all `invalid_token`,</span>
+</span><span id="AxiamAuthMiddleware-393"><a href="#AxiamAuthMiddleware-393"><span class="linenos">393</span></a>            <span class="c1"># indistinguishably.</span>
+</span><span id="AxiamAuthMiddleware-394"><a href="#AxiamAuthMiddleware-394"><span class="linenos">394</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="AxiamAuthMiddleware-395"><a href="#AxiamAuthMiddleware-395"><span class="linenos">395</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="AxiamAuthMiddleware-396"><a href="#AxiamAuthMiddleware-396"><span class="linenos">396</span></a>            <span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-397"><a href="#AxiamAuthMiddleware-397"><span class="linenos">397</span></a>
+</span><span id="AxiamAuthMiddleware-398"><a href="#AxiamAuthMiddleware-398"><span class="linenos">398</span></a>        <span class="c1"># WR-02: a malformed-but-signed claim shape (e.g. scope: null) must</span>
+</span><span id="AxiamAuthMiddleware-399"><a href="#AxiamAuthMiddleware-399"><span class="linenos">399</span></a>        <span class="c1"># degrade to the standardized 401, never an unhandled 500.</span>
+</span><span id="AxiamAuthMiddleware-400"><a href="#AxiamAuthMiddleware-400"><span class="linenos">400</span></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-401"><a href="#AxiamAuthMiddleware-401"><span class="linenos">401</span></a>            <span class="n">request</span><span class="o">.</span><span class="n">axiam_user</span> <span class="o">=</span> <span class="n">_build_user</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-402"><a href="#AxiamAuthMiddleware-402"><span class="linenos">402</span></a>        <span class="k">except</span> <span class="n">_MalformedClaims</span><span class="p">:</span>
+</span><span id="AxiamAuthMiddleware-403"><a href="#AxiamAuthMiddleware-403"><span class="linenos">403</span></a>            <span class="k">return</span> <span class="n">_error_response</span><span class="p">(</span>
+</span><span id="AxiamAuthMiddleware-404"><a href="#AxiamAuthMiddleware-404"><span class="linenos">404</span></a>                <span class="s2">"invalid or expired token"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mcp_challenges</span><span class="p">,</span> <span class="n">credential_presented</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="AxiamAuthMiddleware-405"><a href="#AxiamAuthMiddleware-405"><span class="linenos">405</span></a>            <span class="p">)</span>
+</span><span id="AxiamAuthMiddleware-406"><a href="#AxiamAuthMiddleware-406"><span class="linenos">406</span></a>        <span class="k">return</span> <span class="kc">None</span>
 </span></pre></div>
 
 
