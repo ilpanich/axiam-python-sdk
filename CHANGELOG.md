@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CONTRACT.md re-vendored at contract 1.52.** Copied byte for byte from axiam `80bc7aa`
+  (sha256 `c7954eec…`), the merge of the C-12 cross-SDK conformance review
+  (ilpanich/axiam#500). 1.52 changes no wire behaviour: it writes rules N1–N6, which
+  this SDK's C-12 fixes (#90) already implement. The README's conformance line
+  moves to 1.52.
+
 Contract **1.51**, the dogfooding remediation
 ([`claude_dev/dogfooding-findings-fix-plan.md`](https://github.com/ilpanich/axiam/blob/main/claude_dev/dogfooding-findings-fix-plan.md)'s
 C-3 task; CONTRACT.md §1.1.1, §5.2 rule 1, §6.1 rules 6-10, §10.1 rule 9,
