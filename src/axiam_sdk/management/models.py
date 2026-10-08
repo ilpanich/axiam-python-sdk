@@ -24,9 +24,40 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, TypeAdapter
+from pydantic import Discriminator, Field, SecretStr, Tag, TypeAdapter
 
-from axiam_sdk.management._wire import ManagementModel
+from axiam_sdk.management._wire import (
+    UNKNOWN_ARM,
+    ManagementModel,
+    OpenUnionUnknown,
+    open_discriminator,
+)
+
+
+class AcsEndpoint(ManagementModel):
+    """One `AssertionConsumerService` endpoint of a service provider.
+
+    The list of these is an **allow-list**, checked the way OAuth2 redirect
+    URIs are: an `AuthnRequest` naming an ACS URL is honoured only when the
+    URL equals one registered here, byte for byte. No globs, no prefix
+    match.
+    """
+
+    binding: SamlBinding
+    """The binding the endpoint accepts."""
+
+    index: int
+    """The `index` an `AuthnRequest` may use instead of a URL. Unique per SP."""
+
+    is_default: bool | None = None
+    """Whether this is the SP's default endpoint. At most one is; when none is
+
+    marked, the first listed is the default (SAML Metadata §2.4.4.1).
+    """
+
+    url: str
+    """The endpoint URL."""
+
 
 ActorType = Literal["User", "ServiceAccount", "System"] | str
 """``ActorType`` (generated from openapi.json).
@@ -199,6 +230,54 @@ the policy is enforced at all.
 `None` is the default and reproduces today's behavior byte-for-byte:
 `evaluate` allows every registration unconditionally, with no MDS lookup (D8
 step 1).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class AttributeMapping(ManagementModel):
+    """One entry of an SP's attribute mapping table."""
+
+    name_format: str | None = None
+    """The `NameFormat`, one of [`ATTRIBUTE_NAME_FORMATS`]. `None` leaves the
+
+    attribute unqualified (`unspecified`).
+    """
+
+    saml_name: str
+    """The `Name` of the emitted `<saml:Attribute>`. Unique within one SP,
+
+    compared exactly (SAML attribute names are case-sensitive).
+    """
+
+    source: AttributeSource
+    """Where the value comes from."""
+
+
+AttributeSource = (
+    Literal[
+        "username",
+        "email",
+        "display_name",
+        "given_name",
+        "family_name",
+        "groups",
+        "roles",
+    ]
+    | str
+)
+"""Where an attribute's value comes from.
+
+
+Every variant has a real source today; a variant with none (a telephone
+number the OIDC `phone` scope gates behind its own consent, say) is
+deliberately absent rather than mapped to an empty value.
 
 An **open** enum. The trailing ``| str`` is what makes a value this SDK's
 copy of the spec does not list validate instead of raising -- CONTRACT
@@ -546,6 +625,45 @@ Variant order is significant: `derive(PartialOrd, Ord)` gives `L1 < L1Plus <
 L2 < L2Plus < L3 < L3Plus`, which `WebauthnAttestationPolicy::evaluate` (D8
 step 9) relies on directly for the `min_certification` boundary check
 (`entry_level >= policy_min`).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+CibaDeliveryMode = Literal["poll", "ping"] | str
+"""How a CIBA client learns that a request has been decided (CIBA Core §5).
+
+
+`push` is deliberately absent: AXIAM does not offer it, and the FAPI-CIBA
+profile forbids it — push delivers the tokens themselves to a client
+endpoint, which makes the notification endpoint a token sink.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+CibaRequestSigningAlg = Literal["PS256", "ES256", "EdDSA"] | str
+"""The JWS algorithm a CIBA client signs its authentication requests with (CIBA
+
+Core §4 `backchannel_authentication_request_signing_alg`, §7.1.1).
+
+Exactly the three algorithms AXIAM verifies on any client-signed JWT
+(`axiam_oauth2::jose::PERMITTED_ALGORITHMS`): FAPI 2.0 §5.3.1.1's list. A
+registration naming anything else — `RS256`, `HS256`, `none` — is refused
+rather than stored, so no row can hold an algorithm the verifier would not
+honour (D-61).
 
 An **open** enum. The trailing ``| str`` is what makes a value this SDK's
 copy of the spec does not list validate instead of raising -- CONTRACT
@@ -1081,10 +1199,42 @@ class CreateOAuth2ClientRequest(ManagementModel):
     a request from this client means.
     """
 
+    backchannel_authentication_request_signing_alg: str | None = None
+    """G-7 — CIBA Core §4: `PS256`, `ES256` or `EdDSA`. When set, every
+
+    backchannel authentication request must be a signed `request` JWT under
+    this algorithm, verified against `jwks` or `jwks_uri` (exactly one is
+    required; an inline `jwks` must hold a key of the algorithm). Required
+    for a `fapi2` client holding the CIBA grant.
+    """
+
+    backchannel_client_notification_endpoint: str | None = None
+    """G-7 — CIBA Core §4: where a ping-mode client is notified. Required in
+
+    ping mode and refused in poll mode; an absolute `https` URL held to the
+    webhook address policy (no credentials, no fragment, no private,
+    loopback or internal host).
+    """
+
     backchannel_logout_uri: str | None = None
     """B5 — where OIDC back-channel logout tokens are delivered. Omit for a
 
     client that does not participate.
+    """
+
+    backchannel_token_delivery_mode: str | None = None
+    """G-7 — CIBA Core §4 `backchannel_token_delivery_mode`: `poll` or `ping`.
+
+    Required when `grant_types` holds `urn:openid:params:grant-type:ciba`,
+    refused otherwise; `push` is not offered. A CIBA client must be
+    confidential; a `fapi2` one must also register
+    `backchannel_authentication_request_signing_alg`.
+    """
+
+    backchannel_user_code_parameter: bool | None = None
+    """G-7 — CIBA Core §4. `true` is **refused**: this server holds no user
+
+    code to verify.
     """
 
     browser_sso: bool | None = None
@@ -1469,6 +1619,175 @@ class CreateWebhookRequest(ManagementModel):
 
     url: str
     """The HTTPS URL to deliver events to."""
+
+
+DeprovisionPolicy = Literal["deactivate", "delete"] | str
+"""What happens downstream to a user who falls out of scope or is no longer
+
+active. Erasure always deletes, whatever this says.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class DirectoryConfig(ManagementModel):
+    """A tenant's directory configuration, as stored and as read back.
+
+    Carries no secret: see the module documentation.
+    """
+
+    base_dn: str
+    """Where users are searched for."""
+
+    bind_dn: str
+    """The service account AXIAM binds as to search. It should hold read-only
+
+    rights: AXIAM never writes to a directory.
+    """
+
+    created_at: str
+    """When the row was created."""
+
+    enabled: bool
+    """Whether the directory is used for sign-in and sync."""
+
+    group_base_dn: str | None = None
+    """Where groups are searched for (reverse-`member` lookups, group sync)."""
+
+    group_filter: str | None = None
+    """Restricts which entries under [`Self::group_base_dn`] are groups."""
+
+    group_mappings: list[GroupMapping]
+    """The group-mapping table (D-30): which directory groups put a user into
+
+    which AXIAM groups. Empty means no directory group maps to anything, and
+    a sign-in then removes every directory-sourced membership the user held.
+    """
+
+    group_member_attribute: str
+    """`memberOf` (user-side, AD) or `member` (group-side, OpenLDAP)."""
+
+    group_nesting_depth: int
+    """How many levels of nested groups are followed, `0..=10`."""
+
+    id: str
+    """Row identifier."""
+
+    jit_provisioning: bool
+    """Provision an AXIAM user on first successful directory sign-in."""
+
+    kind: DirectoryKind
+    """The kind of directory, which selects defaults."""
+
+    start_tls: bool
+    """Upgrade an `ldap://` connection with StartTLS before any bind."""
+
+    sync_interval_secs: int
+    """Seconds between incremental sync runs."""
+
+    tenant_id: str
+    """The owning tenant. At most one configuration exists per tenant."""
+
+    trust_anchors_pem: list[str]
+    """PEM CA certificates that anchor trust in the directory's server
+
+    certificate. Empty means the platform roots used by the rest of the
+    workspace's outbound TLS. An organisation CA's PEM can be pasted here.
+    """
+
+    updated_at: str
+    """When the row was last written."""
+
+    url: str
+    """`ldaps://host[:port]` or `ldap://host[:port]` together with
+
+    [`Self::start_tls`]. A plaintext URL is refused at configuration time.
+    """
+
+    user_attribute_map: UserAttributeMap
+    """Which attribute feeds which user field."""
+
+    user_filter: str
+    """The user-lookup filter template. It contains exactly one `{username}`
+
+    placeholder, which the bind path replaces with the RFC 4515-escaped
+    login name; the template itself is never formatted with raw input.
+    """
+
+
+DirectoryKind = Literal["open_ldap", "active_directory"] | str
+"""Which kind of directory server a configuration points at.
+
+
+It drives **defaults only**: the external-id attribute, the group-membership
+strategy and the change attribute the sync job reads. Every one of them is
+still an explicit, editable field of the configuration (or, for the strategy
+and change attribute, derived from this value at the point of use); nothing
+about the kind changes what is *allowed*.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class DirectoryLinkResult(ManagementModel):
+    """What linking did."""
+
+    certificates_revoked: int
+    """`User`-type certificates revoked."""
+
+    directory_external_id: str
+    """The entry's `entryUUID` or `objectGUID` as text: an identifier, not a
+
+    secret.
+    """
+
+    user_id: str
+    """The account that was linked."""
+
+    was_already_linked: bool
+    """`true` when the account was already linked to that very entry and the
+
+    call only re-ran the revocations (an interrupted link completed).
+    """
+
+    webauthn_credentials_deleted: int
+    """Passkeys and security keys deleted."""
+
+
+class DirectorySyncStatus(ManagementModel):
+    """A read-only view of the sync job's state for one tenant. Counts of what
+    a run did are in its audit rows, and no account id is here.
+    """
+
+    full_required: bool
+    """The next run must be a full reconciliation."""
+
+    has_watermark: bool
+    """An incremental run has a starting point."""
+
+    last_attempt_at: str | None = None
+    """When the last attempt started, or null before the first run."""
+
+    last_full_run_at: str | None = None
+    """When the last complete full run finished, or null."""
+
+    last_result: str | None = None
+    """`ok`, `partial`, `failed` or `safety_valve` (an open set: decode another
+
+    value without failing), or null before the first run.
+    """
 
 
 class EmailConfig(ManagementModel):
@@ -2056,11 +2375,56 @@ class Group(ManagementModel):
     """``updated_at``."""
 
 
+class GroupMapping(ManagementModel):
+    """One row of the group-mapping table (G-3, T23.3.4, D-30): a directory
+    group, named by its distinguished name, and the AXIAM group a member of
+    it is put into.
+
+    **The table is the only way a directory group reaches an AXIAM group.**
+    There is no match by name, no prefix or wildcard, and no AXIAM group is
+    ever created from a directory one: a directory administrator who names a
+    group `admins` gains nothing unless a tenant administrator mapped it
+    here.
+
+    The DN is stored as the administrator typed it and compared after RFC
+    4514 normalisation (`axiam_directory::dn`), so `CN=Staff, OU=Groups` and
+    `cn=staff,ou=groups` are the same row. One DN may map to several AXIAM
+    groups; the same (DN, group) pair twice is refused as redundant.
+    """
+
+    directory_group_dn: str
+    """The directory group's distinguished name."""
+
+    group_id: str
+    """The AXIAM group of the same tenant a member of that directory group is
+
+    put into. Checked to exist in the tenant when the configuration is
+    written.
+    """
+
+
 class HealthResponse(ManagementModel):
-    """``HealthResponse`` (generated from openapi.json)."""
+    """Response body for `GET /health`.
+
+    `profile` and `unavailable` are additive (G-8, D-59): a client that
+    reads only `status` is unaffected.
+    """
+
+    profile: str
+    """The messaging profile this process runs: `full` (RabbitMQ is used) or
+
+    `minimal` (`AXIAM__AMQP__ENABLED=false`, no broker).
+    """
 
     status: str
     """``status``."""
+
+    unavailable: list[str] | None = None
+    """Present only in the `minimal` profile: the capabilities it does not
+
+    provide — `reactors`, `amqp_authz`, `amqp_audit_ingestion` and
+    `decision_cache_broadcast`. Absent in `full`.
+    """
 
 
 class ImportCaCertificateRequest(ManagementModel):
@@ -2089,6 +2453,19 @@ class ImportCaCertificateRequest(ManagementModel):
     """PEM-encoded CA certificate."""
 
 
+class IssueSamlIdpCredential(ManagementModel):
+    """`POST …/saml/idp-credentials` body."""
+
+    issuer_ca_id: str
+    """An active signing CA the caller may issue from."""
+
+    slot: SamlIdpSlot
+    """The slot to fill; it must be empty."""
+
+    validity_days: int | None = None
+    """1 to 730, default 365; never beyond the CA's own expiry."""
+
+
 KeyAlgorithm = Literal["Rsa4096", "Ed25519"] | str
 """The type of key algorithm used for a certificate.
 
@@ -2101,6 +2478,16 @@ taking down every record on the page over one field of one of them. The
 listed members stay in the annotation because they are what a reader needs;
 what the widening removes is the claim that nothing else can occur.
 """
+
+
+class LinkDirectoryAccount(ManagementModel):
+    """`POST /api/v1/tenants/{tenant_id}/directory/links` body."""
+
+    user_id: str
+    """The local account to link. The directory entry is found by the
+
+    directory, from the account's own username; the caller names no entry.
+    """
 
 
 class LockoutPolicy(ManagementModel):
@@ -2330,6 +2717,20 @@ class MtlsTrustAnchorResponse(ManagementModel):
     """
 
 
+NameIdFormat = Literal["persistent", "email_address"] | str
+"""How the assertion's `NameID` is formed (per service provider).
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
 NotificationEventType = (
     Literal[
         "login_failure",
@@ -2349,6 +2750,7 @@ NotificationEventType = (
         "user_updated",
         "service_account_created",
         "service_account_deleted",
+        "scim_delivery_failed",
     ]
     | str
 )
@@ -2466,6 +2868,15 @@ class OAuth2ClientResponse(ManagementModel):
     authentication-request parameters, from this endpoint rather than from
     the database.
     """
+
+    backchannel_authentication_request_signing_alg: CibaRequestSigningAlg | None = None
+    """``backchannel_authentication_request_signing_alg``."""
+
+    backchannel_client_notification_endpoint: str | None = None
+    """G-7 — the ping-mode notification endpoint."""
+
+    backchannel_token_delivery_mode: CibaDeliveryMode | None = None
+    """``backchannel_token_delivery_mode``."""
 
     browser_sso: bool
     """X7.3 — echoed for the same reason."""
@@ -2650,9 +3061,13 @@ class OidcPolicy(ManagementModel):
     * [`Self::sensitive_scopes_enabled`], validated **disable-only** — the
     mirror image of `mfa_enforced`, because releasing personal data is the
     less-restrictive direction, so a tenant can turn its organization's
-    decision off but never on. * [`Self::dynamic_registration`], on the
-    ladder `disabled` → `initial_access_token` → `anonymous`: a tenant may
-    move down it and never up. * [`Self::dcr_max_clients`] and
+    decision off but never on. * [`Self::saml_idp_enabled`], validated
+    **disable-only** exactly like [`Self::sensitive_scopes_enabled`] (D-20):
+    a tenant may turn its organization's `true` off and never its `false`
+    on. * [`Self::ssf_enabled`], validated **disable-only** the same way
+    (D-45). * [`Self::dynamic_registration`], on the ladder `disabled` →
+    `initial_access_token` → `anonymous`: a tenant may move down it and
+    never up. * [`Self::dcr_max_clients`] and
     [`Self::dcr_unused_client_ttl_days`], on the ordinary `tenant <= org`
     rule — with the wrinkle that `0` on the second means *never sweep*,
     which is the longest window of all and is handled by
@@ -2786,6 +3201,29 @@ class OidcPolicy(ManagementModel):
     Shared with T5 (CIMD), which inherits the same list for the same reason.
     """
 
+    saml_idp_enabled: bool | None = None
+    """G-2 / D-20 — whether this tenant may act as a SAML 2.0 identity
+
+    provider: publish IdP metadata and accept `AuthnRequest`s on
+    `/saml/v2/{tenant}/{metadata,sso,slo}`.
+
+    **Off unless an organization turns it on.** A SAML IdP issues assertions
+    that other systems accept as proof of identity, so a deployment that has
+    never decided to be one issues none, and the three endpoints answer
+    `404` as if they did not exist. The switch lives on this policy, beside
+    the other OpenID Provider surface controls, because the SSO endpoint is
+    the same browser login hop and OP session with a different wire format.
+
+    **Disable-only**, with the shape of [`Self::sensitive_scopes_enabled`]:
+    a tenant may turn its organization's `true` off but never its `false`
+    on, because the decision to issue identity assertions on behalf of the
+    organization's tenants is the organization's.
+
+    A deployment built without the `saml` feature answers `404` whatever
+    this says; the setting is a capability, not a grant (each SP must still
+    be registered, and `allow_idp_initiated` is its own opt-in).
+    """
+
     sensitive_scopes_enabled: bool
     """Whether `address` and `phone` may be registered on a client, requested
 
@@ -2802,6 +3240,27 @@ class OidcPolicy(ManagementModel):
     has to register the scope, the request still has to ask for it, and the
     user still has to have consented. It is the first of four gates, and it
     is the only one an operator can close for everybody at once.
+    """
+
+    ssf_enabled: bool | None = None
+    """G-5 / D-45 — whether the tenant is a Shared Signals Framework
+
+    transmitter: its `/.well-known/ssf-configuration` is served, its
+    receivers can use the stream management API, and events are signed and
+    transmitted on its streams. Default **`false`**.
+
+    **Disable-only**, with the shape of [`Self::saml_idp_enabled`]: sending
+    security events about the organization's users to third parties is the
+    organization's decision. Streams can be registered while it is off; they
+    carry nothing until it is on.
+    """
+
+    ssf_inactive_reason: str | None = None
+    """**Read-only**, D-55: set on a settings response when `ssf_enabled` is on
+
+    but the transmitter is inactive anyway, saying why — the deployment
+    holds more than one tenant and serves no per-tenant issuers. Never
+    stored.
     """
 
 
@@ -2880,6 +3339,25 @@ class Organization(ManagementModel):
 
     updated_at: str
     """``updated_at``."""
+
+
+class ParseSamlSpMetadata(ManagementModel):
+    """`POST …/saml/parse-sp-metadata` body: **exactly one** of the two
+    members.
+
+    Every field is optional, so this is a **sparse** body: what you leave
+    out is left unchanged, and is omitted from the wire request entirely
+    rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    metadata_url: str | None = None
+    """An `https` URL the server fetches the document from, once, through its
+
+    SSRF guard.
+    """
+
+    metadata_xml: str | None = None
+    """A metadata document, at most 512 KiB."""
 
 
 class PasswordPolicy(ManagementModel):
@@ -3626,6 +4104,592 @@ class RotateSecretResponse(ManagementModel):
     """
 
 
+SamlBinding = Literal["http_post", "http_redirect"] | str
+"""A SAML 2.0 protocol binding (SAML Bindings §3).
+
+
+The response binding for Web Browser SSO is always [`Self::HttpPost`], but
+the enum keeps both because SP metadata carries both, and an `slo_url` may
+use either.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class SamlIdpCredential(ManagementModel):
+    """The tenant's IdP signing credential, **public facts only**.
+
+    There is no key on it and no field a key could be put in: the private
+    key is generated by the server, sealed at rest, never returned by any
+    route and destroyed on retirement (D-21).
+    """
+
+    certificate_pem: str
+    """The leaf certificate, PEM. Public: it is what the metadata publishes."""
+
+    created_at: str
+    """When the credential was issued."""
+
+    fingerprint: str
+    """Lower-case hex SHA-256 of the certificate's DER — what an SP
+
+    administrator compares out of band.
+    """
+
+    id: str
+    """Credential id."""
+
+    issuer_ca_id: str
+    """The signing CA that issued the leaf."""
+
+    not_after: str
+    """End of the certificate's validity (at most 730 days after the start)."""
+
+    not_before: str
+    """Start of the certificate's validity."""
+
+    retired_at: str | None = None
+    """When it was retired, or null."""
+
+    serial: str
+    """The certificate's serial, lower-case hex."""
+
+    status: SamlIdpCredentialStatus
+    """`active`, `next` or `retired`. At most one `active` and one `next` per
+
+    tenant.
+    """
+
+    tenant_id: str
+    """The tenant it signs for."""
+
+
+class SamlIdpCredentialPromotion(ManagementModel):
+    """What promoting the `next` credential did."""
+
+    active: SamlIdpCredential
+    """The credential that is now `active`."""
+
+    retired: SamlIdpCredential | None = None
+    """``retired``."""
+
+
+SamlIdpCredentialStatus = Literal["active", "next", "retired"] | str
+"""Where a signing credential is in its life. An open set: an SDK decodes a
+
+value it does not know without failing.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class SamlIdpInfo(ManagementModel):
+    """The tenant's SAML IdP, as the administrator needs to see it before and
+    while switching it on: what an SP will be given, and whether it answers
+    yet.
+    """
+
+    active_credential_id: str | None = None
+    """The `active` credential, or null."""
+
+    entity_id: str
+    """The IdP's entity id (the metadata URL itself)."""
+
+    metadata_served: bool
+    """Whether `metadata_url` answers now: SAML is available, enabled for the
+
+    tenant, and an `active` or `next` credential exists (D-40).
+    """
+
+    metadata_url: str
+    """Where the IdP metadata is served."""
+
+    next_credential_id: str | None = None
+    """The `next` credential, or null."""
+
+    saml_available: bool
+    """Whether this server build serves SAML at all (it was built with the
+
+    `saml` feature).
+    """
+
+    saml_idp_enabled: bool
+    """The tenant's **effective** `saml_idp_enabled` setting (D-20). Written
+
+    through the `settings` operations, not here.
+    """
+
+    slo_url: str
+    """The single-logout endpoint."""
+
+    sso_url: str
+    """The single-sign-on endpoint."""
+
+    tenant_id: str
+    """The tenant."""
+
+
+SamlIdpSlot = Literal["active", "next"] | str
+"""Which slot a credential is issued into.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class SamlServiceProvider(ManagementModel):
+    """A registered service provider, as stored."""
+
+    acs_urls: list[AcsEndpoint]
+    """See [`SamlServiceProviderInput::acs_urls`]."""
+
+    allow_idp_initiated: bool
+    """See [`SamlServiceProviderInput::allow_idp_initiated`]."""
+
+    allowed_groups: list[str]
+    """See [`SamlServiceProviderInput::allowed_groups`]."""
+
+    attribute_mappings: list[AttributeMapping]
+    """See [`SamlServiceProviderInput::attribute_mappings`]."""
+
+    created_at: str
+    """When the SP was registered."""
+
+    display_name: str
+    """See [`SamlServiceProviderInput::display_name`]."""
+
+    enabled: bool
+    """See [`SamlServiceProviderInput::enabled`]."""
+
+    encrypt_assertions: bool
+    """See [`SamlServiceProviderInput::encrypt_assertions`]."""
+
+    entity_id: str
+    """See [`SamlServiceProviderInput::entity_id`]."""
+
+    id: str
+    """Record id."""
+
+    name_id_format: NameIdFormat
+    """See [`SamlServiceProviderInput::name_id_format`]."""
+
+    sign_responses: bool
+    """See [`SamlServiceProviderInput::sign_responses`]."""
+
+    slo_binding: SamlBinding | None = None
+    """``slo_binding``."""
+
+    slo_url: str | None = None
+    """See [`SamlServiceProviderInput::slo_url`]."""
+
+    sp_encryption_cert_pem: str | None = None
+    """See [`SamlServiceProviderInput::sp_encryption_cert_pem`]."""
+
+    sp_signing_cert_pem: str | None = None
+    """See [`SamlServiceProviderInput::sp_signing_cert_pem`]."""
+
+    tenant_id: str
+    """The owning tenant."""
+
+    updated_at: str
+    """When it was last replaced."""
+
+    want_authn_requests_signed: bool
+    """See [`SamlServiceProviderInput::want_authn_requests_signed`]."""
+
+
+class SamlServiceProviderInput(ManagementModel):
+    """Everything an administrator supplies when registering or replacing a
+    service provider (`create` and `update` both take it; `update` is a full
+    replacement).
+
+    Every field but `entity_id`, `display_name` and `acs_urls` has a
+    default, so a client written against a later revision of this struct
+    keeps working.
+    """
+
+    acs_urls: list[AcsEndpoint]
+    """The ACS allow-list. At least one, at most one default."""
+
+    allow_idp_initiated: bool | None = None
+    """Whether IdP-initiated SSO is allowed for this SP (D-3). A per-SP opt-in,
+
+    off by default: an unsolicited assertion has no `InResponseTo` to bind
+    it to a request the SP made.
+    """
+
+    allowed_groups: list[str] | None = None
+    """Groups whose members may sign in to this SP. **Empty means every active
+
+    user of the tenant may.** Evaluated by the SSO endpoint (T23.2.3).
+    """
+
+    attribute_mappings: list[AttributeMapping] | None = None
+    """Attribute mapping table, at most [`MAX_ATTRIBUTE_MAPPINGS`] entries."""
+
+    display_name: str
+    """Human-readable name for the console."""
+
+    enabled: bool | None = None
+    """Whether the SP may sign in at all. A disabled SP stays registered but
+
+    every SSO request for it is refused.
+    """
+
+    encrypt_assertions: bool | None = None
+    """Encrypt assertions to the SP's encryption certificate (D-2). Off by
+
+    default; requires [`Self::sp_encryption_cert_pem`].
+    """
+
+    entity_id: str
+    """The SP's `entityID`, unique per tenant. At most [`MAX_ENTITY_ID_BYTES`]."""
+
+    name_id_format: NameIdFormat | None = None
+    """`NameID` policy. Default: persistent, pairwise."""
+
+    sign_responses: bool | None = None
+    """Sign the `<samlp:Response>` envelope as well as the assertion (which is
+
+    signed always). Default **`true`**: it costs nothing and many SPs
+    require it.
+    """
+
+    slo_binding: SamlBinding | None = None
+    """``slo_binding``."""
+
+    slo_url: str | None = None
+    """Single-logout endpoint, if the SP supports it."""
+
+    sp_encryption_cert_pem: str | None = None
+    """PEM certificate assertions are encrypted to. Required when
+
+    `encrypt_assertions` is set.
+    """
+
+    sp_signing_cert_pem: str | None = None
+    """PEM certificate the SP signs its `AuthnRequest`s with."""
+
+    want_authn_requests_signed: bool | None = None
+    """Refuse an `AuthnRequest` that is not signed by `sp_signing_cert_pem`.
+
+    Requires that certificate.
+    """
+
+
+class SamlSpMetadataDraft(ManagementModel):
+    """A parse of SP metadata: **a draft, not a registration**. Nothing is
+    stored until the caller submits `service_provider` to
+    `create_service_provider` or `update_service_provider`, and nothing in
+    it is trusted because it came from a document (D-41).
+    """
+
+    encryption_certificate_fingerprint: str | None = None
+    """Lower-case hex SHA-256 of the encryption certificate's DER the draft
+
+    carries, or null.
+    """
+
+    service_provider: SamlServiceProviderInput
+    """A body `create_service_provider` accepts unchanged (bar the rules that
+
+    need the datastore). `encrypt_assertions` is never set.
+    """
+
+    signing_certificate_fingerprint: str | None = None
+    """Lower-case hex SHA-256 of the signing certificate's DER the draft
+
+    carries, or null.
+    """
+
+    warnings: list[str]
+    """What to know before submitting it. Human text; do not parse it."""
+
+
+class ScimReconcileAccepted(ManagementModel):
+    """The body of a started reconciliation's `202`."""
+
+    status: str
+    """Always `started`."""
+
+    target_id: str
+    """The target being reconciled."""
+
+
+class ScimTargetAuthBearer(ManagementModel):
+    """The ``bearer`` arm of :data:`ScimTargetAuth`."""
+
+    type: Literal["bearer"]
+    """Discriminator: always ``bearer``."""
+
+
+class ScimTargetAuthOauth2ClientCredentials(ManagementModel):
+    """The ``oauth2_client_credentials`` arm of :data:`ScimTargetAuth`."""
+
+    type: Literal["oauth2_client_credentials"]
+    """Discriminator: always ``oauth2_client_credentials``."""
+
+    client_id: str
+    """The OAuth2 client id."""
+
+    scope: str | None = None
+    """The scope requested, if any."""
+
+    token_url: str
+    """The token endpoint the client secret is sent to."""
+
+
+class ScimTargetAuthUnknown(OpenUnionUnknown):
+    """An arm of :data:`ScimTargetAuth` whose ``type`` this SDK does not
+    recognise.
+
+    It decodes, keeping every member the server sent, so a variant added
+    server-side does not fail the read it appears in. It is **never sent**:
+    serializing it -- including inside a request body -- raises (CONTRACT
+    §31.2).
+    """
+
+    type: str
+    """The unrecognised ``type`` value, as the server sent it."""
+
+
+ScimTargetAuth = Annotated[
+    Annotated[ScimTargetAuthBearer, Tag("bearer")]
+    | Annotated[ScimTargetAuthOauth2ClientCredentials, Tag("oauth2_client_credentials")]
+    | Annotated[ScimTargetAuthUnknown, Tag(UNKNOWN_ARM)],
+    Discriminator(
+        open_discriminator(
+            "type",
+            (
+                "bearer",
+                "oauth2_client_credentials",
+            ),
+        )
+    ),
+]
+"""How AXIAM authenticates to the downstream service provider, without the
+
+credential itself.
+
+An **open** union (CONTRACT §31.2): an unrecognised ``type`` decodes as
+:class:`ScimTargetAuthUnknown` instead of failing.
+"""
+
+ScimTargetAuthAdapter: TypeAdapter[ScimTargetAuth] = TypeAdapter(ScimTargetAuth)
+"""Validates a :data:`ScimTargetAuth` payload.
+
+
+An ``Annotated`` union alias has no ``model_validate`` of its own; this is
+built once at import rather than per call.
+"""
+
+
+class ScimTargetDeliveryState(ManagementModel):
+    """A target's delivery state, as `GET` projects it. Fixed vocabulary only:
+    the failure reason is one of the deliverer's phrases, never a URL, a
+    response body or a value.
+    """
+
+    consecutive_failures: int
+    """Failed attempts since the last success."""
+
+    dead_lettered_total: int
+    """Deliveries dead-lettered over the target's lifetime."""
+
+    last_failure_at: str | None = None
+    """When a delivery attempt last failed or was dead-lettered."""
+
+    last_failure_reason: str | None = None
+    """Why, in the deliverer's fixed vocabulary."""
+
+    last_reconciled_at: str | None = None
+    """When reconciliation last ran."""
+
+    last_success_at: str | None = None
+    """When a delivery last succeeded."""
+
+
+class ScimTargetInput(ManagementModel):
+    """`create` and `update` (a **replacement**) body."""
+
+    auth: ScimTargetAuth
+    """`bearer`, or `oauth2_client_credentials` with `token_url` (the same URL
+
+    policy), `client_id` (1–256 bytes) and an optional `scope`.
+    """
+
+    base_url: str
+    """The downstream's SCIM service root: an `https` URL under the outbound
+
+    address policy (no credentials or fragment, at most 2 048 bytes, no
+    non-public address, no local name).
+    """
+
+    credential: SecretStr | None = None
+    """**Write-only.** The bearer token or the OAuth2 client secret, 1–4 096
+
+    bytes. Required on create. On update, absent keeps the stored one —
+    except that moving it to another URL (`base_url` of a bearer target,
+    `token_url` or `base_url` of a client-credentials one) or switching
+    `auth.type` requires it again.
+
+    **Secret.** Redacted from every string, log and JSON rendering; call
+    ``.get_secret_value()`` to read it.
+    """
+
+    deprovision: DeprovisionPolicy | None = None
+    """`deactivate` (default: `PATCH active=false`) or `delete`."""
+
+    enabled: bool | None = None
+    """`true` by default. A disabled target receives nothing."""
+
+    name: str
+    """1–128 bytes."""
+
+    push_groups: bool | None = None
+    """Push groups too (every group for `all_users`, the listed ones for
+
+    `groups`). `false` by default.
+    """
+
+    scope: ScimTargetScope
+    """`all_users`, or `groups` with 1–100 `group_ids` of this tenant: users
+
+    who are direct members of any listed group.
+    """
+
+    user_name_from: UserNameSource | None = None
+    """`username` (default) or `email`."""
+
+
+class ScimTargetResponse(ManagementModel):
+    """A registered SCIM target, as the management API returns it. **The
+    credential is never returned**, and there is no member that says
+    anything about it.
+    """
+
+    auth: ScimTargetAuth
+    """How AXIAM authenticates to it (no credential)."""
+
+    base_url: str
+    """The downstream's SCIM service root."""
+
+    created_at: str
+    """When the target was registered."""
+
+    deprovision: DeprovisionPolicy
+    """What happens downstream to a user who leaves scope or is no longer
+
+    active (erasure always deletes).
+    """
+
+    enabled: bool
+    """Whether AXIAM pushes to it."""
+
+    id: str
+    """The target id."""
+
+    name: str
+    """The name."""
+
+    push_groups: bool
+    """Whether groups are pushed too."""
+
+    scope: ScimTargetScope
+    """Which users it provisions."""
+
+    state: ScimTargetDeliveryState | None = None
+    """``state``."""
+
+    tenant_id: str
+    """The owning tenant."""
+
+    updated_at: str
+    """When it was last written: the version an update is conditional on."""
+
+    user_name_from: UserNameSource
+    """Which attribute becomes `userName`."""
+
+
+class ScimTargetScopeAllUsers(ManagementModel):
+    """The ``all_users`` arm of :data:`ScimTargetScope`."""
+
+    type: Literal["all_users"]
+    """Discriminator: always ``all_users``."""
+
+
+class ScimTargetScopeGroups(ManagementModel):
+    """The ``groups`` arm of :data:`ScimTargetScope`."""
+
+    type: Literal["groups"]
+    """Discriminator: always ``groups``."""
+
+    group_ids: list[str]
+    """Users who are direct members of any listed group."""
+
+
+class ScimTargetScopeUnknown(OpenUnionUnknown):
+    """An arm of :data:`ScimTargetScope` whose ``type`` this SDK does not
+    recognise.
+
+    It decodes, keeping every member the server sent, so a variant added
+    server-side does not fail the read it appears in. It is **never sent**:
+    serializing it -- including inside a request body -- raises (CONTRACT
+    §31.2).
+    """
+
+    type: str
+    """The unrecognised ``type`` value, as the server sent it."""
+
+
+ScimTargetScope = Annotated[
+    Annotated[ScimTargetScopeAllUsers, Tag("all_users")]
+    | Annotated[ScimTargetScopeGroups, Tag("groups")]
+    | Annotated[ScimTargetScopeUnknown, Tag(UNKNOWN_ARM)],
+    Discriminator(
+        open_discriminator(
+            "type",
+            (
+                "all_users",
+                "groups",
+            ),
+        )
+    ),
+]
+"""Which users a target provisions.
+
+
+An **open** union (CONTRACT §31.2): an unrecognised ``type`` decodes as
+:class:`ScimTargetScopeUnknown` instead of failing.
+"""
+
+ScimTargetScopeAdapter: TypeAdapter[ScimTargetScope] = TypeAdapter(ScimTargetScope)
+"""Validates a :data:`ScimTargetScope` payload.
+
+
+An ``Annotated`` union alias has no ``model_validate`` of its own; this is
+built once at import rather than per call.
+"""
+
+
 class ScimTokenResponse(ManagementModel):
     """Metadata only. The handle is never in a list response — it exists in
     plaintext exactly once, in [`CreateScimTokenResponse`].
@@ -3875,6 +4939,75 @@ class SessionResponse(ManagementModel):
     """``user_agent``."""
 
 
+class SetDirectoryConfig(ManagementModel):
+    """`PUT /api/v1/tenants/{tenant_id}/directory` — a **replacement**.
+
+    Every `DirectoryConfig` member except `id`, `tenant_id` and the two
+    timestamps, plus the write-only `bind_secret`. An omitted optional
+    member is **reset to its default**, not kept.
+    """
+
+    base_dn: str
+    """Where users are searched for."""
+
+    bind_dn: str
+    """The service account the search runs as."""
+
+    bind_secret: SecretStr | None = None
+    """The service account's password: **write-only**, 1 to 4096 octets.
+
+    Required when the tenant has no configuration yet; on a replacement,
+    absent means *keep the stored secret* — unless the write moves the
+    connection (`url`, `start_tls`, `bind_dn` or `trust_anchors_pem`), which
+    then requires it (`400`, P23W2-01).
+
+    **Secret.** Redacted from every string, log and JSON rendering; call
+    ``.get_secret_value()`` to read it.
+    """
+
+    enabled: bool
+    """A disabled directory serves no sign-in and is not synced."""
+
+    group_base_dn: str | None = None
+    """Defaults to null."""
+
+    group_filter: str | None = None
+    """Defaults to null."""
+
+    group_mappings: list[GroupMapping] | None = None
+    """At most 500; every `group_id` a group of the tenant. Default empty."""
+
+    group_member_attribute: str | None = None
+    """Defaults by `kind`."""
+
+    group_nesting_depth: int | None = None
+    """`0..=10`, default 5."""
+
+    jit_provisioning: bool | None = None
+    """Default false."""
+
+    kind: DirectoryKind
+    """Chooses defaults only."""
+
+    start_tls: bool
+    """Upgrade an `ldap://` connection with StartTLS before any bind."""
+
+    sync_interval_secs: int | None = None
+    """`300..=86400`, default 3600."""
+
+    trust_anchors_pem: list[str] | None = None
+    """At most 16 CA certificates in PEM. Default empty (the public roots)."""
+
+    url: str
+    """`ldaps://host[:port]`, or `ldap://host[:port]` with `start_tls`."""
+
+    user_attribute_map: UserAttributeMap | None = None
+    """``user_attribute_map``."""
+
+    user_filter: str
+    """One `{username}` placeholder in value position."""
+
+
 class SetMtlsTrustAnchor(ManagementModel):
     """Body for `PUT .../ca-certificates/{id}/mtls-trust-anchor`."""
 
@@ -4004,6 +5137,13 @@ class SetOrgSettings(ManagementModel):
     require_uppercase: bool
     """``require_uppercase``."""
 
+    saml_idp_enabled: bool | None = None
+    """G-2 / D-20 — defaulted, so an API client written before the SAML
+
+    identity provider existed lands on `false`, which is what every
+    deployment did before (I1).
+    """
+
     sensitive_scopes_enabled: bool | None = None
     """``sensitive_scopes_enabled``."""
 
@@ -4011,6 +5151,13 @@ class SetOrgSettings(ManagementModel):
     """S-7 — defaulted to empty, so an API client written before the field
 
     lands on "no `Server` certificate is issued" (I1).
+    """
+
+    ssf_enabled: bool | None = None
+    """G-5 / D-45 — defaulted, so an API client written before the SSF
+
+    transmitter existed lands on `false`, which is what every deployment did
+    before (I1).
     """
 
     webauthn_user_verification: str | None = None
@@ -4137,6 +5284,224 @@ class SmtpConfig(ManagementModel):
 
     username: str
     """``username``."""
+
+
+SsfDeliveryMethod = Literal["push", "poll"] | str
+"""How SETs reach the receiver.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+SsfEventType = (
+    Literal[
+        "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+        "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+        "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+        "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+        "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+        "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+    ]
+    | str
+)
+"""The six event types AXIAM transmits (G-5).
+
+
+Stored and sent as their event-type URIs; [`Self::ALL`] is the canonical
+order every list AXIAM returns is sorted in.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+SsfStatusActor = Literal["admin", "receiver"] | str
+"""Who set a stream's current status. A status an administrator set to anything
+
+but `enabled` cannot be changed by the receiver (D-51).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class SsfStream(ManagementModel):
+    """A registered SSF stream, as the management API returns it. **The push
+    `Authorization` header is never returned**; `authorization_header_set`
+    says whether one is stored.
+    """
+
+    audience: str
+    """The SET `aud`. Unique across the deployment."""
+
+    authorization_header_set: bool
+    """Whether a push `Authorization` header is stored."""
+
+    created_at: str
+    """When the stream was registered."""
+
+    delivery_method: SsfDeliveryMethod
+    """`push` (RFC 8935) or `poll` (RFC 8936)."""
+
+    description: str | None = None
+    """A description."""
+
+    endpoint_url: str | None = None
+    """The push endpoint, or null for a poll stream."""
+
+    events_allowed: list[SsfEventType]
+    """The event types the receiver may have."""
+
+    events_delivered: list[SsfEventType]
+    """What the stream carries: the intersection of the two."""
+
+    events_requested: list[SsfEventType]
+    """The event types the receiver asked for (a subset of `events_allowed`)."""
+
+    id: str
+    """The stream id, also the SSF `stream_id`."""
+
+    last_verification_at: str | None = None
+    """When the receiver last asked for a verification event, or null."""
+
+    receiver_client_id: str
+    """The OAuth2 `client_id` whose client-credentials token (scope
+
+    `ssf.manage`) is this stream's receiver on the stream management API.
+    """
+
+    status: SsfStreamStatus
+    """`enabled`, `paused` or `disabled`."""
+
+    status_actor: SsfStatusActor
+    """Who set the status: `admin` or `receiver`."""
+
+    status_reason: str | None = None
+    """Why, if anyone said."""
+
+    subject_format: SsfSubjectFormat
+    """`iss_sub` (default) or `email`."""
+
+    tenant_id: str
+    """The owning tenant."""
+
+    transmitter_active: bool
+    """Whether the tenant's transmitter is active: its `ssf_enabled` is on and
+
+    the deployment does not make every tenant share one issuer (D-55). A
+    stream of an inactive transmitter is kept, and carries nothing.
+    """
+
+    transmitter_inactive_reason: str | None = None
+    """Why the transmitter is inactive, when it is."""
+
+    updated_at: str
+    """When it was last written."""
+
+
+class SsfStreamInput(ManagementModel):
+    """`create_stream` and `update_stream` (a **replacement**) body."""
+
+    audience: str
+    """1–512 bytes; unique across the deployment."""
+
+    authorization_header: SecretStr | None = None
+    """**Write-only.** The `Authorization` header value AXIAM sends to a push
+
+    endpoint. On update, absent keeps the stored one — except that moving
+    the endpoint to another origin requires it again.
+
+    **Secret.** Redacted from every string, log and JSON rendering; call
+    ``.get_secret_value()`` to read it.
+    """
+
+    clear_authorization_header: bool | None = None
+    """On update: remove the stored header. Refused together with
+
+    `authorization_header`.
+    """
+
+    delivery_method: SsfDeliveryMethod
+    """`push` or `poll`."""
+
+    description: str | None = None
+    """At most 256 bytes."""
+
+    endpoint_url: str | None = None
+    """Required for `push` (an `https` URL under the outbound address policy),
+
+    refused for `poll`.
+    """
+
+    events_allowed: list[SsfEventType]
+    """1–6 event types."""
+
+    events_requested: list[SsfEventType] | None = None
+    """A subset of `events_allowed`; absent means all of them. The receiver may
+
+    narrow it later, never widen it.
+    """
+
+    receiver_client_id: str
+    """An OAuth2 client of the tenant with the `client_credentials` grant and
+
+    the `ssf.manage` scope.
+    """
+
+    status: SsfStreamStatus | None = None
+    """`enabled` by default."""
+
+    status_reason: str | None = None
+    """At most 256 bytes."""
+
+    subject_format: SsfSubjectFormat | None = None
+    """`iss_sub` by default."""
+
+
+SsfStreamStatus = Literal["enabled", "paused", "disabled"] | str
+"""A stream's SSF status (SSF 1.0 §8.1.2), with AXIAM's meaning pinned by D-51.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+SsfSubjectFormat = Literal["iss_sub", "email"] | str
+"""Which RFC 9493 subject identifier names the user in the SETs of a stream
+
+(D-46).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class SubjectAltNameDns(ManagementModel):
@@ -4331,6 +5696,12 @@ class TenantSettingsOverride(ManagementModel):
     require_uppercase: bool | None = None
     """``require_uppercase``."""
 
+    saml_idp_enabled: bool | None = None
+    """G-2 / D-20 — disable-only, like `sensitive_scopes_enabled`; see
+
+    [`OidcPolicy::saml_idp_enabled`].
+    """
+
     sensitive_scopes_enabled: bool | None = None
     """``sensitive_scopes_enabled``."""
 
@@ -4340,6 +5711,12 @@ class TenantSettingsOverride(ManagementModel):
     entry. An empty list means this tenant issues no `Server` certificate at
     all, which is different from an absent field (inherit the organization's
     list).
+    """
+
+    ssf_enabled: bool | None = None
+    """G-5 / D-45 — disable-only, like `saml_idp_enabled`; see
+
+    [`OidcPolicy::ssf_enabled`].
     """
 
     webauthn_user_verification: str | None = None
@@ -4454,6 +5831,75 @@ taking down every record on the page over one field of one of them. The
 listed members stay in the annotation because they are what a reader needs;
 what the widening removes is the claim that nothing else can occur.
 """
+
+
+class UpdateDirectoryConfig(ManagementModel):
+    """`PATCH /api/v1/tenants/{tenant_id}/directory` — a **sparse** update.
+
+    Every member optional: absent leaves the stored value, and for the two
+    nullable members an explicit `null` clears it.
+
+    Every field is optional, so this is a **sparse** body: what you leave
+    out is left unchanged, and is omitted from the wire request entirely
+    rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    base_dn: str | None = None
+    """See [`SetDirectoryConfig::base_dn`]."""
+
+    bind_dn: str | None = None
+    """See [`SetDirectoryConfig::bind_dn`]."""
+
+    bind_secret: SecretStr | None = None
+    """See [`SetDirectoryConfig::bind_secret`]; absent keeps the stored secret,
+
+    subject to the same P23W2-01 rule.
+
+    **Secret.** Redacted from every string, log and JSON rendering; call
+    ``.get_secret_value()`` to read it.
+    """
+
+    enabled: bool | None = None
+    """See [`SetDirectoryConfig::enabled`]."""
+
+    group_base_dn: str | None = None
+    """Explicit `null` clears it."""
+
+    group_filter: str | None = None
+    """Explicit `null` clears it."""
+
+    group_mappings: list[GroupMapping] | None = None
+    """Replaces the whole table when present."""
+
+    group_member_attribute: str | None = None
+    """See [`SetDirectoryConfig::group_member_attribute`]."""
+
+    group_nesting_depth: int | None = None
+    """See [`SetDirectoryConfig::group_nesting_depth`]."""
+
+    jit_provisioning: bool | None = None
+    """See [`SetDirectoryConfig::jit_provisioning`]."""
+
+    kind: DirectoryKind | None = None
+    """``kind``."""
+
+    start_tls: bool | None = None
+    """See [`SetDirectoryConfig::start_tls`]."""
+
+    sync_interval_secs: int | None = None
+    """See [`SetDirectoryConfig::sync_interval_secs`]."""
+
+    trust_anchors_pem: list[str] | None = None
+    """Replaces the whole list when present."""
+
+    url: str | None = None
+    """See [`SetDirectoryConfig::url`]."""
+
+    user_attribute_map: UserAttributeMap | None = None
+    """``user_attribute_map``."""
+
+    user_filter: str | None = None
+    """See [`SetDirectoryConfig::user_filter`]."""
 
 
 class UpdateFederationConfigRequest(ManagementModel):
@@ -4601,11 +6047,23 @@ class UpdateOAuth2ClientRequest(ManagementModel):
     authn_request_params: AuthnRequestParamsMode | None = None
     """``authn_request_params``."""
 
+    backchannel_authentication_request_signing_alg: str | None = None
+    """G-7 — see the create DTO. `""` clears."""
+
+    backchannel_client_notification_endpoint: str | None = None
+    """G-7 — see the create DTO. `""` clears."""
+
     backchannel_logout_uri: str | None = None
     """Pass an empty string to clear a previously registered URI — the one edit
 
     an operator makes when an RP is decommissioned.
     """
+
+    backchannel_token_delivery_mode: str | None = None
+    """G-7 — see the create DTO. `""` clears."""
+
+    backchannel_user_code_parameter: bool | None = None
+    """G-7 — `true` refused, as on create."""
 
     browser_sso: bool | None = None
     """X7.3 — see [`CreateOAuth2ClientRequest::browser_sso`]."""
@@ -4876,6 +6334,40 @@ class UpdateWebhookRequest(ManagementModel):
     """``url``."""
 
 
+class UserAttributeMap(ManagementModel):
+    """Which directory attribute feeds each AXIAM user field."""
+
+    display_name: str
+    """The attribute holding the human-readable name."""
+
+    email: str
+    """The attribute holding the e-mail address."""
+
+    external_id: str
+    """The attribute holding the immutable entry identifier (`entryUUID`,
+
+    `objectGUID`).
+    """
+
+    username: str
+    """The attribute holding the login name (`uid`, `sAMAccountName`)."""
+
+
+UserNameSource = Literal["username", "email"] | str
+"""Which AXIAM attribute becomes the downstream `userName`. The mapping is a
+
+fixed attribute set, not a mapping language (D-57).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
 class UserResponse(ManagementModel):
     """Public-safe user representation (no password_hash, no mfa_secret)."""
 
@@ -5046,12 +6538,14 @@ class WebhookResponse(ManagementModel):
 # here rather than lazily on first validation -- a broken reference should
 # fail at import, where it names itself, not inside an unrelated request.
 for _model in (
+    AcsEndpoint,
     AddMemberRequest,
     AddServiceAccountMemberRequest,
     ApiProviderConfig,
     AssignRoleToGroupRequest,
     AssignRoleToServiceAccountRequest,
     AssignRoleToUserRequest,
+    AttributeMapping,
     AuditLogEntry,
     BindCertificate,
     CaCertificate,
@@ -5081,6 +6575,9 @@ for _model in (
     CreateTenantRequest,
     CreateUserRequest,
     CreateWebhookRequest,
+    DirectoryConfig,
+    DirectoryLinkResult,
+    DirectorySyncStatus,
     EmailConfig,
     EmailConfigOverride,
     EmailTestResult,
@@ -5096,8 +6593,11 @@ for _model in (
     GrantScopeConsent,
     GrantedScope,
     Group,
+    GroupMapping,
     HealthResponse,
     ImportCaCertificateRequest,
+    IssueSamlIdpCredential,
+    LinkDirectoryAccount,
     LockoutPolicy,
     MdsRefreshOutcomeInitial,
     MdsRefreshOutcomeReplaced,
@@ -5120,6 +6620,7 @@ for _model in (
     OpaqueEnrollmentPayload,
     OpaquePolicy,
     Organization,
+    ParseSamlSpMetadata,
     PasswordPolicy,
     Permission,
     PgpKey,
@@ -5143,12 +6644,29 @@ for _model in (
     RoleServiceAccountAssignment,
     RoleUserAssignment,
     RotateSecretResponse,
+    SamlIdpCredential,
+    SamlIdpCredentialPromotion,
+    SamlIdpInfo,
+    SamlServiceProvider,
+    SamlServiceProviderInput,
+    SamlSpMetadataDraft,
+    ScimReconcileAccepted,
+    ScimTargetAuthBearer,
+    ScimTargetAuthOauth2ClientCredentials,
+    ScimTargetAuthUnknown,
+    ScimTargetDeliveryState,
+    ScimTargetInput,
+    ScimTargetResponse,
+    ScimTargetScopeAllUsers,
+    ScimTargetScopeGroups,
+    ScimTargetScopeUnknown,
     ScimTokenResponse,
     Scope,
     SecuritySettings,
     ServiceAccountCreatedResponse,
     ServiceAccountResponse,
     SessionResponse,
+    SetDirectoryConfig,
     SetMtlsTrustAnchor,
     SetOrgEmailConfig,
     SetOrgSettings,
@@ -5157,6 +6675,8 @@ for _model in (
     SignIntermediateCsrRequest,
     SignedAuditBatch,
     SmtpConfig,
+    SsfStream,
+    SsfStreamInput,
     SubjectAltNameDns,
     SubjectAltNameIp,
     Tenant,
@@ -5164,6 +6684,7 @@ for _model in (
     TokenExchangeTrustRequest,
     TokenExchangeTrustResponse,
     TokenPolicy,
+    UpdateDirectoryConfig,
     UpdateFederationConfigRequest,
     UpdateGroup,
     UpdateNotificationRuleRequest,
@@ -5178,6 +6699,7 @@ for _model in (
     UpdateTenant,
     UpdateUserRequest,
     UpdateWebhookRequest,
+    UserAttributeMap,
     UserResponse,
     WebauthnAttestationPolicy,
     WebauthnPolicy,

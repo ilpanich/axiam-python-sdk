@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from axiam_sdk.management.ops.audit import AsyncAuditApi, AuditApi
 from axiam_sdk.management.ops.ca_certificates import AsyncCaCertificatesApi, CaCertificatesApi
 from axiam_sdk.management.ops.certificates import AsyncCertificatesApi, CertificatesApi
+from axiam_sdk.management.ops.directory import AsyncDirectoryApi, DirectoryApi
 from axiam_sdk.management.ops.email_config import AsyncEmailConfigApi, EmailConfigApi
 from axiam_sdk.management.ops.federation import AsyncFederationApi, FederationApi
 from axiam_sdk.management.ops.groups import AsyncGroupsApi, GroupsApi
@@ -34,10 +35,13 @@ from axiam_sdk.management.ops.privacy import AsyncPrivacyApi, PrivacyApi
 from axiam_sdk.management.ops.reactors import AsyncReactorsApi, ReactorsApi
 from axiam_sdk.management.ops.resources import AsyncResourcesApi, ResourcesApi
 from axiam_sdk.management.ops.roles import AsyncRolesApi, RolesApi
+from axiam_sdk.management.ops.saml import AsyncSamlApi, SamlApi
+from axiam_sdk.management.ops.scim_targets import AsyncScimTargetsApi, ScimTargetsApi
 from axiam_sdk.management.ops.scim_tokens import AsyncScimTokensApi, ScimTokensApi
 from axiam_sdk.management.ops.scopes import AsyncScopesApi, ScopesApi
 from axiam_sdk.management.ops.service_accounts import AsyncServiceAccountsApi, ServiceAccountsApi
 from axiam_sdk.management.ops.settings import AsyncSettingsApi, SettingsApi
+from axiam_sdk.management.ops.ssf import AsyncSsfApi, SsfApi
 from axiam_sdk.management.ops.tenants import AsyncTenantsApi, TenantsApi
 from axiam_sdk.management.ops.users import AsyncUsersApi, UsersApi
 from axiam_sdk.management.ops.webauthn_policy import AsyncWebauthnPolicyApi, WebauthnPolicyApi
@@ -83,6 +87,14 @@ __all__ = [
     "NotificationRulesApi",
     "AsyncEmailConfigApi",
     "EmailConfigApi",
+    "AsyncDirectoryApi",
+    "DirectoryApi",
+    "AsyncSamlApi",
+    "SamlApi",
+    "AsyncSsfApi",
+    "SsfApi",
+    "AsyncScimTargetsApi",
+    "ScimTargetsApi",
     "AsyncSettingsApi",
     "SettingsApi",
     "AsyncScimTokensApi",
@@ -224,6 +236,48 @@ class ManagementApi:
         overridable per tenant.
         """
         return EmailConfigApi(self._client)
+
+    @property
+    def directory(self) -> DirectoryApi:
+        """A tenant's LDAP / Active Directory identity source (CONTRACT §30):
+        the one configuration, the explicit act that links an existing local
+        account to its directory entry, and a read-only view of the sync
+        job. Signing in needs nothing new -- a directory account calls the
+        same §1 `login`.
+        """
+        return DirectoryApi(self._client)
+
+    @property
+    def saml(self) -> SamlApi:
+        """A tenant's SAML 2.0 identity provider (CONTRACT §29): the registry
+        of service providers, the import of an SP's metadata into a *draft*
+        registration (never a write), and the lifecycle of the IdP signing
+        credential. The protocol itself -- single sign-on, single logout,
+        the IdP metadata document -- is browser and SP-to-IdP surface under
+        /saml/v2/{tenant_id}, an SP's own SAML library speaks to it, and it
+        is not in this registry.
+        """
+        return SamlApi(self._client)
+
+    @property
+    def ssf(self) -> SsfApi:
+        """A tenant's Shared Signals Framework streams (CONTRACT §32): which
+        receiver -- an OAuth2 client of the tenant -- receives which CAEP
+        and RISC security events, as SETs pushed to its endpoint or polled.
+        The receiver's own protocol (transmitter metadata, the SSF stream
+        management API, polling) is not in this registry.
+        """
+        return SsfApi(self._client)
+
+    @property
+    def scim_targets(self) -> ScimTargetsApi:
+        """A tenant's outbound SCIM targets (CONTRACT §31): the downstream SCIM
+        2.0 service providers AXIAM pushes the tenant's users and groups to,
+        each with its delivery state. The credential AXIAM pushes with is
+        write-only. Deleting a target does not deprovision anything
+        downstream.
+        """
+        return ScimTargetsApi(self._client)
 
     @property
     def settings(self) -> SettingsApi:
@@ -410,6 +464,48 @@ class ManagementNamespaces:
         return self.management.email_config
 
     @property
+    def directory(self) -> DirectoryApi:
+        """A tenant's LDAP / Active Directory identity source (CONTRACT §30):
+        the one configuration, the explicit act that links an existing local
+        account to its directory entry, and a read-only view of the sync
+        job. Signing in needs nothing new -- a directory account calls the
+        same §1 `login`.
+        """
+        return self.management.directory
+
+    @property
+    def saml(self) -> SamlApi:
+        """A tenant's SAML 2.0 identity provider (CONTRACT §29): the registry
+        of service providers, the import of an SP's metadata into a *draft*
+        registration (never a write), and the lifecycle of the IdP signing
+        credential. The protocol itself -- single sign-on, single logout,
+        the IdP metadata document -- is browser and SP-to-IdP surface under
+        /saml/v2/{tenant_id}, an SP's own SAML library speaks to it, and it
+        is not in this registry.
+        """
+        return self.management.saml
+
+    @property
+    def ssf(self) -> SsfApi:
+        """A tenant's Shared Signals Framework streams (CONTRACT §32): which
+        receiver -- an OAuth2 client of the tenant -- receives which CAEP
+        and RISC security events, as SETs pushed to its endpoint or polled.
+        The receiver's own protocol (transmitter metadata, the SSF stream
+        management API, polling) is not in this registry.
+        """
+        return self.management.ssf
+
+    @property
+    def scim_targets(self) -> ScimTargetsApi:
+        """A tenant's outbound SCIM targets (CONTRACT §31): the downstream SCIM
+        2.0 service providers AXIAM pushes the tenant's users and groups to,
+        each with its delivery state. The credential AXIAM pushes with is
+        write-only. Deleting a target does not deprovision anything
+        downstream.
+        """
+        return self.management.scim_targets
+
+    @property
     def settings(self) -> SettingsApi:
         """Effective settings, and the organization/tenant layers they resolve
         from.
@@ -575,6 +671,48 @@ class AsyncManagementApi:
         overridable per tenant.
         """
         return AsyncEmailConfigApi(self._client)
+
+    @property
+    def directory(self) -> AsyncDirectoryApi:
+        """A tenant's LDAP / Active Directory identity source (CONTRACT §30):
+        the one configuration, the explicit act that links an existing local
+        account to its directory entry, and a read-only view of the sync
+        job. Signing in needs nothing new -- a directory account calls the
+        same §1 `login`.
+        """
+        return AsyncDirectoryApi(self._client)
+
+    @property
+    def saml(self) -> AsyncSamlApi:
+        """A tenant's SAML 2.0 identity provider (CONTRACT §29): the registry
+        of service providers, the import of an SP's metadata into a *draft*
+        registration (never a write), and the lifecycle of the IdP signing
+        credential. The protocol itself -- single sign-on, single logout,
+        the IdP metadata document -- is browser and SP-to-IdP surface under
+        /saml/v2/{tenant_id}, an SP's own SAML library speaks to it, and it
+        is not in this registry.
+        """
+        return AsyncSamlApi(self._client)
+
+    @property
+    def ssf(self) -> AsyncSsfApi:
+        """A tenant's Shared Signals Framework streams (CONTRACT §32): which
+        receiver -- an OAuth2 client of the tenant -- receives which CAEP
+        and RISC security events, as SETs pushed to its endpoint or polled.
+        The receiver's own protocol (transmitter metadata, the SSF stream
+        management API, polling) is not in this registry.
+        """
+        return AsyncSsfApi(self._client)
+
+    @property
+    def scim_targets(self) -> AsyncScimTargetsApi:
+        """A tenant's outbound SCIM targets (CONTRACT §31): the downstream SCIM
+        2.0 service providers AXIAM pushes the tenant's users and groups to,
+        each with its delivery state. The credential AXIAM pushes with is
+        write-only. Deleting a target does not deprovision anything
+        downstream.
+        """
+        return AsyncScimTargetsApi(self._client)
 
     @property
     def settings(self) -> AsyncSettingsApi:
@@ -759,6 +897,48 @@ class AsyncManagementNamespaces:
         overridable per tenant.
         """
         return self.management.email_config
+
+    @property
+    def directory(self) -> AsyncDirectoryApi:
+        """A tenant's LDAP / Active Directory identity source (CONTRACT §30):
+        the one configuration, the explicit act that links an existing local
+        account to its directory entry, and a read-only view of the sync
+        job. Signing in needs nothing new -- a directory account calls the
+        same §1 `login`.
+        """
+        return self.management.directory
+
+    @property
+    def saml(self) -> AsyncSamlApi:
+        """A tenant's SAML 2.0 identity provider (CONTRACT §29): the registry
+        of service providers, the import of an SP's metadata into a *draft*
+        registration (never a write), and the lifecycle of the IdP signing
+        credential. The protocol itself -- single sign-on, single logout,
+        the IdP metadata document -- is browser and SP-to-IdP surface under
+        /saml/v2/{tenant_id}, an SP's own SAML library speaks to it, and it
+        is not in this registry.
+        """
+        return self.management.saml
+
+    @property
+    def ssf(self) -> AsyncSsfApi:
+        """A tenant's Shared Signals Framework streams (CONTRACT §32): which
+        receiver -- an OAuth2 client of the tenant -- receives which CAEP
+        and RISC security events, as SETs pushed to its endpoint or polled.
+        The receiver's own protocol (transmitter metadata, the SSF stream
+        management API, polling) is not in this registry.
+        """
+        return self.management.ssf
+
+    @property
+    def scim_targets(self) -> AsyncScimTargetsApi:
+        """A tenant's outbound SCIM targets (CONTRACT §31): the downstream SCIM
+        2.0 service providers AXIAM pushes the tenant's users and groups to,
+        each with its delivery state. The credential AXIAM pushes with is
+        write-only. Deleting a target does not deprovision anything
+        downstream.
+        """
+        return self.management.scim_targets
 
     @property
     def settings(self) -> AsyncSettingsApi:

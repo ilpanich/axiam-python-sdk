@@ -5757,6 +5757,1562 @@ async def test_email_config_test_tenant_async() -> None:
         await client.email_config.test_tenant()
 
 
+def test_directory_get() -> None:
+    """``directory.get`` -- GET /api/v1/tenants/{tenant_id}/directory."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        client.directory.get()
+
+
+@pytest.mark.asyncio
+async def test_directory_get_async() -> None:
+    """``directory.get`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        await client.directory.get()
+
+
+def test_directory_set() -> None:
+    """``directory.set`` -- PUT /api/v1/tenants/{tenant_id}/directory."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        client.directory.set(
+            models.SetDirectoryConfig(
+                base_dn="example",
+                bind_dn="example",
+                enabled=True,
+                kind="open_ldap",
+                start_tls=True,
+                url="example",
+                user_filter="example",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_directory_set_async() -> None:
+    """``directory.set`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        await client.directory.set(
+            models.SetDirectoryConfig(
+                base_dn="example",
+                bind_dn="example",
+                enabled=True,
+                kind="open_ldap",
+                start_tls=True,
+                url="example",
+                user_filter="example",
+            )
+        )
+
+
+def test_directory_update() -> None:
+    """``directory.update`` -- PATCH /api/v1/tenants/{tenant_id}/directory."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PATCH",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        client.directory.update(models.UpdateDirectoryConfig())
+
+
+@pytest.mark.asyncio
+async def test_directory_update_async() -> None:
+    """``directory.update`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PATCH",
+            f"/api/v1/tenants/{TENANT_ID}/directory",
+            200,
+            {
+                "base_dn": "example",
+                "bind_dn": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "enabled": True,
+                "group_mappings": [],
+                "group_member_attribute": "example",
+                "group_nesting_depth": 1,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "jit_provisioning": True,
+                "kind": "open_ldap",
+                "start_tls": True,
+                "sync_interval_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "trust_anchors_pem": [],
+                "updated_at": "2026-08-26T00:00:00Z",
+                "url": "example",
+                "user_attribute_map": {
+                    "display_name": "example",
+                    "email": "example",
+                    "external_id": "example",
+                    "username": "example",
+                },
+                "user_filter": "example",
+            },
+        )
+        await client.directory.update(models.UpdateDirectoryConfig())
+
+
+def test_directory_delete() -> None:
+    """``directory.delete`` -- DELETE /api/v1/tenants/{tenant_id}/directory."""
+    with with_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/tenants/{TENANT_ID}/directory", 204, None)
+        client.directory.delete()
+
+
+@pytest.mark.asyncio
+async def test_directory_delete_async() -> None:
+    """``directory.delete`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/tenants/{TENANT_ID}/directory", 204, None)
+        await client.directory.delete()
+
+
+def test_directory_link_account() -> None:
+    """``directory.link_account`` -- POST
+    /api/v1/tenants/{tenant_id}/directory/links.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/directory/links",
+            200,
+            {
+                "certificates_revoked": 1,
+                "directory_external_id": "example",
+                "user_id": "11111111-1111-4111-8111-111111111111",
+                "was_already_linked": True,
+                "webauthn_credentials_deleted": 1,
+            },
+        )
+        client.directory.link_account(
+            models.LinkDirectoryAccount(user_id="11111111-1111-4111-8111-111111111111")
+        )
+
+
+@pytest.mark.asyncio
+async def test_directory_link_account_async() -> None:
+    """``directory.link_account`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/directory/links",
+            200,
+            {
+                "certificates_revoked": 1,
+                "directory_external_id": "example",
+                "user_id": "11111111-1111-4111-8111-111111111111",
+                "was_already_linked": True,
+                "webauthn_credentials_deleted": 1,
+            },
+        )
+        await client.directory.link_account(
+            models.LinkDirectoryAccount(user_id="11111111-1111-4111-8111-111111111111")
+        )
+
+
+def test_directory_get_sync_status() -> None:
+    """``directory.get_sync_status`` -- GET
+    /api/v1/tenants/{tenant_id}/directory/sync-status.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/directory/sync-status",
+            200,
+            {"full_required": True, "has_watermark": True},
+        )
+        client.directory.get_sync_status()
+
+
+@pytest.mark.asyncio
+async def test_directory_get_sync_status_async() -> None:
+    """``directory.get_sync_status`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/directory/sync-status",
+            200,
+            {"full_required": True, "has_watermark": True},
+        )
+        await client.directory.get_sync_status()
+
+
+def test_saml_get_idp() -> None:
+    """``saml.get_idp`` -- GET /api/v1/tenants/{tenant_id}/saml/idp."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp",
+            200,
+            {
+                "entity_id": "example",
+                "metadata_served": True,
+                "metadata_url": "example",
+                "saml_available": True,
+                "saml_idp_enabled": True,
+                "slo_url": "example",
+                "sso_url": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        client.saml.get_idp()
+
+
+@pytest.mark.asyncio
+async def test_saml_get_idp_async() -> None:
+    """``saml.get_idp`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp",
+            200,
+            {
+                "entity_id": "example",
+                "metadata_served": True,
+                "metadata_url": "example",
+                "saml_available": True,
+                "saml_idp_enabled": True,
+                "slo_url": "example",
+                "sso_url": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        await client.saml.get_idp()
+
+
+def test_saml_list_service_providers() -> None:
+    """``saml.list_service_providers`` -- GET
+    /api/v1/tenants/{tenant_id}/saml/service-providers.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers",
+            200,
+            {
+                "items": [
+                    {
+                        "acs_urls": [],
+                        "allow_idp_initiated": True,
+                        "allowed_groups": [],
+                        "attribute_mappings": [],
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "display_name": "example",
+                        "enabled": True,
+                        "encrypt_assertions": True,
+                        "entity_id": "example",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name_id_format": "persistent",
+                        "sign_responses": True,
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "want_authn_requests_signed": True,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.saml.list_service_providers(PageRequest(limit=50))
+        client.saml.list_service_providers_all(PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_saml_list_service_providers_async() -> None:
+    """``saml.list_service_providers`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers",
+            200,
+            {
+                "items": [
+                    {
+                        "acs_urls": [],
+                        "allow_idp_initiated": True,
+                        "allowed_groups": [],
+                        "attribute_mappings": [],
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "display_name": "example",
+                        "enabled": True,
+                        "encrypt_assertions": True,
+                        "entity_id": "example",
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name_id_format": "persistent",
+                        "sign_responses": True,
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "want_authn_requests_signed": True,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.saml.list_service_providers(PageRequest(limit=50))
+        await client.saml.list_service_providers_all(PageRequest(limit=50))
+
+
+def test_saml_create_service_provider() -> None:
+    """``saml.create_service_provider`` -- POST
+    /api/v1/tenants/{tenant_id}/saml/service-providers.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers",
+            201,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        client.saml.create_service_provider(
+            models.SamlServiceProviderInput(
+                acs_urls=[], display_name="example", entity_id="example"
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_saml_create_service_provider_async() -> None:
+    """``saml.create_service_provider`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers",
+            201,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        await client.saml.create_service_provider(
+            models.SamlServiceProviderInput(
+                acs_urls=[], display_name="example", entity_id="example"
+            )
+        )
+
+
+def test_saml_get_service_provider() -> None:
+    """``saml.get_service_provider`` -- GET
+    /api/v1/tenants/{tenant_id}/saml/service-providers/{sp_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            200,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        client.saml.get_service_provider(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_saml_get_service_provider_async() -> None:
+    """``saml.get_service_provider`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            200,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        await client.saml.get_service_provider(EXAMPLE_ID)
+
+
+def test_saml_update_service_provider() -> None:
+    """``saml.update_service_provider`` -- PUT
+    /api/v1/tenants/{tenant_id}/saml/service-providers/{sp_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            200,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        client.saml.update_service_provider(
+            EXAMPLE_ID,
+            models.SamlServiceProviderInput(
+                acs_urls=[], display_name="example", entity_id="example"
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_saml_update_service_provider_async() -> None:
+    """``saml.update_service_provider`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            200,
+            {
+                "acs_urls": [],
+                "allow_idp_initiated": True,
+                "allowed_groups": [],
+                "attribute_mappings": [],
+                "created_at": "2026-08-26T00:00:00Z",
+                "display_name": "example",
+                "enabled": True,
+                "encrypt_assertions": True,
+                "entity_id": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name_id_format": "persistent",
+                "sign_responses": True,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "want_authn_requests_signed": True,
+            },
+        )
+        await client.saml.update_service_provider(
+            EXAMPLE_ID,
+            models.SamlServiceProviderInput(
+                acs_urls=[], display_name="example", entity_id="example"
+            ),
+        )
+
+
+def test_saml_delete_service_provider() -> None:
+    """``saml.delete_service_provider`` -- DELETE
+    /api/v1/tenants/{tenant_id}/saml/service-providers/{sp_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "DELETE",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            204,
+            None,
+        )
+        client.saml.delete_service_provider(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_saml_delete_service_provider_async() -> None:
+    """``saml.delete_service_provider`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "DELETE",
+            f"/api/v1/tenants/{TENANT_ID}/saml/service-providers/{EXAMPLE_ID}",
+            204,
+            None,
+        )
+        await client.saml.delete_service_provider(EXAMPLE_ID)
+
+
+def test_saml_parse_sp_metadata() -> None:
+    """``saml.parse_sp_metadata`` -- POST
+    /api/v1/tenants/{tenant_id}/saml/parse-sp-metadata.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/parse-sp-metadata",
+            200,
+            {
+                "service_provider": {
+                    "acs_urls": [],
+                    "display_name": "example",
+                    "entity_id": "example",
+                },
+                "warnings": [],
+            },
+        )
+        client.saml.parse_sp_metadata(models.ParseSamlSpMetadata())
+
+
+@pytest.mark.asyncio
+async def test_saml_parse_sp_metadata_async() -> None:
+    """``saml.parse_sp_metadata`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/parse-sp-metadata",
+            200,
+            {
+                "service_provider": {
+                    "acs_urls": [],
+                    "display_name": "example",
+                    "entity_id": "example",
+                },
+                "warnings": [],
+            },
+        )
+        await client.saml.parse_sp_metadata(models.ParseSamlSpMetadata())
+
+
+def test_saml_list_idp_credentials() -> None:
+    """``saml.list_idp_credentials`` -- GET
+    /api/v1/tenants/{tenant_id}/saml/idp-credentials.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials",
+            200,
+            [
+                {
+                    "certificate_pem": "example",
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "fingerprint": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                    "not_after": "2026-08-26T00:00:00Z",
+                    "not_before": "2026-08-26T00:00:00Z",
+                    "serial": "example",
+                    "status": "active",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            ],
+        )
+        client.saml.list_idp_credentials()
+
+
+@pytest.mark.asyncio
+async def test_saml_list_idp_credentials_async() -> None:
+    """``saml.list_idp_credentials`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials",
+            200,
+            [
+                {
+                    "certificate_pem": "example",
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "fingerprint": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                    "not_after": "2026-08-26T00:00:00Z",
+                    "not_before": "2026-08-26T00:00:00Z",
+                    "serial": "example",
+                    "status": "active",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            ],
+        )
+        await client.saml.list_idp_credentials()
+
+
+def test_saml_issue_idp_credential() -> None:
+    """``saml.issue_idp_credential`` -- POST
+    /api/v1/tenants/{tenant_id}/saml/idp-credentials.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials",
+            201,
+            {
+                "certificate_pem": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "serial": "example",
+                "status": "active",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        client.saml.issue_idp_credential(
+            models.IssueSamlIdpCredential(
+                issuer_ca_id="11111111-1111-4111-8111-111111111111", slot="active"
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_saml_issue_idp_credential_async() -> None:
+    """``saml.issue_idp_credential`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials",
+            201,
+            {
+                "certificate_pem": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "serial": "example",
+                "status": "active",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        await client.saml.issue_idp_credential(
+            models.IssueSamlIdpCredential(
+                issuer_ca_id="11111111-1111-4111-8111-111111111111", slot="active"
+            )
+        )
+
+
+def test_saml_promote_idp_credential() -> None:
+    """``saml.promote_idp_credential`` -- POST
+    /api/v1/tenants/{tenant_id}/saml/idp-credentials/{credential_id}/promote.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials/{EXAMPLE_ID}/promote",
+            200,
+            {
+                "active": {
+                    "certificate_pem": "example",
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "fingerprint": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                    "not_after": "2026-08-26T00:00:00Z",
+                    "not_before": "2026-08-26T00:00:00Z",
+                    "serial": "example",
+                    "status": "active",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            },
+        )
+        client.saml.promote_idp_credential(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_saml_promote_idp_credential_async() -> None:
+    """``saml.promote_idp_credential`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials/{EXAMPLE_ID}/promote",
+            200,
+            {
+                "active": {
+                    "certificate_pem": "example",
+                    "created_at": "2026-08-26T00:00:00Z",
+                    "fingerprint": "example",
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                    "not_after": "2026-08-26T00:00:00Z",
+                    "not_before": "2026-08-26T00:00:00Z",
+                    "serial": "example",
+                    "status": "active",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                }
+            },
+        )
+        await client.saml.promote_idp_credential(EXAMPLE_ID)
+
+
+def test_saml_retire_idp_credential() -> None:
+    """``saml.retire_idp_credential`` -- POST
+    /api/v1/tenants/{tenant_id}/saml/idp-credentials/{credential_id}/retire.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials/{EXAMPLE_ID}/retire",
+            200,
+            {
+                "certificate_pem": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "serial": "example",
+                "status": "active",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        client.saml.retire_idp_credential(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_saml_retire_idp_credential_async() -> None:
+    """``saml.retire_idp_credential`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/saml/idp-credentials/{EXAMPLE_ID}/retire",
+            200,
+            {
+                "certificate_pem": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "fingerprint": "example",
+                "id": "11111111-1111-4111-8111-111111111111",
+                "issuer_ca_id": "11111111-1111-4111-8111-111111111111",
+                "not_after": "2026-08-26T00:00:00Z",
+                "not_before": "2026-08-26T00:00:00Z",
+                "serial": "example",
+                "status": "active",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+            },
+        )
+        await client.saml.retire_idp_credential(EXAMPLE_ID)
+
+
+def test_ssf_list_streams() -> None:
+    """``ssf.list_streams`` -- GET /api/v1/tenants/{tenant_id}/ssf/streams."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams",
+            200,
+            {
+                "items": [
+                    {
+                        "audience": "example",
+                        "authorization_header_set": True,
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "delivery_method": "push",
+                        "events_allowed": [],
+                        "events_delivered": [],
+                        "events_requested": [],
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "receiver_client_id": "example",
+                        "status": "enabled",
+                        "status_actor": "admin",
+                        "subject_format": "iss_sub",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "transmitter_active": True,
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.ssf.list_streams(PageRequest(limit=50))
+        client.ssf.list_streams_all(PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_ssf_list_streams_async() -> None:
+    """``ssf.list_streams`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams",
+            200,
+            {
+                "items": [
+                    {
+                        "audience": "example",
+                        "authorization_header_set": True,
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "delivery_method": "push",
+                        "events_allowed": [],
+                        "events_delivered": [],
+                        "events_requested": [],
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "receiver_client_id": "example",
+                        "status": "enabled",
+                        "status_actor": "admin",
+                        "subject_format": "iss_sub",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "transmitter_active": True,
+                        "updated_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.ssf.list_streams(PageRequest(limit=50))
+        await client.ssf.list_streams_all(PageRequest(limit=50))
+
+
+def test_ssf_create_stream() -> None:
+    """``ssf.create_stream`` -- POST /api/v1/tenants/{tenant_id}/ssf/streams."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams",
+            201,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        client.ssf.create_stream(
+            models.SsfStreamInput(
+                audience="example",
+                delivery_method="push",
+                events_allowed=[],
+                receiver_client_id="example",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_ssf_create_stream_async() -> None:
+    """``ssf.create_stream`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams",
+            201,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        await client.ssf.create_stream(
+            models.SsfStreamInput(
+                audience="example",
+                delivery_method="push",
+                events_allowed=[],
+                receiver_client_id="example",
+            )
+        )
+
+
+def test_ssf_get_stream() -> None:
+    """``ssf.get_stream`` -- GET
+    /api/v1/tenants/{tenant_id}/ssf/streams/{stream_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}",
+            200,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        client.ssf.get_stream(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_ssf_get_stream_async() -> None:
+    """``ssf.get_stream`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}",
+            200,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        await client.ssf.get_stream(EXAMPLE_ID)
+
+
+def test_ssf_update_stream() -> None:
+    """``ssf.update_stream`` -- PUT
+    /api/v1/tenants/{tenant_id}/ssf/streams/{stream_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}",
+            200,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        client.ssf.update_stream(
+            EXAMPLE_ID,
+            models.SsfStreamInput(
+                audience="example",
+                delivery_method="push",
+                events_allowed=[],
+                receiver_client_id="example",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_ssf_update_stream_async() -> None:
+    """``ssf.update_stream`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}",
+            200,
+            {
+                "audience": "example",
+                "authorization_header_set": True,
+                "created_at": "2026-08-26T00:00:00Z",
+                "delivery_method": "push",
+                "events_allowed": [],
+                "events_delivered": [],
+                "events_requested": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "receiver_client_id": "example",
+                "status": "enabled",
+                "status_actor": "admin",
+                "subject_format": "iss_sub",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "transmitter_active": True,
+                "updated_at": "2026-08-26T00:00:00Z",
+            },
+        )
+        await client.ssf.update_stream(
+            EXAMPLE_ID,
+            models.SsfStreamInput(
+                audience="example",
+                delivery_method="push",
+                events_allowed=[],
+                receiver_client_id="example",
+            ),
+        )
+
+
+def test_ssf_delete_stream() -> None:
+    """``ssf.delete_stream`` -- DELETE
+    /api/v1/tenants/{tenant_id}/ssf/streams/{stream_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router, "DELETE", f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}", 204, None
+        )
+        client.ssf.delete_stream(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_ssf_delete_stream_async() -> None:
+    """``ssf.delete_stream`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router, "DELETE", f"/api/v1/tenants/{TENANT_ID}/ssf/streams/{EXAMPLE_ID}", 204, None
+        )
+        await client.ssf.delete_stream(EXAMPLE_ID)
+
+
+def test_scim_targets_list() -> None:
+    """``scim_targets.list`` -- GET /api/v1/scim-targets."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/scim-targets",
+            200,
+            {
+                "items": [
+                    {
+                        "auth": {"type": "bearer"},
+                        "base_url": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "deprovision": "deactivate",
+                        "enabled": True,
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "push_groups": True,
+                        "scope": {"type": "all_users"},
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "user_name_from": "username",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.scim_targets.list(PageRequest(limit=50))
+        client.scim_targets.list_all(PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_list_async() -> None:
+    """``scim_targets.list`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/scim-targets",
+            200,
+            {
+                "items": [
+                    {
+                        "auth": {"type": "bearer"},
+                        "base_url": "example",
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "deprovision": "deactivate",
+                        "enabled": True,
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "example",
+                        "push_groups": True,
+                        "scope": {"type": "all_users"},
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "user_name_from": "username",
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.scim_targets.list(PageRequest(limit=50))
+        await client.scim_targets.list_all(PageRequest(limit=50))
+
+
+def test_scim_targets_create() -> None:
+    """``scim_targets.create`` -- POST /api/v1/scim-targets."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/scim-targets",
+            201,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        client.scim_targets.create(
+            models.ScimTargetInput(
+                auth=models.ScimTargetAuthBearer(type="bearer"),
+                base_url="example",
+                name="example",
+                scope=models.ScimTargetScopeAllUsers(type="all_users"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_create_async() -> None:
+    """``scim_targets.create`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/scim-targets",
+            201,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        await client.scim_targets.create(
+            models.ScimTargetInput(
+                auth=models.ScimTargetAuthBearer(type="bearer"),
+                base_url="example",
+                name="example",
+                scope=models.ScimTargetScopeAllUsers(type="all_users"),
+            )
+        )
+
+
+def test_scim_targets_get() -> None:
+    """``scim_targets.get`` -- GET /api/v1/scim-targets/{id}."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}",
+            200,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        client.scim_targets.get(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_get_async() -> None:
+    """``scim_targets.get`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}",
+            200,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        await client.scim_targets.get(EXAMPLE_ID)
+
+
+def test_scim_targets_update() -> None:
+    """``scim_targets.update`` -- PUT /api/v1/scim-targets/{id}."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}",
+            200,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        client.scim_targets.update(
+            EXAMPLE_ID,
+            models.ScimTargetInput(
+                auth=models.ScimTargetAuthBearer(type="bearer"),
+                base_url="example",
+                name="example",
+                scope=models.ScimTargetScopeAllUsers(type="all_users"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_update_async() -> None:
+    """``scim_targets.update`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}",
+            200,
+            {
+                "auth": {"type": "bearer"},
+                "base_url": "example",
+                "created_at": "2026-08-26T00:00:00Z",
+                "deprovision": "deactivate",
+                "enabled": True,
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "example",
+                "push_groups": True,
+                "scope": {"type": "all_users"},
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "user_name_from": "username",
+            },
+        )
+        await client.scim_targets.update(
+            EXAMPLE_ID,
+            models.ScimTargetInput(
+                auth=models.ScimTargetAuthBearer(type="bearer"),
+                base_url="example",
+                name="example",
+                scope=models.ScimTargetScopeAllUsers(type="all_users"),
+            ),
+        )
+
+
+def test_scim_targets_delete() -> None:
+    """``scim_targets.delete`` -- DELETE /api/v1/scim-targets/{id}."""
+    with with_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/scim-targets/{EXAMPLE_ID}", 204, None)
+        client.scim_targets.delete(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_delete_async() -> None:
+    """``scim_targets.delete`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/scim-targets/{EXAMPLE_ID}", 204, None)
+        await client.scim_targets.delete(EXAMPLE_ID)
+
+
+def test_scim_targets_reconcile() -> None:
+    """``scim_targets.reconcile`` -- POST /api/v1/scim-targets/{id}/reconcile."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}/reconcile",
+            202,
+            {"status": "example", "target_id": "11111111-1111-4111-8111-111111111111"},
+        )
+        client.scim_targets.reconcile(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_scim_targets_reconcile_async() -> None:
+    """``scim_targets.reconcile`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            f"/api/v1/scim-targets/{EXAMPLE_ID}/reconcile",
+            202,
+            {"status": "example", "target_id": "11111111-1111-4111-8111-111111111111"},
+        )
+        await client.scim_targets.reconcile(EXAMPLE_ID)
+
+
 def test_settings_get_org() -> None:
     """``settings.get_org`` -- GET /api/v1/organizations/{org_id}/settings."""
     with with_client() as (router, client):
@@ -7066,7 +8622,7 @@ async def test_privacy_withdraw_scope_consent_async() -> None:
 def test_platform_health() -> None:
     """``platform.health`` -- GET /health."""
     with with_client() as (router, client):
-        mount_json(router, "GET", "/health", 200, {"status": "example"})
+        mount_json(router, "GET", "/health", 200, {"profile": "example", "status": "example"})
         client.platform.health()
 
 
@@ -7074,7 +8630,7 @@ def test_platform_health() -> None:
 async def test_platform_health_async() -> None:
     """``platform.health`` through the async handle."""
     async with with_async_client() as (router, client):
-        mount_json(router, "GET", "/health", 200, {"status": "example"})
+        mount_json(router, "GET", "/health", 200, {"profile": "example", "status": "example"})
         await client.platform.health()
 
 
@@ -7153,6 +8709,12 @@ EXERCISED = [
     "certificates.list",
     "certificates.revoke",
     "certificates.sign_csr",
+    "directory.delete",
+    "directory.get",
+    "directory.get_sync_status",
+    "directory.link_account",
+    "directory.set",
+    "directory.update",
     "email_config.delete_org",
     "email_config.delete_tenant",
     "email_config.get_org",
@@ -7249,6 +8811,23 @@ EXERCISED = [
     "roles.unassign_from_service_account",
     "roles.unassign_from_user",
     "roles.update",
+    "saml.create_service_provider",
+    "saml.delete_service_provider",
+    "saml.get_idp",
+    "saml.get_service_provider",
+    "saml.issue_idp_credential",
+    "saml.list_idp_credentials",
+    "saml.list_service_providers",
+    "saml.parse_sp_metadata",
+    "saml.promote_idp_credential",
+    "saml.retire_idp_credential",
+    "saml.update_service_provider",
+    "scim_targets.create",
+    "scim_targets.delete",
+    "scim_targets.get",
+    "scim_targets.list",
+    "scim_targets.reconcile",
+    "scim_targets.update",
     "scim_tokens.create",
     "scim_tokens.list",
     "scim_tokens.revoke",
@@ -7273,6 +8852,11 @@ EXERCISED = [
     "settings.set_effective",
     "settings.set_org",
     "settings.set_tenant_override",
+    "ssf.create_stream",
+    "ssf.delete_stream",
+    "ssf.get_stream",
+    "ssf.list_streams",
+    "ssf.update_stream",
     "tenants.create",
     "tenants.delete",
     "tenants.export_audit",
@@ -7309,4 +8893,4 @@ def test_generated_surface_covers_the_registry() -> None:
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 162
+    assert len(EXERCISED) == 190
