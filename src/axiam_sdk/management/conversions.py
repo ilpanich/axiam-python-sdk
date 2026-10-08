@@ -20,6 +20,7 @@ __all__ = [
     "saml_service_provider_input",
     "scim_target_input",
     "set_directory_config",
+    "ssf_stream_input",
 ]
 
 
@@ -99,4 +100,29 @@ def scim_target_input(target: models.ScimTargetResponse) -> models.ScimTargetInp
         push_groups=target.push_groups,
         scope=target.scope.model_copy(),
         user_name_from=target.user_name_from,
+    )
+
+
+def ssf_stream_input(stream: models.SsfStream) -> models.SsfStreamInput:
+    """``ssf.get_stream``'s result as an ``ssf.update_stream`` body (CONTRACT
+    §32.2).
+
+    ``authorization_header`` and ``clear_authorization_header`` are left unset:
+    absent keeps the stored header -- unless the update moves ``endpoint_url``
+    to another scheme, host or port while one is stored, which requires sending
+    it again or clearing it (§32.3 rule 5). The read-only members
+    (``events_delivered``, ``authorization_header_set``, the transmitter state)
+    have no place on the input and are not carried.
+    """
+    return models.SsfStreamInput(
+        audience=stream.audience,
+        delivery_method=stream.delivery_method,
+        description=stream.description,
+        endpoint_url=stream.endpoint_url,
+        events_allowed=list(stream.events_allowed),
+        events_requested=list(stream.events_requested),
+        receiver_client_id=stream.receiver_client_id,
+        status=stream.status,
+        status_reason=stream.status_reason,
+        subject_format=stream.subject_format,
     )

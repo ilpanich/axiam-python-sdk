@@ -32,6 +32,7 @@ from axiam_sdk.management.conversions import (
     saml_service_provider_input,
     scim_target_input,
     set_directory_config,
+    ssf_stream_input,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "saml_service_provider_input",
     "scim_target_input",
     "set_directory_config",
+    "ssf_stream_input",
 ]

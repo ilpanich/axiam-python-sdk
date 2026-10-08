@@ -31,6 +31,7 @@ def test_pyjwt_is_required_with_its_crypto_extra() -> None:
     pyjwt = [d for d in deps if d.lower().startswith("pyjwt")]
     assert len(pyjwt) == 1, deps
     assert pyjwt[0].lower().startswith("pyjwt[crypto]"), pyjwt[0]
+    assert any(d.lower().startswith("cryptography") for d in deps), deps
 
 
 def test_the_installed_pyjwt_can_use_the_asymmetric_algorithms() -> None:
