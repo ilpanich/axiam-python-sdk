@@ -16,10 +16,10 @@ therefore framework-specific; find it on ``axiam_sdk.fastapi`` and
 ``axiam_sdk.django``.
 
 This module MUST remain importable with ONLY the runtime dependencies
-declared in ``[project.dependencies]`` (httpx, grpcio, aio-pika, pydantic,
-PyJWT) — the optional web-framework integrations (``axiam_sdk.fastapi``,
-``axiam_sdk.django``, see ``[project.optional-dependencies]``) MUST NOT be
-imported from here.
+declared in ``[project.dependencies]`` (httpx, grpcio, protobuf, aio-pika,
+pydantic, PyJWT[crypto], cryptography) — the optional web-framework
+integrations (``axiam_sdk.fastapi``, ``axiam_sdk.django``, see
+``[project.optional-dependencies]``) MUST NOT be imported from here.
 """
 
 from axiam_sdk._account import MfaEnrollment, PasswordResetContext
