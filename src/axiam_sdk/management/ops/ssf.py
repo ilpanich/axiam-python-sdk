@@ -208,6 +208,16 @@ class SsfApi:
     def update_stream(self, stream_id: str, body: models.SsfStreamInput) -> models.SsfStream:
         """``PUT /api/v1/tenants/{tenant_id}/ssf/streams/{stream_id}``
 
+        An omitted optional member takes its default (§32.2) -- **except
+        ``authorization_header``, which absent keeps the stored one** --
+        unless the update moves ``endpoint_url`` to another scheme, host or
+        port while a header is stored: then it must carry
+        ``authorization_header`` again or
+        ``clear_authorization_header=True``, else ``400`` (§32.3 rule 5). An
+        update overtaken by the receiver's own write is ``409``: read the
+        stream again (:func:`~axiam_sdk.management.ssf_stream_input` turns
+        the read into this body).
+
         **This is a replacement, not a patch** (§27.4 rule 5). Every field
         of the body is required, and what you do not carry over from a prior
         read is not preserved -- it is overwritten. Read first, change the
@@ -301,6 +311,16 @@ class AsyncSsfApi:
 
     async def update_stream(self, stream_id: str, body: models.SsfStreamInput) -> models.SsfStream:
         """``PUT /api/v1/tenants/{tenant_id}/ssf/streams/{stream_id}``
+
+        An omitted optional member takes its default (§32.2) -- **except
+        ``authorization_header``, which absent keeps the stored one** --
+        unless the update moves ``endpoint_url`` to another scheme, host or
+        port while a header is stored: then it must carry
+        ``authorization_header`` again or
+        ``clear_authorization_header=True``, else ``400`` (§32.3 rule 5). An
+        update overtaken by the receiver's own write is ``409``: read the
+        stream again (:func:`~axiam_sdk.management.ssf_stream_input` turns
+        the read into this body).
 
         **This is a replacement, not a patch** (§27.4 rule 5). Every field
         of the body is required, and what you do not carry over from a prior

@@ -20,10 +20,10 @@ from __future__ import annotations
 import datetime as _datetime
 from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_serializer
+from pydantic import BaseModel, ConfigDict, SecretStr, model_serializer, model_validator
 
 __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discriminator"]
 
@@ -49,6 +49,23 @@ class ManagementModel(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {}
+    """The open-enum fields of this model and the values this SDK knows,
+    filled in by the generator per class. Empty on the base."""
+
+    def has_member(self, name: str) -> bool:
+        """Whether ``name`` was set: present on the wire for a decoded model,
+        or assigned by the caller for one being built.
+
+        This is how ``null`` is told from absence (§27.4 rule 5): a member the
+        server sent as ``null`` and one it did not send both read as ``None``,
+        and only the first is a member. ``name`` may be the wire name or the
+        attribute name.
+        """
+        fields = type(self).model_fields
+        attribute = next((key for key, info in fields.items() if name in (key, info.alias)), name)
+        return attribute in self.model_fields_set
+
     def to_wire(self) -> dict[str, Any]:
         """This model as its JSON-ready wire body.
 
@@ -58,7 +75,13 @@ class ManagementModel(BaseModel):
         from leaving it out.
 
         The one exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
+
+        Raises:
+            ValidationError: locally, before anything is sent, when an open-enum
+                field anywhere in the body holds a value this SDK does not know
+                (CONTRACT §29.2, §32.2: such a value decodes, and is never sent).
         """
+        _refuse_unknown_enums(self)
         exposed = _expose(self.model_dump(exclude_unset=True, by_alias=True))
         assert isinstance(exposed, dict)
         for field in _OMIT_WHEN_EMPTY:
@@ -93,6 +116,44 @@ def open_discriminator(tag: str, known: Iterable[str]) -> Callable[[Any], str]:
     return pick
 
 
+#: Member names that carry a secret somewhere on this surface. The catch-all arm
+#: of an open union keeps every member it is given (``extra="allow"``), so it
+#: drops these instead: a response must never surface one (§29.5, §30.2, §31.2,
+#: §32.5), and an unknown arm is rendered in full by ``repr``.
+_SECRET_MEMBER_NAMES = frozenset(
+    {"bind_secret", "credential", "authorization_header", "private_key_pem"}
+)
+
+
+def _refuse_unknown_enums(value: Any) -> None:
+    """Walk a request body and refuse any open-enum value this SDK does not know.
+
+    Raises:
+        ValidationError: naming the model and the field, never the value.
+    """
+    if isinstance(value, ManagementModel):
+        for field, known in type(value)._OPEN_ENUM_FIELDS.items():
+            held = getattr(value, field, None)
+            items = held if isinstance(held, list) else [held]
+            if any(isinstance(item, str) and item not in known for item in items):
+                from axiam_sdk.management._errors import local_refusal
+
+                raise local_refusal(
+                    type(value).__name__,
+                    field,
+                    "a value this SDK does not know decodes, but is never sent "
+                    "(CONTRACT.md §29.2, §32.2)",
+                )
+        for name in type(value).model_fields:
+            _refuse_unknown_enums(getattr(value, name, None))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _refuse_unknown_enums(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _refuse_unknown_enums(item)
+
+
 class OpenUnionUnknown(ManagementModel):
     """Base of the catch-all arm of an open tagged union.
 
@@ -105,6 +166,16 @@ class OpenUnionUnknown(ManagementModel):
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_secrets(cls, data: Any) -> Any:
+        """Drop every member named in :data:`_SECRET_MEMBER_NAMES` before the
+        arm keeps the rest: an unknown arm must not become a place a secret
+        the server (wrongly) sent survives to be logged."""
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in _SECRET_MEMBER_NAMES}
+        return data
 
     @model_serializer(mode="plain")
     def _refuse(self) -> dict[str, Any]:

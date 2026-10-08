@@ -22,7 +22,7 @@ Three shapes recur and are worth knowing before reading:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Discriminator, Field, SecretStr, Tag, TypeAdapter
 
@@ -41,6 +41,15 @@ class AcsEndpoint(ManagementModel):
     URIs are: an `AuthnRequest` naming an ACS URL is honoured only when the
     URL equals one registered here, byte for byte. No globs, no prefix
     match.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "binding": frozenset({"http_post", "http_redirect"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     binding: SamlBinding
@@ -244,6 +253,17 @@ what the widening removes is the claim that nothing else can occur.
 class AttributeMapping(ManagementModel):
     """One entry of an SP's attribute mapping table."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "source": frozenset(
+            {"username", "email", "display_name", "given_name", "family_name", "groups", "roles"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     name_format: str | None = None
     """The `NameFormat`, one of [`ATTRIBUTE_NAME_FORMATS`]. `None` leaves the
 
@@ -291,6 +311,16 @@ what the widening removes is the claim that nothing else can occur.
 
 class AuditLogEntry(ManagementModel):
     """``AuditLogEntry`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "actor_type": frozenset({"User", "ServiceAccount", "System"}),
+        "outcome": frozenset({"Success", "Failure", "Denied"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     action: str
     """``action``."""
@@ -378,6 +408,16 @@ class CaCertificate(ManagementModel):
     the organization. Private keys for signing CAs are encrypted with
     AES-256-GCM and stored separately; non-signing CAs only store the public
     certificate.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "status": frozenset({"Active", "Revoked", "Expired"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     chain_pem: str | None = None
@@ -504,6 +544,17 @@ class Certificate(ManagementModel):
 
     Certificates are signed by the organization's CA. The private key is
     returned once on generation and never stored by AXIAM.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "cert_type": frozenset({"User", "Service", "Device", "Server"}),
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "status": frozenset({"Active", "Revoked", "Expired"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     bound_service_account_id: str | None = None
@@ -935,6 +986,15 @@ class ConsentView(ManagementModel):
 class CreateCaCertificateRequest(ManagementModel):
     """``CreateCaCertificateRequest`` (generated from openapi.json)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     intermediate_subject: str | None = None
     """Common name for the signing intermediate — `vault_pki` custody only.
 
@@ -976,6 +1036,16 @@ class CreateCaCertificateRequest(ManagementModel):
 
 class CreateCertificateRequest(ManagementModel):
     """``CreateCertificateRequest`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "cert_type": frozenset({"User", "Service", "Device", "Server"}),
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     cert_type: CertificateType
     """``cert_type``."""
@@ -1130,6 +1200,15 @@ class CreateGroupRequest(ManagementModel):
 class CreateIntermediateCaRequest(ManagementModel):
     """Body of `POST .../tenants/{tenant_id}/signing-cas`."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     key_algorithm: KeyAlgorithm
     """``key_algorithm``."""
 
@@ -1152,6 +1231,36 @@ class CreateIntermediateCaRequest(ManagementModel):
 class CreateNotificationRuleRequest(ManagementModel):
     """``CreateNotificationRuleRequest`` (generated from openapi.json)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "events": frozenset(
+            {
+                "login_failure",
+                "account_locked",
+                "mfa_enrollment_changed",
+                "password_changed",
+                "password_reset_requested",
+                "role_assigned",
+                "role_unassigned",
+                "permission_granted",
+                "permission_revoked",
+                "certificate_issued",
+                "certificate_revoked",
+                "ca_certificate_revoked",
+                "user_created",
+                "user_deleted",
+                "user_updated",
+                "service_account_created",
+                "service_account_deleted",
+                "scim_delivery_failed",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     description: str
     """Description of what this rule monitors."""
 
@@ -1167,6 +1276,26 @@ class CreateNotificationRuleRequest(ManagementModel):
 
 class CreateOAuth2ClientRequest(ManagementModel):
     """``CreateOAuth2ClientRequest`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "authn_request_params": frozenset({"ignore", "honour"}),
+        "profile": frozenset({"standard", "fapi2"}),
+        "token_endpoint_auth_method": frozenset(
+            {
+                "client_secret_post",
+                "client_secret_basic",
+                "tls_client_auth",
+                "self_signed_tls_client_auth",
+                "private_key_jwt",
+                "none",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     allowed_resources: list[str] | None = None
     """T21.3 / RFC 8707 — the target services this client may name in a
@@ -1376,6 +1505,16 @@ class CreatePermissionRequest(ManagementModel):
 class CreatePgpKeyRequest(ManagementModel):
     """``CreatePgpKeyRequest`` (generated from openapi.json)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "purpose": frozenset({"AuditSigning", "Export"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     algorithm: PgpKeyAlgorithm
     """``algorithm``."""
 
@@ -1391,6 +1530,16 @@ class CreatePgpKeyRequest(ManagementModel):
 
 class CreateReactorRequest(ManagementModel):
     """``CreateReactorRequest`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "failure_policy": frozenset({"fail_closed", "fail_open"}),
+        "mode": frozenset({"intercept", "listen"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     description: str | None = None
     """``description``."""
@@ -1500,6 +1649,15 @@ class CreateScimTokenRequest(ManagementModel):
 class CreateScimTokenResponse(ManagementModel):
     """The one-time reveal. Same shape as service-account creation: the secret
     is returned once and only its hash is kept.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset({"active", "expired", "revoked"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     created_at: str
@@ -1640,6 +1798,15 @@ class DirectoryConfig(ManagementModel):
     """A tenant's directory configuration, as stored and as read back.
 
     Carries no secret: see the module documentation.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"open_ldap", "active_directory"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     base_dn: str
@@ -1792,6 +1959,15 @@ class DirectorySyncStatus(ManagementModel):
 
 class EmailConfig(ManagementModel):
     """Fully resolved email configuration (all fields present)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "scope": frozenset({"Org", "Tenant"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     created_at: str
     """``created_at``."""
@@ -2052,6 +2228,16 @@ class GeneratedCaCertificate(ManagementModel):
     shortcoming of this response.
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "status": frozenset({"Active", "Revoked", "Expired"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     chain_pem: str | None = None
     """The issuers above [`Self::public_cert_pem`], concatenated PEM, nearest
 
@@ -2191,6 +2377,17 @@ class GeneratedCertificate(ManagementModel):
     Includes the private key PEM, returned **once** and never stored.
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "cert_type": frozenset({"User", "Service", "Device", "Server"}),
+        "key_algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "status": frozenset({"Active", "Revoked", "Expired"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     cert_type: CertificateType
     """``cert_type``."""
 
@@ -2259,6 +2456,17 @@ class GeneratedCertificate(ManagementModel):
 class GeneratedPgpKey(ManagementModel):
     """Response returned when a PGP key is generated."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "purpose": frozenset({"AuditSigning", "Export"}),
+        "status": frozenset({"Active", "Revoked"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     algorithm: PgpKeyAlgorithm
     """``algorithm``."""
 
@@ -2299,6 +2507,15 @@ class GeneratedPgpKey(ManagementModel):
 
 class GrantPermissionRequest(ManagementModel):
     """``GrantPermissionRequest`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "effect": frozenset({"allow", "deny"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     effect: PermissionEffect | None = None
     """B1: `"allow"` (the default) or `"deny"`.
@@ -2455,6 +2672,15 @@ class ImportCaCertificateRequest(ManagementModel):
 
 class IssueSamlIdpCredential(ManagementModel):
     """`POST …/saml/idp-credentials` body."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "slot": frozenset({"active", "next"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     issuer_ca_id: str
     """An active signing CA the caller may issue from."""
@@ -2632,6 +2858,15 @@ class MdsStatusResponse(ManagementModel):
 class MfaMethodResponse(ManagementModel):
     """``MfaMethodResponse`` (generated from openapi.json)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "method_type": frozenset({"Totp", "Passkey", "SecurityKey"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     created_at: str
     """``created_at``."""
 
@@ -2777,6 +3012,36 @@ class NotificationPolicy(ManagementModel):
 class NotificationRuleResponse(ManagementModel):
     """Notification rule response."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "events": frozenset(
+            {
+                "login_failure",
+                "account_locked",
+                "mfa_enrollment_changed",
+                "password_changed",
+                "password_reset_requested",
+                "role_assigned",
+                "role_unassigned",
+                "permission_granted",
+                "permission_revoked",
+                "certificate_issued",
+                "certificate_revoked",
+                "ca_certificate_revoked",
+                "user_created",
+                "user_deleted",
+                "user_updated",
+                "service_account_created",
+                "service_account_deleted",
+                "scim_delivery_failed",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     created_at: str
     """``created_at``."""
 
@@ -2854,6 +3119,29 @@ class OAuth2ClientCreatedResponse(ManagementModel):
 
 class OAuth2ClientResponse(ManagementModel):
     """OAuth2 client response -- omits client_secret_hash."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "authn_request_params": frozenset({"ignore", "honour"}),
+        "backchannel_authentication_request_signing_alg": frozenset({"PS256", "ES256", "EdDSA"}),
+        "backchannel_token_delivery_mode": frozenset({"poll", "ping"}),
+        "managed_by": frozenset({"admin", "dcr", "cimd"}),
+        "profile": frozenset({"standard", "fapi2"}),
+        "token_endpoint_auth_method": frozenset(
+            {
+                "client_secret_post",
+                "client_secret_basic",
+                "tls_client_auth",
+                "self_signed_tls_client_auth",
+                "private_key_jwt",
+                "none",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     allowed_resources: list[str]
     """T21.3 — echoed in its stored, normalised form, so an operator auditing
@@ -3344,11 +3632,19 @@ class Organization(ManagementModel):
 class ParseSamlSpMetadata(ManagementModel):
     """`POST …/saml/parse-sp-metadata` body: **exactly one** of the two
     members.
-
-    Every field is optional, so this is a **sparse** body: what you leave
-    out is left unchanged, and is omitted from the wire request entirely
-    rather than sent as ``null`` (§27.4 rule 5).
     """
+
+    @classmethod
+    def from_url(cls, url: str) -> ParseSamlSpMetadata:
+        """A request for the server to fetch the SP's metadata from ``url``
+        (``https`` only, through its SSRF guard; CONTRACT §29.2)."""
+        return cls(metadata_url=url)
+
+    @classmethod
+    def from_xml(cls, xml: str) -> ParseSamlSpMetadata:
+        """A request carrying the SP's metadata document itself (at most
+        512 KiB; CONTRACT §29.2)."""
+        return cls(metadata_xml=xml)
 
     metadata_url: str | None = None
     """An `https` URL the server fetches the document from, once, through its
@@ -3441,6 +3737,17 @@ what the widening removes is the claim that nothing else can occur.
 class PgpKey(ManagementModel):
     """An OpenPGP key stored by AXIAM."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "algorithm": frozenset({"Rsa4096", "Ed25519"}),
+        "purpose": frozenset({"AuditSigning", "Export"}),
+        "status": frozenset({"Active", "Revoked"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     algorithm: PgpKeyAlgorithm
     """``algorithm``."""
 
@@ -3522,6 +3829,18 @@ class PolicyResponse(ManagementModel):
     twice is a security rule that will eventually disagree with itself. So
     the server resolves it once, here, and reports both: the admin's stored
     intent and its effect.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "effective_unknown_aaguid": frozenset({"allow", "deny"}),
+        "min_certification": frozenset({"L1", "L1Plus", "L2", "L2Plus", "L3", "L3Plus"}),
+        "mode": frozenset({"none", "indirect", "direct_required"}),
+        "unknown_aaguid": frozenset({"allow", "deny"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     allowed_aaguids: list[str] | None = None
@@ -3713,6 +4032,15 @@ built once at import rather than per call.
 class ReactorEventDescriptor(ManagementModel):
     """One hookable event, as the registry describes it."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "default_failure_policy": frozenset({"fail_closed", "fail_open"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     default_failure_policy: FailurePolicy
     """``default_failure_policy``."""
 
@@ -3751,6 +4079,16 @@ what the widening removes is the claim that nothing else can occur.
 
 class ReactorResponse(ManagementModel):
     """``ReactorResponse`` (generated from openapi.json)."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "failure_policy": frozenset({"fail_closed", "fail_open"}),
+        "mode": frozenset({"intercept", "listen"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     created_at: str
     """``created_at``."""
@@ -3863,6 +4201,15 @@ class ResolvedPermissionGrant(ManagementModel):
     A superset of [`PermissionGrant`]: `scope_ids` is still present and
     still authoritative, so a client written before `scopes` existed is
     unaffected.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "effect": frozenset({"allow", "deny"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     effect: PermissionEffect
@@ -4130,6 +4477,15 @@ class SamlIdpCredential(ManagementModel):
     route and destroyed on retirement (D-21).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset({"active", "next", "retired"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     certificate_pem: str
     """The leaf certificate, PEM. Public: it is what the metadata publishes."""
 
@@ -4202,7 +4558,15 @@ class SamlIdpInfo(ManagementModel):
     """
 
     active_credential_id: str | None = None
-    """The `active` credential, or null."""
+    """The `active` credential, or null.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('active_credential_id')`` tells a ``null``
+    the server sent from a member it did not send at all; both read as
+    ``None`` here.
+    """
 
     entity_id: str
     """The IdP's entity id (the metadata URL itself)."""
@@ -4217,7 +4581,15 @@ class SamlIdpInfo(ManagementModel):
     """Where the IdP metadata is served."""
 
     next_credential_id: str | None = None
-    """The `next` credential, or null."""
+    """The `next` credential, or null.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('next_credential_id')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     saml_available: bool
     """Whether this server build serves SAML at all (it was built with the
@@ -4257,6 +4629,16 @@ what the widening removes is the claim that nothing else can occur.
 
 class SamlServiceProvider(ManagementModel):
     """A registered service provider, as stored."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "name_id_format": frozenset({"persistent", "email_address"}),
+        "slo_binding": frozenset({"http_post", "http_redirect"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     acs_urls: list[AcsEndpoint]
     """See [`SamlServiceProviderInput::acs_urls`]."""
@@ -4324,6 +4706,16 @@ class SamlServiceProviderInput(ManagementModel):
     Every field but `entity_id`, `display_name` and `acs_urls` has a
     default, so a client written against a later revision of this struct
     keeps working.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "name_id_format": frozenset({"persistent", "email_address"}),
+        "slo_binding": frozenset({"http_post", "http_redirect"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     acs_urls: list[AcsEndpoint]
@@ -4530,6 +4922,16 @@ class ScimTargetDeliveryState(ManagementModel):
 class ScimTargetInput(ManagementModel):
     """`create` and `update` (a **replacement**) body."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "deprovision": frozenset({"deactivate", "delete"}),
+        "user_name_from": frozenset({"username", "email"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     auth: ScimTargetAuth
     """`bearer`, or `oauth2_client_credentials` with `token_url` (the same URL
 
@@ -4584,6 +4986,16 @@ class ScimTargetResponse(ManagementModel):
     """A registered SCIM target, as the management API returns it. **The
     credential is never returned**, and there is no member that says
     anything about it.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "deprovision": frozenset({"deactivate", "delete"}),
+        "user_name_from": frozenset({"username", "email"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     auth: ScimTargetAuth
@@ -4695,6 +5107,15 @@ class ScimTokenResponse(ManagementModel):
     plaintext exactly once, in [`CreateScimTokenResponse`].
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset({"active", "expired", "revoked"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     created_at: str
     """``created_at``."""
 
@@ -4769,6 +5190,15 @@ class Scope(ManagementModel):
 class SecuritySettings(ManagementModel):
     """Fully resolved security settings (all fields present)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "scope": frozenset({"Org", "Tenant"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     certificate: CertificatePolicy
     """``certificate``."""
 
@@ -4823,6 +5253,17 @@ class ServiceAccountCreatedResponse(ManagementModel):
     secret.
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset(
+            {"Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     client_id: str
     """``client_id``."""
 
@@ -4858,6 +5299,17 @@ class ServiceAccountCreatedResponse(ManagementModel):
 
 class ServiceAccountResponse(ManagementModel):
     """Public-safe service account representation."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset(
+            {"Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     client_id: str
     """``client_id``."""
@@ -4945,6 +5397,15 @@ class SetDirectoryConfig(ManagementModel):
     Every `DirectoryConfig` member except `id`, `tenant_id` and the two
     timestamps, plus the write-only `bind_secret`. An omitted optional
     member is **reset to its default**, not kept.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"open_ldap", "active_directory"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     base_dn: str
@@ -5194,6 +5655,15 @@ class SignCertificateCsrRequest(ManagementModel):
     anywhere on this exchange.
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "cert_type": frozenset({"User", "Service", "Device", "Server"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     cert_type: CertificateType
     """``cert_type``."""
 
@@ -5348,6 +5818,48 @@ class SsfStream(ManagementModel):
     says whether one is stored.
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "delivery_method": frozenset({"push", "poll"}),
+        "events_allowed": frozenset(
+            {
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+                "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+            }
+        ),
+        "events_delivered": frozenset(
+            {
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+                "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+            }
+        ),
+        "events_requested": frozenset(
+            {
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+                "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+            }
+        ),
+        "status": frozenset({"enabled", "paused", "disabled"}),
+        "status_actor": frozenset({"admin", "receiver"}),
+        "subject_format": frozenset({"iss_sub", "email"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     audience: str
     """The SET `aud`. Unique across the deployment."""
 
@@ -5418,6 +5930,37 @@ class SsfStream(ManagementModel):
 
 class SsfStreamInput(ManagementModel):
     """`create_stream` and `update_stream` (a **replacement**) body."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "delivery_method": frozenset({"push", "poll"}),
+        "events_allowed": frozenset(
+            {
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+                "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+            }
+        ),
+        "events_requested": frozenset(
+            {
+                "https://schemas.openid.net/secevent/caep/event-type/session-revoked",
+                "https://schemas.openid.net/secevent/caep/event-type/credential-change",
+                "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change",
+                "https://schemas.openid.net/secevent/risc/event-type/account-disabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-enabled",
+                "https://schemas.openid.net/secevent/risc/event-type/account-purged",
+            }
+        ),
+        "status": frozenset({"enabled", "paused", "disabled"}),
+        "subject_format": frozenset({"iss_sub", "email"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
 
     audience: str
     """1–512 bytes; unique across the deployment."""
@@ -5534,6 +6077,16 @@ class Tenant(ManagementModel):
     Each tenant has its own set of users, roles, permissions, resources,
     certificates, and configuration. Tenants can represent environments
     (dev/staging/prod) or separate business contexts.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"standard", "organization"}),
+        "status": frozenset({"Active", "Suspended"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     created_at: str
@@ -5844,6 +6397,15 @@ class UpdateDirectoryConfig(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"open_ldap", "active_directory"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     base_dn: str | None = None
     """See [`SetDirectoryConfig::base_dn`]."""
 
@@ -5863,10 +6425,26 @@ class UpdateDirectoryConfig(ManagementModel):
     """See [`SetDirectoryConfig::enabled`]."""
 
     group_base_dn: str | None = None
-    """Explicit `null` clears it."""
+    """Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('group_base_dn')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     group_filter: str | None = None
-    """Explicit `null` clears it."""
+    """Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('group_filter')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     group_mappings: list[GroupMapping] | None = None
     """Replaces the whole table when present."""
@@ -6014,6 +6592,36 @@ class UpdateNotificationRuleRequest(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "events": frozenset(
+            {
+                "login_failure",
+                "account_locked",
+                "mfa_enrollment_changed",
+                "password_changed",
+                "password_reset_requested",
+                "role_assigned",
+                "role_unassigned",
+                "permission_granted",
+                "permission_revoked",
+                "certificate_issued",
+                "certificate_revoked",
+                "ca_certificate_revoked",
+                "user_created",
+                "user_deleted",
+                "user_updated",
+                "service_account_created",
+                "service_account_deleted",
+                "scim_delivery_failed",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     description: str | None = None
     """``description``."""
 
@@ -6036,6 +6644,26 @@ class UpdateOAuth2ClientRequest(ManagementModel):
     Every field is optional, so this is a **sparse** body: what you leave
     out is left unchanged, and is omitted from the wire request entirely
     rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "authn_request_params": frozenset({"ignore", "honour"}),
+        "profile": frozenset({"standard", "fapi2"}),
+        "token_endpoint_auth_method": frozenset(
+            {
+                "client_secret_post",
+                "client_secret_basic",
+                "tls_client_auth",
+                "self_signed_tls_client_auth",
+                "private_key_jwt",
+                "none",
+            }
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     allowed_resources: list[str] | None = None
@@ -6164,6 +6792,16 @@ class UpdateReactorRequest(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "failure_policy": frozenset({"fail_closed", "fail_open"}),
+        "mode": frozenset({"intercept", "listen"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     description: str | None = None
     """``description``."""
 
@@ -6251,6 +6889,17 @@ class UpdateServiceAccount(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset(
+            {"Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     description: str | None = None
     """``description``."""
 
@@ -6267,6 +6916,15 @@ class UpdateTenant(ManagementModel):
     Every field is optional, so this is a **sparse** body: what you leave
     out is left unchanged, and is omitted from the wire request entirely
     rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset({"Active", "Suspended"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     metadata: Any | None = None
@@ -6288,6 +6946,17 @@ class UpdateUserRequest(ManagementModel):
     Every field is optional, so this is a **sparse** body: what you leave
     out is left unchanged, and is omitted from the wire request entirely
     rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset(
+            {"Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     email: str | None = None
@@ -6371,6 +7040,17 @@ what the widening removes is the claim that nothing else can occur.
 class UserResponse(ManagementModel):
     """Public-safe user representation (no password_hash, no mfa_secret)."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "status": frozenset(
+            {"Active", "Inactive", "Locked", "PendingVerification", "Anonymized", "Deleted"}
+        ),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     created_at: str
     """``created_at``."""
 
@@ -6442,6 +7122,17 @@ class WebauthnAttestationPolicy(ManagementModel):
     """Per-tenant WebAuthn attestation policy (D5). One row per tenant; an
     absent row means [`WebauthnAttestationPolicy::default`], which is
     today's behavior unchanged.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "min_certification": frozenset({"L1", "L1Plus", "L2", "L2Plus", "L3", "L3Plus"}),
+        "mode": frozenset({"none", "indirect", "direct_required"}),
+        "unknown_aaguid": frozenset({"allow", "deny"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
     """
 
     allowed_aaguids: list[str] | None = None

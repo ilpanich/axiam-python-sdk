@@ -1,7 +1,7 @@
 """Pagination for the §27 management surface.
 
-Twenty of the 147 operations take ``offset``/``limit`` and answer with the
-envelope ``{items, total, offset, limit}``. The other thirteen collection reads
+Twenty-four of the 190 operations take ``offset``/``limit`` and answer with the
+envelope ``{items, total, offset, limit}``. The other twenty collection reads
 answer with a bare array and are **not** paginated — §27.4 rule 4 forbids
 modelling those as a page, because a ``Page`` reporting ``total == len(items)``
 is indistinguishable from a real one right up to the moment a caller relies on

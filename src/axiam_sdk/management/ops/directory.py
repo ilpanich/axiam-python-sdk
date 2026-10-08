@@ -179,6 +179,17 @@ class DirectoryApi:
     def set(self, body: models.SetDirectoryConfig) -> models.DirectoryConfig:
         """``PUT /api/v1/tenants/{tenant_id}/directory``
 
+        **Moving the connection requires the secret again** (§30.3 rule 2):
+        a ``set`` that changes ``url``, ``start_tls``, ``bind_dn`` or
+        ``trust_anchors_pem`` without ``bind_secret`` is refused ``400`` and
+        changes nothing. The SDK holds no copy of the secret and cannot
+        re-send one for you. ``bind_secret`` is required while the tenant
+        has no configuration; otherwise absent keeps the stored secret.
+        Every other optional member left out is **reset to its default**. An
+        enabled directory and an effective ``opaque_mode = required`` never
+        coexist (``409``); without the deployment's directory key a write
+        carrying a secret is ``503``.
+
         **This is a replacement, not a patch** (§27.4 rule 5). Every field
         of the body is required, and what you do not carry over from a prior
         read is not preserved -- it is overwritten. Read first, change the
@@ -196,6 +207,15 @@ class DirectoryApi:
     def update(self, body: models.UpdateDirectoryConfig) -> models.DirectoryConfig:
         """``PATCH /api/v1/tenants/{tenant_id}/directory``
 
+        **Moving the connection requires the secret again** (§30.3 rule 2):
+        an ``update`` that changes ``url``, ``start_tls``, ``bind_dn`` or
+        ``trust_anchors_pem`` without ``bind_secret`` is refused ``400`` and
+        changes nothing; the SDK holds no copy of the secret to re-send. A
+        member left unset is not sent and stays as stored; ``group_base_dn``
+        / ``group_filter`` set explicitly to ``None`` are sent as ``null``
+        and clear the value. An enabled directory and an effective
+        ``opaque_mode = required`` never coexist (``409``).
+
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
         """
@@ -208,6 +228,13 @@ class DirectoryApi:
     def delete(self) -> None:
         """``DELETE /api/v1/tenants/{tenant_id}/directory``
 
+        **Deleting stops the directory, and only that** (§30.3 rule 5):
+        directory accounts can no longer sign in with a password -- there is
+        no fallback to a local hash -- and the sync stops. Sessions, refresh
+        tokens and passkeys those accounts already hold keep working until
+        they expire or the accounts are deactivated. There is no unlink: a
+        linked account stays a directory account.
+
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
         """
@@ -218,6 +245,13 @@ class DirectoryApi:
 
     def link_account(self, body: models.LinkDirectoryAccount) -> models.DirectoryLinkResult:
         """``POST /api/v1/tenants/{tenant_id}/directory/links``
+
+        **Signs the account's owner out everywhere** (§30.3 rule 6): linking
+        deletes the account's WebAuthn credentials and federation links,
+        revokes its ``User`` certificates, all its sessions and its OAuth2
+        refresh tokens (TOTP is kept). The entry is found by the account's
+        own username; a repeat on an already-linked account answers
+        ``was_already_linked`` and repeats the revocations.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
@@ -272,6 +306,17 @@ class AsyncDirectoryApi:
     async def set(self, body: models.SetDirectoryConfig) -> models.DirectoryConfig:
         """``PUT /api/v1/tenants/{tenant_id}/directory``
 
+        **Moving the connection requires the secret again** (§30.3 rule 2):
+        a ``set`` that changes ``url``, ``start_tls``, ``bind_dn`` or
+        ``trust_anchors_pem`` without ``bind_secret`` is refused ``400`` and
+        changes nothing. The SDK holds no copy of the secret and cannot
+        re-send one for you. ``bind_secret`` is required while the tenant
+        has no configuration; otherwise absent keeps the stored secret.
+        Every other optional member left out is **reset to its default**. An
+        enabled directory and an effective ``opaque_mode = required`` never
+        coexist (``409``); without the deployment's directory key a write
+        carrying a secret is ``503``.
+
         **This is a replacement, not a patch** (§27.4 rule 5). Every field
         of the body is required, and what you do not carry over from a prior
         read is not preserved -- it is overwritten. Read first, change the
@@ -289,6 +334,15 @@ class AsyncDirectoryApi:
     async def update(self, body: models.UpdateDirectoryConfig) -> models.DirectoryConfig:
         """``PATCH /api/v1/tenants/{tenant_id}/directory``
 
+        **Moving the connection requires the secret again** (§30.3 rule 2):
+        an ``update`` that changes ``url``, ``start_tls``, ``bind_dn`` or
+        ``trust_anchors_pem`` without ``bind_secret`` is refused ``400`` and
+        changes nothing; the SDK holds no copy of the secret to re-send. A
+        member left unset is not sent and stays as stored; ``group_base_dn``
+        / ``group_filter`` set explicitly to ``None`` are sent as ``null``
+        and clear the value. An enabled directory and an effective
+        ``opaque_mode = required`` never coexist (``409``).
+
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
         """
@@ -301,6 +355,13 @@ class AsyncDirectoryApi:
     async def delete(self) -> None:
         """``DELETE /api/v1/tenants/{tenant_id}/directory``
 
+        **Deleting stops the directory, and only that** (§30.3 rule 5):
+        directory accounts can no longer sign in with a password -- there is
+        no fallback to a local hash -- and the sync stops. Sessions, refresh
+        tokens and passkeys those accounts already hold keep working until
+        they expire or the accounts are deactivated. There is no unlink: a
+        linked account stays a directory account.
+
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
         """
@@ -311,6 +372,13 @@ class AsyncDirectoryApi:
 
     async def link_account(self, body: models.LinkDirectoryAccount) -> models.DirectoryLinkResult:
         """``POST /api/v1/tenants/{tenant_id}/directory/links``
+
+        **Signs the account's owner out everywhere** (§30.3 rule 6): linking
+        deletes the account's WebAuthn credentials and federation links,
+        revokes its ``User`` certificates, all its sessions and its OAuth2
+        refresh tokens (TOTP is kept). The entry is found by the account's
+        own username; a repeat on an already-linked account answers
+        ``was_already_linked`` and repeats the revocations.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.

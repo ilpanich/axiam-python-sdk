@@ -6462,7 +6462,9 @@ def test_saml_parse_sp_metadata() -> None:
                 "warnings": [],
             },
         )
-        client.saml.parse_sp_metadata(models.ParseSamlSpMetadata())
+        client.saml.parse_sp_metadata(
+            models.ParseSamlSpMetadata.from_url("https://sp.example/metadata")
+        )
 
 
 @pytest.mark.asyncio
@@ -6483,7 +6485,9 @@ async def test_saml_parse_sp_metadata_async() -> None:
                 "warnings": [],
             },
         )
-        await client.saml.parse_sp_metadata(models.ParseSamlSpMetadata())
+        await client.saml.parse_sp_metadata(
+            models.ParseSamlSpMetadata.from_url("https://sp.example/metadata")
+        )
 
 
 def test_saml_list_idp_credentials() -> None:
@@ -8887,7 +8891,7 @@ EXERCISED = [
 
 
 def test_generated_surface_covers_the_registry() -> None:
-    """§27.9: a partial regeneration must fail here, not ship 140 of 147.
+    """§27.9: a partial regeneration must fail here, not ship 183 of 190.
 
     Asserting the whole set rather than the count catches a regeneration
     that dropped one operation and gained another.
