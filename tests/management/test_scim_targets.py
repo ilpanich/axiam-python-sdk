@@ -134,6 +134,8 @@ def test_a_credential_in_a_response_is_dropped() -> None:
     assert not hasattr(target, "credential")
     assert isinstance(target.auth, models.ScimTargetAuthUnknown)
     assert "credential" not in (target.auth.model_extra or {})
+    with pytest.raises(pydantic.ValidationError):
+        models.ScimTargetAuthUnknown.model_validate("not an object")
 
 
 # ── 3. Replacement and the omitted credential ────────────────────────────────

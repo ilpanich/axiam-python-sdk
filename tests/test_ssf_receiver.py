@@ -338,7 +338,8 @@ def test_poll_passes_ack_and_set_errs_through_and_sorts_the_answer(
         "ack": ["done-1", "done-2"],
         "setErrs": {"old-1": {"err": "invalid_request"}},
     }, "exactly as given, and nothing acknowledged on the caller's behalf"
-    assert request.headers["authorization"].startswith("Bearer cc-")
+    if not request.headers["authorization"].startswith("Bearer cc-"):
+        pytest.fail("the poll did not carry the provider's bearer")
     assert "cookie" not in request.headers
 
     router.routes.clear()
@@ -550,7 +551,8 @@ async def test_the_async_receiver_verifies_polls_and_refuses_alike(
         SetFailureReason.MALFORMED,
         SetFailureReason.INVALID_REQUEST,
     }
-    assert poll.calls[0].request.headers["authorization"] == f"Bearer {token}"
+    if poll.calls[0].request.headers["authorization"] != f"Bearer {token}":
+        pytest.fail("the poll did not carry the provider's bearer")
 
     refused = router.post(f"{BASE}/ssf/v1/poll/bad").mock(return_value=httpx.Response(400))
     with pytest.raises(ValidationError):

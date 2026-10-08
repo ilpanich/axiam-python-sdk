@@ -6,7 +6,7 @@ module is organised around them rather than around the SDK's method list:
 * a call going over mTLS prefers the alias;
 * a call NOT going over mTLS keeps the top-level entry;
 * an ABSENT member means "no separate mTLS host", never "unsupported";
-* only the six listed endpoints are ever aliased — not
+* only the seven listed endpoints are ever aliased — not
   ``authorization_endpoint``, ``end_session_endpoint`` or ``jwks_uri``;
 * ``issuer`` is not an endpoint, does not move, and still governs ``iss``
   validation by exact string for a token minted at an alias host.
@@ -228,7 +228,7 @@ def test_a_client_not_doing_mtls_keeps_the_top_level_endpoints(
 
 
 def test_a_partial_alias_object_falls_back_per_endpoint(respx_mock: respx.MockRouter) -> None:
-    # RFC 8705 §5 does not require an OP to alias all six, and the shape of
+    # RFC 8705 §5 does not require an OP to alias all seven, and the shape of
     # this member must never be why a client stops working: an object naming
     # only `token_endpoint` is a valid document, and every endpoint it does
     # not name falls back to the top-level entry.
@@ -285,10 +285,12 @@ def test_the_front_channel_and_jwks_endpoints_are_never_aliased(
     assert configuration.jwks_uri == f"{BASE_URL}/oauth2/jwks"
 
 
-def test_the_alias_model_carries_only_the_six_aliasable_endpoints() -> None:
+def test_the_alias_model_carries_only_the_seven_aliasable_endpoints() -> None:
     # Naming them as a closed set is what makes authorization_endpoint,
     # end_session_endpoint and jwks_uri unrepresentable rather than merely
-    # unused. A seventh field here would be an alias the SDK could synthesise.
+    # unused. An eighth field here would be an alias the SDK could synthesise.
+    # Contract 1.58 amended §21.3.1 in place: CIBA's
+    # backchannel_authentication_endpoint is the seventh (D-61).
     assert set(MtlsEndpointAliases.model_fields) == {
         "token_endpoint",
         "userinfo_endpoint",
@@ -296,6 +298,7 @@ def test_the_alias_model_carries_only_the_six_aliasable_endpoints() -> None:
         "introspection_endpoint",
         "device_authorization_endpoint",
         "pushed_authorization_request_endpoint",
+        "backchannel_authentication_endpoint",
     }
 
 

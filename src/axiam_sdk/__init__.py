@@ -24,6 +24,16 @@ imported from here.
 
 from axiam_sdk._account import MfaEnrollment, PasswordResetContext
 from axiam_sdk._async_client import AsyncAxiamClient
+from axiam_sdk._ciba import (
+    CIBA_GRANT_TYPE,
+    AsyncCibaClock,
+    CibaAccessDeniedError,
+    CibaClock,
+    CibaExpiredTokenError,
+    CibaInitiateResponse,
+    CibaRequestSigner,
+    SystemCibaClock,
+)
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError, OAuthProtocolError
 from axiam_sdk._mcp import (
@@ -201,4 +211,14 @@ __all__ = [
     # §28.12 RFC 7592 client configuration: the three operations are methods of
     # both clients; this is the type they read, replace and return.
     "ClientRegistration",
+    # §33 CIBA: the four operations are methods of both clients; these are the
+    # types around them, and the two distinct terminal outcomes of §33.4.
+    "CIBA_GRANT_TYPE",
+    "AsyncCibaClock",
+    "CibaAccessDeniedError",
+    "CibaClock",
+    "CibaExpiredTokenError",
+    "CibaInitiateResponse",
+    "CibaRequestSigner",
+    "SystemCibaClock",
 ]

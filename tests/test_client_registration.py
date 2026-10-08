@@ -179,7 +179,8 @@ def test_update_drops_the_five_server_stated_members_and_returns_the_rotated_tok
             REGISTRATION_URI, SecretStr(fresh_token()), metadata
         )
         assert updated.registration_access_token is not None
-        assert updated.registration_access_token.get_secret_value() == rotated
+        if updated.registration_access_token.get_secret_value() != rotated:
+            pytest.fail("the rotated token was not returned")
 
         assert puts.call_count == 1
         body = json.loads(puts.calls[0].request.content)
@@ -395,7 +396,8 @@ async def test_the_async_client_carries_the_same_three_operations() -> None:
         assert reads.call_count == 2
         updated = await client.update_client_registration(REGISTRATION_URI, token, read)
         assert updated.registration_access_token is not None
-        assert updated.registration_access_token.get_secret_value() == rotated
+        if updated.registration_access_token.get_secret_value() != rotated:
+            pytest.fail("the rotated token was not returned")
         await client.delete_client_registration(REGISTRATION_URI, token)
         assert puts.call_count == 1 and deletes.call_count == 1
         for call in (*reads.calls, *puts.calls, *deletes.calls):
