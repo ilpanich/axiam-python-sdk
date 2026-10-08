@@ -30,6 +30,7 @@ from axiam_sdk.management._scope import NamespaceScope
 from axiam_sdk.management._wire import ManagementModel
 from axiam_sdk.management.conversions import (
     saml_service_provider_input,
+    scim_target_input,
     set_directory_config,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "PageRequest",
     "ValidationError",
     "saml_service_provider_input",
+    "scim_target_input",
     "set_directory_config",
 ]

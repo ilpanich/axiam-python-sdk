@@ -16,7 +16,11 @@ from __future__ import annotations
 
 from axiam_sdk.management import models
 
-__all__ = ["saml_service_provider_input", "set_directory_config"]
+__all__ = [
+    "saml_service_provider_input",
+    "scim_target_input",
+    "set_directory_config",
+]
 
 
 def set_directory_config(config: models.DirectoryConfig) -> models.SetDirectoryConfig:
@@ -73,4 +77,26 @@ def saml_service_provider_input(
         sp_encryption_cert_pem=sp.sp_encryption_cert_pem,
         sp_signing_cert_pem=sp.sp_signing_cert_pem,
         want_authn_requests_signed=sp.want_authn_requests_signed,
+    )
+
+
+def scim_target_input(target: models.ScimTargetResponse) -> models.ScimTargetInput:
+    """``scim_targets.get``'s result as a ``scim_targets.update`` body
+    (CONTRACT §31.2).
+
+    ``credential`` is left unset: absent keeps the stored one -- unless the write
+    changes ``base_url`` (of either kind), ``auth.token_url`` or ``auth.type``,
+    which requires sending it again (§31.3 rule 2). A target whose ``auth`` or
+    ``scope`` arm this SDK does not know converts, but cannot be sent:
+    ``to_wire`` refuses an unknown arm (§31.2).
+    """
+    return models.ScimTargetInput(
+        auth=target.auth.model_copy(),
+        base_url=target.base_url,
+        deprovision=target.deprovision,
+        enabled=target.enabled,
+        name=target.name,
+        push_groups=target.push_groups,
+        scope=target.scope.model_copy(),
+        user_name_from=target.user_name_from,
     )

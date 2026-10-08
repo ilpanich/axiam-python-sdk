@@ -17,7 +17,7 @@ import httpx
 import pytest
 import respx
 
-from axiam_sdk.management._errors import parse_field_errors
+from axiam_sdk.management._errors import ValidationError, parse_field_errors
 from axiam_sdk.management._page import Page, PageRequest, page_of, page_query
 from axiam_sdk.management._wire import _expose
 from axiam_sdk.management.manifest import (
@@ -172,8 +172,12 @@ def test_an_unknown_union_arm_is_never_sent() -> None:
         auth=ScimTargetAuthAdapter.validate_python({"type": "mtls"}),
         scope=ScimTargetScopeAllUsers(type="all_users"),
     )
-    with pytest.raises(ValueError, match="never sent"):
+    # `to_wire` refuses it locally, as the SDK's ValidationError, before any I/O;
+    # serialising it any other way still raises, from the arm's own serializer.
+    with pytest.raises(ValidationError, match="never sent"):
         body.to_wire()
+    with pytest.raises(ValueError, match="never sent"):
+        body.model_dump()
 
 
 # ---------------------------------------------------------------------------

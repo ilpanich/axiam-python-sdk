@@ -126,11 +126,20 @@ _SECRET_MEMBER_NAMES = frozenset(
 
 
 def _refuse_unknown_enums(value: Any) -> None:
-    """Walk a request body and refuse any open-enum value this SDK does not know.
+    """Walk a request body and refuse any open-enum value -- or open-union arm --
+    this SDK does not know.
 
     Raises:
         ValidationError: naming the model and the field, never the value.
     """
+    if isinstance(value, OpenUnionUnknown):
+        from axiam_sdk.management._errors import local_refusal
+
+        raise local_refusal(
+            type(value).__name__,
+            "type",
+            "a union arm this SDK does not know decodes, but is never sent (CONTRACT.md §31.2)",
+        )
     if isinstance(value, ManagementModel):
         for field, known in type(value)._OPEN_ENUM_FIELDS.items():
             held = getattr(value, field, None)
