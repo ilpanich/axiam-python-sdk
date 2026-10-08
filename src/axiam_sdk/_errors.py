@@ -266,15 +266,25 @@ def error_from_http_status(
     return NetworkError(message, cause=cause)
 
 
-def _oauth2_error_body(response: httpx.Response) -> dict[str, str] | None:
+def _oauth2_error_body(
+    response: httpx.Response, *, description_optional: bool = False
+) -> dict[str, str] | None:
     """Narrow ``response``'s parsed JSON body to an ``OAuth2ErrorResponse``
     shape (``{"error": str, "error_description": str}``, CONTRACT.md §12.1).
 
-    Both fields must be present and string-typed — a body carrying only one
-    of them is NOT an ``OAuth2ErrorResponse`` and the caller falls back to
-    the generic §2 mapping (a generic error beats a fabricated
+    By default both fields must be present and string-typed — a body carrying
+    only one of them is NOT an ``OAuth2ErrorResponse`` and the caller falls
+    back to the generic §2 mapping (a generic error beats a fabricated
     ``error_description``), mirroring ``the TypeScript SDK's
     core/errorMapper.ts``'s ``isOAuth2ErrorBody``.
+
+    ``description_optional=True`` is the reading §28.12.3 and §33.4 prescribe
+    for the operations they add: "any response whose body is an error object
+    with a **non-empty** ``error`` member", at any status — RFC 6749 §5.2 and
+    RFC 7591 §3.2.2 make ``error_description`` optional, so an absent one is read
+    as ``""``. It is opt-in per call site rather than global so the existing §12
+    operations keep the mapping their tests pin (a ``5xx`` whose body carries
+    only ``error`` stays a ``NetworkError`` there).
     """
     try:
         body = response.json()
@@ -286,6 +296,8 @@ def _oauth2_error_body(response: httpx.Response) -> dict[str, str] | None:
     description = body.get("error_description")
     if isinstance(error, str) and isinstance(description, str):
         return {"error": error, "description": description}
+    if description_optional and isinstance(error, str) and error:
+        return {"error": error, "description": description if isinstance(description, str) else ""}
     return None
 
 
@@ -293,6 +305,8 @@ def error_from_oauth2_response(
     status: int,
     response: httpx.Response,
     fallback_message: str,
+    *,
+    description_optional: bool = False,
 ) -> Exception:
     """Map a ``/oauth2/token``, ``/oauth2/introspect``, or ``/oauth2/revoke``
     response's failure onto the §12.3 rule 3 taxonomy: a ``400``/``401``
@@ -309,12 +323,27 @@ def error_from_oauth2_response(
     Falls back to :func:`error_from_http_status` (generic §2 mapping) when
     the body is not ``OAuth2ErrorResponse``-shaped, so an unexpected error
     body still produces a sensible ``AuthError``/``NetworkError`` rather than
-    a fabricated protocol error.
+    a fabricated protocol error. ``description_optional`` is the §28.12.3 /
+    §33.4 reading — see :func:`_oauth2_error_body`.
     """
-    oauth2_body = _oauth2_error_body(response)
+    oauth2_body = _oauth2_error_body(response, description_optional=description_optional)
     if oauth2_body is not None:
         return OAuthProtocolError(oauth2_body["error"], oauth2_body["description"])
     return error_from_http_status(status, fallback_message, response=response)
+
+
+def network_error_from_transport(operation: str, exc: BaseException) -> NetworkError:
+    """A ``NetworkError`` for a transport failure raised by ``httpx`` (§2:
+    "Connection error / DNS / TLS -> NetworkError").
+
+    The ``httpx`` exception is deliberately **not** chained as the cause: it
+    holds the request it failed to send, headers included, and a request this
+    SDK sends may carry ``Authorization`` (a registration access token, an SSF
+    poll bearer) or a client secret in its form. The redact-before-wrap rule
+    above forbids storing such an object. The message names the operation and
+    the failure's class and text, which carry no header or body.
+    """
+    return NetworkError(f"{operation} request failed: {type(exc).__name__}: {exc}")
 
 
 def error_from_grpc_status(code: object, message: str) -> Exception:

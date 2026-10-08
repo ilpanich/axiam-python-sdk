@@ -80,6 +80,7 @@ from axiam_sdk._oidc import (
     uma_parse_challenge,
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
+from axiam_sdk._registration import ClientRegistration
 
 # CONTRACT.md §10.4 (contract 1.44) — the optional session-revocation feed
 # poller. Off unless a caller hands one to a verifier.
@@ -197,4 +198,7 @@ __all__ = [
     "ProtectedResourceMetadataDocument",
     "bearer_challenge",
     "protected_resource_metadata",
+    # §28.12 RFC 7592 client configuration: the three operations are methods of
+    # both clients; this is the type they read, replace and return.
+    "ClientRegistration",
 ]

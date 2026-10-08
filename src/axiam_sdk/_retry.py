@@ -30,6 +30,7 @@ __all__ = [
     "delay_ms",
     "retry_sync",
     "retry_async",
+    "status_is_retryable",
 ]
 
 #: Attempt cap: 1 initial + 2 retries (§16.1).
@@ -66,6 +67,17 @@ def delay_ms(attempt: int, retry_after_ms: float | None, fraction: float) -> flo
     """
     jittered = backoff_ms(attempt) * min(max(fraction, 0.0), 1.0)
     return jittered if retry_after_ms is None else max(jittered, retry_after_ms)
+
+
+def status_is_retryable(status: int) -> bool:
+    """Whether an HTTP status is one §16.3 retries: ``408``, ``429`` or ``5xx``.
+
+    The §2 taxonomy maps a bodiless ``400`` to ``NetworkError`` too, and
+    :func:`retry_sync` retries every ``NetworkError`` — so a call that must not
+    repeat a ``4xx`` (CONTRACT.md §28.12.2 rule 5, §32.7, §33) asks this first
+    and lifts the decisive answer out of the retry loop itself.
+    """
+    return status in (408, 429) or 500 <= status <= 599
 
 
 def _retry_after_of(err: BaseException) -> float | None:

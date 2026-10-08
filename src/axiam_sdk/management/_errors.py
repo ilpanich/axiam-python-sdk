@@ -22,6 +22,7 @@ __all__ = [
     "FieldError",
     "NotFoundError",
     "ValidationError",
+    "local_refusal",
 ]
 
 
@@ -113,3 +114,21 @@ def parse_field_errors(body: Any) -> list[FieldError]:
             FieldError(field=str(k), message=v) for k, v in errors.items() if isinstance(v, str)
         ]
     return []
+
+
+def local_refusal(operation: str, field: str, message: str) -> ValidationError:
+    """The SDK's **local** ``ValidationError``: a refusal made before any request.
+
+    Used wherever the contract asks for "the SDK's local ``ValidationError``
+    mapping, and no request sent" (§28.7's per-language note; §28.12.2 rule 1,
+    §29.2's exactly-one rule, §32.7's replay-window floor, §33.2). ``status`` is
+    the ``400`` a server would have answered for the same field, though no server
+    was asked. ``message`` is the SDK's own text and never echoes the value
+    refused, which may be a URL carrying an identifier or a credential.
+    """
+    return ValidationError(
+        operation,
+        400,
+        f"{operation}: {field}: {message}",
+        [FieldError(field=field, message=message)],
+    )

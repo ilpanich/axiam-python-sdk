@@ -43,6 +43,7 @@ from axiam_sdk._errors import (
     NetworkError,
     error_from_http_status,
     error_from_oauth2_response,
+    network_error_from_transport,
 )
 from axiam_sdk._models import (
     AccessCheck,
@@ -75,7 +76,14 @@ from axiam_sdk._oidc import (
     SSO_START_PATH,
     PollSchedule,
 )
-from axiam_sdk._retry import retry_async
+from axiam_sdk._registration import (
+    ClientRegistration,
+    check_registration_uri,
+    decode_registration,
+    registration_error,
+    registration_request,
+)
+from axiam_sdk._retry import retry_async, status_is_retryable
 from axiam_sdk._webauthn import (
     WebauthnChallenge,
     WebauthnCredential,
@@ -820,6 +828,89 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._rest_send_async(request)
         return self._handle_exchange_response(response)
+
+    # ------------------------------------------------------------------
+    # RFC 7592 client configuration (CONTRACT.md §28.12, contract 1.53)
+    # ------------------------------------------------------------------
+
+    async def read_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> ClientRegistration:
+        """Async twin of :meth:`AxiamClient.read_client_registration
+        <axiam_sdk.AxiamClient.read_client_registration>` (CONTRACT.md §28.12):
+        the same origin check before any I/O, the bearer on a session-free
+        transport, and §16 retry on a transport failure, ``5xx``, ``408`` or
+        bodiless ``429`` only."""
+        self._ensure_open()
+        operation = "read_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+
+        async def attempt(_: int) -> ClientRegistration | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = registration_request("GET", url, registration_access_token)
+            try:
+                response = await self._session.bare_async_client.send(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport(operation, exc) from None
+            if response.is_success:
+                return decode_registration(response, operation)
+            error = registration_error(response, operation)
+            if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                raise error
+            return error
+
+        outcome = await retry_async(
+            attempt, operation=operation, enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def update_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+        metadata: ClientRegistration,
+    ) -> ClientRegistration:
+        """Async twin of :meth:`AxiamClient.update_client_registration
+        <axiam_sdk.AxiamClient.update_client_registration>` (CONTRACT.md §28.12).
+
+        ``metadata`` is the **whole** registration. **Persist the returned
+        ``registration_access_token`` before doing anything else**: the one
+        presented is dead from the moment the server answers. **Never
+        retried.**"""
+        self._ensure_open()
+        operation = "update_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request(
+            "PUT", url, registration_access_token, metadata.update_body()
+        )
+        try:
+            response = await self._session.bare_async_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        return decode_registration(response, operation)
+
+    async def delete_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> None:
+        """Async twin of :meth:`AxiamClient.delete_client_registration
+        <axiam_sdk.AxiamClient.delete_client_registration>` (CONTRACT.md
+        §28.12). ``204`` returns ``None``. **Never retried.**"""
+        self._ensure_open()
+        operation = "delete_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request("DELETE", url, registration_access_token)
+        try:
+            response = await self._session.bare_async_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        if not response.is_success:
+            raise registration_error(response, operation)
 
     async def uma_register_resource(
         self, pat: SecretStr | str, resource: ResourceSet

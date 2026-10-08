@@ -33,6 +33,7 @@ from axiam_sdk._errors import (
     NetworkError,
     error_from_http_status,
     error_from_oauth2_response,
+    network_error_from_transport,
 )
 from axiam_sdk._models import (
     AccessCheck,
@@ -67,7 +68,14 @@ from axiam_sdk._oidc import (
     PollSchedule,
     _OidcMixin,
 )
-from axiam_sdk._retry import retry_sync
+from axiam_sdk._registration import (
+    ClientRegistration,
+    check_registration_uri,
+    decode_registration,
+    registration_error,
+    registration_request,
+)
+from axiam_sdk._retry import retry_sync, status_is_retryable
 from axiam_sdk._session import _Session
 from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
 from axiam_sdk._webauthn import (
@@ -1994,6 +2002,140 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request("POST", url, data=form)
         response = self._rest_send_sync(request)
         return self._handle_exchange_response(response)
+
+    # ------------------------------------------------------------------
+    # RFC 7592 client configuration (CONTRACT.md §28.12, contract 1.53)
+    # ------------------------------------------------------------------
+
+    def read_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> ClientRegistration:
+        """``GET registration_client_uri`` (RFC 7592 §2.1, CONTRACT.md §28.12)
+        — read this client's own registration.
+
+        The result carries neither the token nor the client secret: the server
+        never returns them on a read. It does carry every member an update
+        needs, so the usual update is "read, change a field, update".
+
+        ``registration_client_uri`` is used verbatim, query included, and only
+        at this client's own origin (§28.12.2 rule 1). The token travels only as
+        ``Authorization: Bearer`` on a session-free transport: no SDK cookie,
+        access token, CSRF token or ``X-Tenant-ID``, and no redirect followed.
+
+        Retried per §16 on a transport failure, a ``5xx``, a ``408`` or a
+        bodiless ``429`` — never on another ``4xx``. A ``401 invalid_token`` (an
+        unknown client, a wrong or rotated-away token, another tenant's client, a
+        client with no token: the server never says which) is an
+        :class:`~axiam_sdk.OAuthProtocolError` and never refreshes this client's
+        session.
+
+        Raises:
+            ValidationError: locally, before any request, for a URI at another
+                origin (§28.12.2 rule 1).
+            OAuthProtocolError: for any answer carrying an ``error`` member.
+            NetworkError: for a transport failure or an error status without one.
+        """
+        self._ensure_open()
+        operation = "read_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+
+        def attempt(_: int) -> ClientRegistration | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = registration_request("GET", url, registration_access_token)
+            try:
+                response = self._session.bare_sync_client.send(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport(operation, exc) from None
+            if response.is_success:
+                return decode_registration(response, operation)
+            error = registration_error(response, operation)
+            if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                raise error
+            return error
+
+        outcome = retry_sync(
+            attempt, operation=operation, enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def update_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+        metadata: ClientRegistration,
+    ) -> ClientRegistration:
+        """``PUT registration_client_uri`` (RFC 7592 §2.2, CONTRACT.md §28.12)
+        — **replace** this client's registration, and receive a **rotated**
+        token.
+
+        ``metadata`` is the **whole** registration: a member it omits is a
+        member the server deletes. Start from :meth:`read_client_registration`'s
+        result, which carries every member (``jwks`` / ``jwks_uri`` and unknown
+        members in ``extra`` included), and change what you mean to change. The
+        SDK sets ``client_id`` to ``metadata.client_id`` and never sends
+        ``registration_access_token``, ``registration_client_uri``,
+        ``client_secret_expires_at``, ``client_id_issued_at`` or
+        ``client_secret`` (§28.12.2 rule 4).
+
+        **Persist the returned ``registration_access_token`` before doing
+        anything else.** From the moment the server answers it is the only valid
+        token: the one you presented is dead for every operation.
+
+        **Never retried** — not on a transport error, not on a ``5xx``. An
+        update that reached the server and lost its response has already rotated
+        the token; repeating it with the old one is a ``401`` that locks you out
+        of your own registration. On a lost answer, read the registration with
+        the token you hold: a ``401`` means the update landed.
+
+        Raises:
+            ValidationError: locally, before any request (§28.12.2 rule 1).
+            OAuthProtocolError: e.g. ``invalid_client_metadata``,
+                ``invalid_redirect_uri``, ``invalid_token``.
+            NetworkError: for a transport failure or an error status without
+                an ``error`` member.
+        """
+        self._ensure_open()
+        operation = "update_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request(
+            "PUT", url, registration_access_token, metadata.update_body()
+        )
+        try:
+            response = self._session.bare_sync_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        return decode_registration(response, operation)
+
+    def delete_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> None:
+        """``DELETE registration_client_uri`` (RFC 7592 §2.3, CONTRACT.md
+        §28.12) — delete this client's registration. ``204`` returns ``None``.
+
+        **Never retried**: a retry after a lost ``204`` would read ``401`` and
+        report a successful deletion as a failure.
+
+        Raises:
+            ValidationError: locally, before any request (§28.12.2 rule 1).
+            OAuthProtocolError: for any answer carrying an ``error`` member.
+            NetworkError: for a transport failure or an error status without one.
+        """
+        self._ensure_open()
+        operation = "delete_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request("DELETE", url, registration_access_token)
+        try:
+            response = self._session.bare_sync_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        if not response.is_success:
+            raise registration_error(response, operation)
 
     def uma_register_resource(self, pat: SecretStr | str, resource: ResourceSet) -> ResourceSet:
         """``POST /uma2/rreg/resource_set`` — register a resource set

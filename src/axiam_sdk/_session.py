@@ -22,6 +22,7 @@ kwarg — see ``sync_client``/``async_client`` below.
 
 from __future__ import annotations
 
+import http.cookiejar
 import os
 import ssl
 import tempfile
@@ -68,6 +69,11 @@ _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _DEFAULT_CONNECT_TIMEOUT = 10.0
 _DEFAULT_READ_TIMEOUT = 30.0
+
+
+def _refusing_jar() -> http.cookiejar.CookieJar:
+    """A cookie jar whose policy accepts no domain, so it never stores a cookie."""
+    return http.cookiejar.CookieJar(policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
 
 
 class _Session:
@@ -177,6 +183,10 @@ class _Session:
 
         self._sync_client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
+        # The session-free transports (CONTRACT.md §28.12.2 rule 3, §32.7):
+        # same TLS policy, no shared cookie jar, no redirects. Lazily built.
+        self._bare_sync_client: httpx.Client | None = None
+        self._bare_async_client: httpx.AsyncClient | None = None
 
         # CONTRACT.md §18 shutdown flag, shared by every AxiamClient/
         # AsyncAxiamClient handle over this session (CONTRACT.md §5.2 rule 1
@@ -331,6 +341,45 @@ class _Session:
                 verify=self._verify,
             )
         return self._async_client
+
+    @property
+    def bare_sync_client(self) -> httpx.Client:
+        """A sync transport that carries **none** of this session's state.
+
+        For requests that authenticate with a bearer of their own and must not
+        be mistaken for the SDK's session (CONTRACT.md §28.12.2 rule 3: the RFC
+        7592 registration access token; §32.7: the SSF poll bearer). It shares
+        this session's TLS policy (§6 — the custom CA and, when configured, the
+        §6.1 client identity) and timeouts, and nothing else:
+
+        * its cookie jar refuses every cookie (``allowed_domains=[]``), so no
+          ``Set-Cookie`` it receives is ever stored, let alone sent; the
+          session's own jar is never reached;
+        * ``follow_redirects`` is off, so a bearer is never replayed to the
+          host a ``3xx`` names;
+        * it is never routed through :meth:`_prepare_request`, so no
+          ``X-Tenant-ID`` or CSRF token rides along.
+        """
+        if self._bare_sync_client is None:
+            self._bare_sync_client = httpx.Client(
+                cookies=_refusing_jar(),
+                timeout=self._timeout,
+                verify=self._verify,
+                follow_redirects=False,
+            )
+        return self._bare_sync_client
+
+    @property
+    def bare_async_client(self) -> httpx.AsyncClient:
+        """Async twin of :attr:`bare_sync_client`."""
+        if self._bare_async_client is None:
+            self._bare_async_client = httpx.AsyncClient(
+                cookies=_refusing_jar(),
+                timeout=self._timeout,
+                verify=self._verify,
+                follow_redirects=False,
+            )
+        return self._bare_async_client
 
     def _shared_jar(self) -> CookieJar:
         """Return the single raw ``http.cookiejar.CookieJar`` backing this
@@ -492,6 +541,8 @@ class _Session:
         self.closed = True
         if self._sync_client is not None:
             self._sync_client.close()
+        if self._bare_sync_client is not None:
+            self._bare_sync_client.close()
 
     async def aclose(self) -> None:
         """Close the async httpx client, if constructed (D-19). Never
@@ -499,3 +550,5 @@ class _Session:
         self.closed = True
         if self._async_client is not None:
             await self._async_client.aclose()
+        if self._bare_async_client is not None:
+            await self._bare_async_client.aclose()
