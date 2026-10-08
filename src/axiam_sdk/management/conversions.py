@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from axiam_sdk.management import models
 
-__all__ = ["set_directory_config"]
+__all__ = ["saml_service_provider_input", "set_directory_config"]
 
 
 def set_directory_config(config: models.DirectoryConfig) -> models.SetDirectoryConfig:
@@ -43,4 +43,34 @@ def set_directory_config(config: models.DirectoryConfig) -> models.SetDirectoryC
         url=config.url,
         user_attribute_map=config.user_attribute_map,
         user_filter=config.user_filter,
+    )
+
+
+def saml_service_provider_input(
+    sp: models.SamlServiceProvider,
+) -> models.SamlServiceProviderInput:
+    """``saml.get_service_provider``'s result as a
+    ``saml.update_service_provider`` body (CONTRACT §29.2).
+
+    Every member is carried over, so changing one and sending the body back
+    preserves the rest -- an omitted member would take its **default**, not its
+    stored value. ``entity_id`` is carried unchanged: it is immutable (§29.3
+    rule 3). No member is secret on this namespace (§29.5).
+    """
+    return models.SamlServiceProviderInput(
+        acs_urls=[a.model_copy() for a in sp.acs_urls],
+        allow_idp_initiated=sp.allow_idp_initiated,
+        allowed_groups=list(sp.allowed_groups),
+        attribute_mappings=[m.model_copy() for m in sp.attribute_mappings],
+        display_name=sp.display_name,
+        enabled=sp.enabled,
+        encrypt_assertions=sp.encrypt_assertions,
+        entity_id=sp.entity_id,
+        name_id_format=sp.name_id_format,
+        sign_responses=sp.sign_responses,
+        slo_binding=sp.slo_binding,
+        slo_url=sp.slo_url,
+        sp_encryption_cert_pem=sp.sp_encryption_cert_pem,
+        sp_signing_cert_pem=sp.sp_signing_cert_pem,
+        want_authn_requests_signed=sp.want_authn_requests_signed,
     )

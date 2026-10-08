@@ -28,7 +28,10 @@ from axiam_sdk.management._errors import (
 from axiam_sdk.management._page import Page, PageRequest
 from axiam_sdk.management._scope import NamespaceScope
 from axiam_sdk.management._wire import ManagementModel
-from axiam_sdk.management.conversions import set_directory_config
+from axiam_sdk.management.conversions import (
+    saml_service_provider_input,
+    set_directory_config,
+)
 
 __all__ = [
     "ConflictError",
@@ -39,5 +42,6 @@ __all__ = [
     "Page",
     "PageRequest",
     "ValidationError",
+    "saml_service_provider_input",
     "set_directory_config",
 ]
