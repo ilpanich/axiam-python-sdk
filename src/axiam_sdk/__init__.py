@@ -16,14 +16,24 @@ therefore framework-specific; find it on ``axiam_sdk.fastapi`` and
 ``axiam_sdk.django``.
 
 This module MUST remain importable with ONLY the runtime dependencies
-declared in ``[project.dependencies]`` (httpx, grpcio, aio-pika, pydantic,
-PyJWT) — the optional web-framework integrations (``axiam_sdk.fastapi``,
-``axiam_sdk.django``, see ``[project.optional-dependencies]``) MUST NOT be
-imported from here.
+declared in ``[project.dependencies]`` (httpx, grpcio, protobuf, aio-pika,
+pydantic, PyJWT[crypto], cryptography) — the optional web-framework
+integrations (``axiam_sdk.fastapi``, ``axiam_sdk.django``, see
+``[project.optional-dependencies]``) MUST NOT be imported from here.
 """
 
 from axiam_sdk._account import MfaEnrollment, PasswordResetContext
 from axiam_sdk._async_client import AsyncAxiamClient
+from axiam_sdk._ciba import (
+    CIBA_GRANT_TYPE,
+    AsyncCibaClock,
+    CibaAccessDeniedError,
+    CibaClock,
+    CibaExpiredTokenError,
+    CibaInitiateResponse,
+    CibaRequestSigner,
+    SystemCibaClock,
+)
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError, OAuthProtocolError
 from axiam_sdk._mcp import (
@@ -80,6 +90,7 @@ from axiam_sdk._oidc import (
     uma_parse_challenge,
 )
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
+from axiam_sdk._registration import ClientRegistration
 
 # CONTRACT.md §10.4 (contract 1.44) — the optional session-revocation feed
 # poller. Off unless a caller hands one to a verifier.
@@ -197,4 +208,17 @@ __all__ = [
     "ProtectedResourceMetadataDocument",
     "bearer_challenge",
     "protected_resource_metadata",
+    # §28.12 RFC 7592 client configuration: the three operations are methods of
+    # both clients; this is the type they read, replace and return.
+    "ClientRegistration",
+    # §33 CIBA: the four operations are methods of both clients; these are the
+    # types around them, and the two distinct terminal outcomes of §33.4.
+    "CIBA_GRANT_TYPE",
+    "AsyncCibaClock",
+    "CibaAccessDeniedError",
+    "CibaClock",
+    "CibaExpiredTokenError",
+    "CibaInitiateResponse",
+    "CibaRequestSigner",
+    "SystemCibaClock",
 ]

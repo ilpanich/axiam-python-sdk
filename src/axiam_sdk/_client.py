@@ -26,6 +26,23 @@ import httpx
 from pydantic import SecretStr
 
 from axiam_sdk._account import MfaEnrollment, PasswordResetContext, _AccountMixin
+from axiam_sdk._ciba import (
+    CIBA_SLOW_DOWN_INCREMENT_SECONDS,
+    DEFAULT_CIBA_INTERVAL_SECONDS,
+    CibaClock,
+    CibaDelivery,
+    CibaInitiateResponse,
+    CibaRequestSigner,
+    SystemCibaClock,
+    ciba_error,
+    initiate_form,
+    initiate_members,
+    initiate_response,
+    local_expiry,
+    mark_terminal,
+    poll_form,
+    poll_step,
+)
 from axiam_sdk._decision_memo import DecisionMemo, memo_key
 from axiam_sdk._errors import (
     AuthError,
@@ -33,6 +50,7 @@ from axiam_sdk._errors import (
     NetworkError,
     error_from_http_status,
     error_from_oauth2_response,
+    network_error_from_transport,
 )
 from axiam_sdk._models import (
     AccessCheck,
@@ -67,7 +85,14 @@ from axiam_sdk._oidc import (
     PollSchedule,
     _OidcMixin,
 )
-from axiam_sdk._retry import retry_sync
+from axiam_sdk._registration import (
+    ClientRegistration,
+    check_registration_uri,
+    decode_registration,
+    registration_error,
+    registration_request,
+)
+from axiam_sdk._retry import retry_sync, status_is_retryable
 from axiam_sdk._session import _Session
 from axiam_sdk._telemetry import TelemetryDispatcher, TelemetryHook
 from axiam_sdk._webauthn import (
@@ -1994,6 +2019,329 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request("POST", url, data=form)
         response = self._rest_send_sync(request)
         return self._handle_exchange_response(response)
+
+    # ------------------------------------------------------------------
+    # CIBA (CONTRACT.md §33, contract 1.58)
+    # ------------------------------------------------------------------
+
+    def ciba_initiate(
+        self,
+        *,
+        scope: str,
+        login_hint: str | None = None,
+        id_token_hint: str | None = None,
+        binding_message: str | None = None,
+        requested_expiry: int | None = None,
+        acr_values: str | None = None,
+        resource: str | None = None,
+        delivery: CibaDelivery = "poll",
+        client_notification_token: SecretStr | str | None = None,
+        signer: CibaRequestSigner | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> CibaInitiateResponse:
+        """``POST /oauth2/bc-authorize`` (CIBA Core §7, CONTRACT.md §33.1) --
+        ask AXIAM to authenticate a user on another device.
+
+        Exactly one of ``login_hint`` / ``id_token_hint``. ``delivery`` is the
+        mode the client registered: ``"ping"`` requires a non-empty
+        ``client_notification_token`` (the bearer AXIAM presents at the ping;
+        keep it for :meth:`ciba_handle_ping`), ``"poll"`` takes none. Only the
+        members you set are sent; there is no parameter for
+        ``login_hint_token``, ``user_code`` or ``request_uri`` (§33.3 rule 3).
+        ``binding_message`` and ``login_hint`` can be personal data and are
+        never logged.
+
+        With ``signer`` the request is sent as one signed JWT, the form
+        carrying only the client authentication and ``request`` (§33.2) --
+        required of a client that registered a signing algorithm, refused from
+        one that did not.
+
+        **Never retried** -- not on a transport error, a ``5xx`` or a ``429``
+        (§33.7 rule 1): every accepted call stores a request and may notify a
+        person. On a lost answer, let it expire and ask again deliberately.
+        **A success proves nothing about the user** (§33.3 rule 4).
+
+        Raises:
+            AuthError: locally, when this client has no credential (neither
+                ``client_secret`` nor a client certificate), or when discovery
+                advertises no ``backchannel_authentication_endpoint``.
+            ValidationError: locally, for both hints or neither, or a ping
+                request without a token.
+            OAuthProtocolError: the server's refusals, e.g.
+                ``invalid_binding_message`` with its ``error_description``,
+                or a ``429``'s ``rate_limit_exceeded``.
+            NetworkError: a transport failure or an error status without an
+                ``error`` member.
+        """
+        self._ensure_open()
+        auth = self._ciba_client_auth("ciba_initiate")
+        members = initiate_members(
+            scope=scope,
+            login_hint=login_hint,
+            id_token_hint=id_token_hint,
+            binding_message=binding_message,
+            requested_expiry=requested_expiry,
+            acr_values=acr_values,
+            resource=resource,
+            delivery=delivery,
+            client_notification_token=client_notification_token,
+        )
+        config = configuration or self.oidc_discover()
+        url = self._ciba_endpoint_url(config, tenant_id)
+        form = initiate_form(members, auth, signer, config.issuer)
+        request = self._session.sync_client.build_request("POST", url, data=form)
+        try:
+            response = self._rest_send_sync(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport("ciba_initiate", exc) from None
+        return initiate_response(response)
+
+    def ciba_poll(
+        self,
+        auth_req_id: SecretStr | str,
+        *,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """``POST /oauth2/token`` with ``grant_type=urn:openid:params:grant-type:ciba``
+        (CIBA Core §10.1, CONTRACT.md §33.1) -- **one** token request.
+
+        The answers of §33.3 rule 6 surface as
+        :class:`~axiam_sdk.OAuthProtocolError`: ``authorization_pending`` and
+        ``slow_down`` (non-terminal), ``access_denied``
+        (:class:`CibaAccessDeniedError`) and ``expired_token``
+        (:class:`CibaExpiredTokenError`) -- two distinct terminal outcomes --
+        and ``invalid_grant``. None is retried.
+
+        Retried per §16 within the call on a transport failure, a ``5xx``, a
+        ``408`` or a bodiless ``429``; never on another ``4xx``. A ``200``'s
+        ID token is validated as for every other grant (no nonce). **Store the
+        returned tokens before anything else**: a request is redeemed once, and
+        a second ``ciba_poll`` for it is ``invalid_grant`` (§33.7 rule 7).
+
+        Raises:
+            AuthError: locally, when this client has no credential.
+        """
+        self._ensure_open()
+        auth = self._ciba_client_auth("ciba_poll")
+        config = configuration or self.oidc_discover()
+        url = self._token_endpoint_url(config, tenant_id)
+        form = poll_form(auth_req_id, auth)
+
+        def attempt(_: int) -> OidcTokenSet | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = self._session.sync_client.build_request("POST", url, data=form)
+            try:
+                response = self._rest_send_sync(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport("ciba_poll", exc) from None
+            if not response.is_success:
+                error = ciba_error(response, "ciba_poll")
+                if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                    raise error
+                return mark_terminal(error)
+            try:
+                wire = response.json()
+            except ValueError:
+                # The server may already have redeemed the request: never retried.
+                return mark_terminal(NetworkError("ciba_poll: the response is not JSON"))
+            return self._build_token_set(wire, config, None)
+
+        outcome = retry_sync(
+            attempt, operation="ciba_poll", enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def ciba_await(
+        self,
+        initiated: CibaInitiateResponse,
+        *,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+        clock: CibaClock | None = None,
+    ) -> OidcTokenSet:
+        """Poll for ``initiated``'s outcome until it is decided or expires
+        (§33.1, §33.7). Surfaces nothing to the user -- AXIAM notified them.
+
+        * The first poll waits one ``interval``; polling earlier only earns
+          ``slow_down`` and a longer wait.
+        * ``slow_down`` adds 5 s to the interval, cumulatively and
+          permanently; ``authorization_pending`` never lowers it.
+        * A transport failure, ``5xx`` or ``429`` (``rate_limit_exceeded``)
+          that outlived §16 is not terminal: the loop waits the interval and
+          polls again.
+        * Polling stops at ``received_at + expires_in`` even if the server has
+          not said ``expired_token``; :class:`CibaExpiredTokenError` is then
+          raised locally, with no further request.
+
+        Returns the token set without adopting it as this client's credential
+        -- the posture of ``device_login`` and ``login_client_credentials``.
+        In **ping** mode do not call this: call :meth:`ciba_poll` once from
+        the ping handler (once more at ``interval`` if it answered
+        ``authorization_pending`` / ``slow_down``), and fall back to this loop
+        only once half of ``expires_in`` has passed without a ping (§33.7
+        rule 6). ``clock`` is injectable (``now()`` / ``sleep()``).
+
+        Raises:
+            CibaAccessDeniedError: the user refused.
+            CibaExpiredTokenError: nobody decided in time.
+            OAuthProtocolError: ``invalid_grant`` or another terminal answer.
+        """
+        tick = clock or SystemCibaClock()
+        config = configuration or self.oidc_discover()
+        deadline = initiated.received_at + initiated.expires_in
+        interval = initiated.interval if initiated.interval > 0 else DEFAULT_CIBA_INTERVAL_SECONDS
+        while True:
+            if tick.now() + interval >= deadline:
+                raise local_expiry()
+            tick.sleep(interval)
+            try:
+                return self.ciba_poll(
+                    initiated.auth_req_id, tenant_id=tenant_id, configuration=config
+                )
+            except Exception as exc:  # noqa: BLE001 - classified by §33.3 rule 6
+                step = poll_step(exc)
+                if step == "slow_down":
+                    interval += CIBA_SLOW_DOWN_INCREMENT_SECONDS
+                elif step == "terminal":
+                    raise
+
+    # ------------------------------------------------------------------
+    # RFC 7592 client configuration (CONTRACT.md §28.12, contract 1.53)
+    # ------------------------------------------------------------------
+
+    def read_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> ClientRegistration:
+        """``GET registration_client_uri`` (RFC 7592 §2.1, CONTRACT.md §28.12)
+        — read this client's own registration.
+
+        The result carries neither the token nor the client secret: the server
+        never returns them on a read. It does carry every member an update
+        needs, so the usual update is "read, change a field, update".
+
+        ``registration_client_uri`` is used verbatim, query included, and only
+        at this client's own origin (§28.12.2 rule 1). The token travels only as
+        ``Authorization: Bearer`` on a session-free transport: no SDK cookie,
+        access token, CSRF token or ``X-Tenant-ID``, and no redirect followed.
+
+        Retried per §16 on a transport failure, a ``5xx``, a ``408`` or a
+        bodiless ``429`` — never on another ``4xx``. A ``401 invalid_token`` (an
+        unknown client, a wrong or rotated-away token, another tenant's client, a
+        client with no token: the server never says which) is an
+        :class:`~axiam_sdk.OAuthProtocolError` and never refreshes this client's
+        session.
+
+        Raises:
+            ValidationError: locally, before any request, for a URI at another
+                origin (§28.12.2 rule 1).
+            OAuthProtocolError: for any answer carrying an ``error`` member.
+            NetworkError: for a transport failure or an error status without one.
+        """
+        self._ensure_open()
+        operation = "read_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+
+        def attempt(_: int) -> ClientRegistration | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = registration_request("GET", url, registration_access_token)
+            try:
+                response = self._session.bare_sync_client.send(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport(operation, exc) from None
+            if response.is_success:
+                return decode_registration(response, operation)
+            error = registration_error(response, operation)
+            if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                raise error
+            return error
+
+        outcome = retry_sync(
+            attempt, operation=operation, enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def update_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+        metadata: ClientRegistration,
+    ) -> ClientRegistration:
+        """``PUT registration_client_uri`` (RFC 7592 §2.2, CONTRACT.md §28.12)
+        — **replace** this client's registration, and receive a **rotated**
+        token.
+
+        ``metadata`` is the **whole** registration: a member it omits is a
+        member the server deletes. Start from :meth:`read_client_registration`'s
+        result, which carries every member (``jwks`` / ``jwks_uri`` and unknown
+        members in ``extra`` included), and change what you mean to change. The
+        SDK sets ``client_id`` to ``metadata.client_id`` and never sends
+        ``registration_access_token``, ``registration_client_uri``,
+        ``client_secret_expires_at``, ``client_id_issued_at`` or
+        ``client_secret`` (§28.12.2 rule 4).
+
+        **Persist the returned ``registration_access_token`` before doing
+        anything else.** From the moment the server answers it is the only valid
+        token: the one you presented is dead for every operation.
+
+        **Never retried** — not on a transport error, not on a ``5xx``. An
+        update that reached the server and lost its response has already rotated
+        the token; repeating it with the old one is a ``401`` that locks you out
+        of your own registration. On a lost answer, read the registration with
+        the token you hold: a ``401`` means the update landed.
+
+        Raises:
+            ValidationError: locally, before any request (§28.12.2 rule 1).
+            OAuthProtocolError: e.g. ``invalid_client_metadata``,
+                ``invalid_redirect_uri``, ``invalid_token``.
+            NetworkError: for a transport failure or an error status without
+                an ``error`` member.
+        """
+        self._ensure_open()
+        operation = "update_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request(
+            "PUT", url, registration_access_token, metadata.update_body()
+        )
+        try:
+            response = self._session.bare_sync_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        return decode_registration(response, operation)
+
+    def delete_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> None:
+        """``DELETE registration_client_uri`` (RFC 7592 §2.3, CONTRACT.md
+        §28.12) — delete this client's registration. ``204`` returns ``None``.
+
+        **Never retried**: a retry after a lost ``204`` would read ``401`` and
+        report a successful deletion as a failure.
+
+        Raises:
+            ValidationError: locally, before any request (§28.12.2 rule 1).
+            OAuthProtocolError: for any answer carrying an ``error`` member.
+            NetworkError: for a transport failure or an error status without one.
+        """
+        self._ensure_open()
+        operation = "delete_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request("DELETE", url, registration_access_token)
+        try:
+            response = self._session.bare_sync_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        if not response.is_success:
+            raise registration_error(response, operation)
 
     def uma_register_resource(self, pat: SecretStr | str, resource: ResourceSet) -> ResourceSet:
         """``POST /uma2/rreg/resource_set`` — register a resource set

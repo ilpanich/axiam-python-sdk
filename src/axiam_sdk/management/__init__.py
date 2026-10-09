@@ -1,6 +1,6 @@
 """The CONTRACT §27 management API.
 
-147 operations across 24 namespaces, reached as ``client.<namespace>.<operation>``
+190 operations across 28 namespaces, reached as ``client.<namespace>.<operation>``
 (and equivalently ``client.management.<namespace>.<operation>``). The namespace
 handles and the models they carry are generated from ``management-registry.json``
 and ``openapi.json`` by ``scripts/gen_management.py``; everything else in this
@@ -28,6 +28,12 @@ from axiam_sdk.management._errors import (
 from axiam_sdk.management._page import Page, PageRequest
 from axiam_sdk.management._scope import NamespaceScope
 from axiam_sdk.management._wire import ManagementModel
+from axiam_sdk.management.conversions import (
+    saml_service_provider_input,
+    scim_target_input,
+    set_directory_config,
+    ssf_stream_input,
+)
 
 __all__ = [
     "ConflictError",
@@ -38,4 +44,8 @@ __all__ = [
     "Page",
     "PageRequest",
     "ValidationError",
+    "saml_service_provider_input",
+    "scim_target_input",
+    "set_directory_config",
+    "ssf_stream_input",
 ]

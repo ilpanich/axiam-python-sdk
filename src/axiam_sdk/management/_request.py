@@ -1,11 +1,11 @@
 """The one request path every §27 management operation goes through.
 
 §27.8 is explicit that the generated layer MUST sit on the SDK's existing
-request path and MUST NOT build its own. That is what this module is: 147
+request path and MUST NOT build its own. That is what this module is: 190
 generated operations all funnel into :func:`send_management` (or its async
 twin), so they inherit §3 (CSRF), §4 (the cookie jar), §5 (``X-Tenant-ID``),
 §6 (TLS), §9 (the single-flight refresh guard), §16 (retry) and §19 (telemetry)
-by construction rather than by 147 opportunities to forget one.
+by construction rather than by 190 opportunities to forget one.
 """
 
 from __future__ import annotations
@@ -28,8 +28,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from axiam_sdk._async_client import AsyncAxiamClient
     from axiam_sdk._client import AxiamClient
 
-ManagementMethod = Literal["GET", "POST", "PUT", "DELETE"]
-"""The HTTP verbs this surface uses."""
+ManagementMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+"""The HTTP verbs this surface uses.
+
+``PATCH`` arrived with ``directory.update`` (contract 1.58), the registry's first
+sparse update issued as a ``PATCH`` rather than a ``PUT``. Like every other
+write it is never retried (§27.4 rule 8).
+"""
 
 __all__ = ["ManagementCall"]
 

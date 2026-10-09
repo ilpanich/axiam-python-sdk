@@ -33,7 +33,18 @@ dependencies = [
     "protobuf>=6.31.1,<8",
     "aio-pika==9.6.*",
     "pydantic>=2",
-    "PyJWT>=2.13",
+    # `[crypto]` is not optional here. PyJWT verifies and signs EdDSA, ES256 and
+    # PS256 only through `cryptography`, which plain `PyJWT` does not install, so
+    # a clean `pip install axiam-sdk` could not verify an AXIAM access token, an
+    # ID token, a logout token or a DPoP proof (all EdDSA-capable paths), nor an
+    # SSF SET (CONTRACT §32.7), nor sign a CIBA request (§33.2): each failed at
+    # runtime with "Algorithm not supported". The dev extras hid it, because
+    # `twine` pulls `cryptography` in through `keyring` -> `SecretStorage`.
+    "PyJWT[crypto]>=2.13",
+    # Also imported directly (the SSF receiver checks a JWKS key is Ed25519,
+    # CONTRACT §32.7), so it is declared rather than left to PyJWT's extra. The
+    # floor is the one PyJWT's `crypto` extra itself requires.
+    "cryptography>=3.4",
 ]
 
 [project.optional-dependencies]

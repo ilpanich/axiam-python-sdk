@@ -232,9 +232,10 @@ class BatchCheckResult(BaseModel):
 
 
 class MtlsEndpointAliases(BaseModel):
-    """RFC 8705 §5 ``mtls_endpoint_aliases`` — the six endpoints re-based on
+    """RFC 8705 §5 ``mtls_endpoint_aliases`` — the seven endpoints re-based on
     the host that performs the mutual-TLS handshake (wire schema
-    ``MtlsEndpointAliases``, contract 1.40).
+    ``MtlsEndpointAliases``, contract 1.40; the seventh,
+    ``backchannel_authentication_endpoint``, contract 1.58).
 
     A TLS listener decides whether to request a client certificate during the
     handshake, before it has seen any HTTP, so "ask for a certificate on
@@ -242,7 +243,7 @@ class MtlsEndpointAliases(BaseModel):
     listener can do. A deployment wanting both runs two, and this object names
     the second.
 
-    Only these six are ever aliased. ``authorization_endpoint`` and
+    Only these seven are ever aliased. ``authorization_endpoint`` and
     ``end_session_endpoint`` are front-channel and ``jwks_uri`` is public key
     material, so CONTRACT.md §21.3 rule 2 forbids synthesising an alias for any
     of them — sending a browser to an mTLS host raises a native
@@ -250,7 +251,7 @@ class MtlsEndpointAliases(BaseModel):
     endpoint and does not move either: §12.4 rule 3 still compares ``iss``
     against it by exact string.
 
-    Every field is optional even though the server's schema marks all six
+    Every field is optional even though the server's schema marks all seven
     required. AXIAM builds them from one path through a shared macro and so
     always publishes the complete set, but RFC 8705 §5 permits an OP to alias
     fewer, and the shape of this member must never be why a client stops
@@ -277,6 +278,11 @@ class MtlsEndpointAliases(BaseModel):
 
     pushed_authorization_request_endpoint: str | None = None
     """RFC 9126 §2 — authenticates the client."""
+
+    backchannel_authentication_endpoint: str | None = None
+    """CIBA Core §7 — authenticates the client (CONTRACT.md §33, the seventh
+    alias of §21.3.1 since contract 1.58): a ``tls_client_auth`` CIBA client
+    presents its certificate at ``bc-authorize`` as at the token endpoint."""
 
     model_config = {"frozen": True}
 
@@ -370,6 +376,23 @@ class OidcConfiguration(BaseModel):
     reason as the member above, and additionally because the member is
     meaningless to a deployment that registers no ``private_key_jwt`` client.
     """
+
+    backchannel_authentication_endpoint: str | None = None
+    """CIBA Core §4 backchannel authentication endpoint (CONTRACT.md §33.1,
+    contract 1.58). Optional: its absence is "this server does not support
+    CIBA", raised at call time, never a cue to build the URL."""
+
+    backchannel_token_delivery_modes_supported: list[str] | None = None
+    """CIBA delivery modes the server offers (AXIAM: ``["poll", "ping"]``). A
+    statement about the server, not about this client's registration."""
+
+    backchannel_user_code_parameter_supported: bool | None = None
+    """Whether the server accepts a CIBA ``user_code`` (AXIAM: ``false``; this
+    SDK never sends one)."""
+
+    backchannel_authentication_request_signing_alg_values_supported: list[str] | None = None
+    """The JWS algorithms a signed CIBA request may use (AXIAM:
+    ``["PS256", "ES256", "EdDSA"]``, §33.2)."""
 
     mtls_endpoint_aliases: MtlsEndpointAliases | None = None
     """RFC 8705 §5 endpoint aliases for a deployment that terminates mutual

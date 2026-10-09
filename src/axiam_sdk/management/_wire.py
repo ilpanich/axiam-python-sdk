@@ -18,13 +18,14 @@ and therefore cannot be serialized directly, since what would go on the wire is
 from __future__ import annotations
 
 import datetime as _datetime
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, model_serializer, model_validator
 
-__all__ = ["ManagementModel"]
+__all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discriminator"]
 
 #: Fields the server refuses when present-but-empty, so :meth:`to_wire` drops
 #: them in that case as well as when they are unset.
@@ -48,6 +49,23 @@ class ManagementModel(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {}
+    """The open-enum fields of this model and the values this SDK knows,
+    filled in by the generator per class. Empty on the base."""
+
+    def has_member(self, name: str) -> bool:
+        """Whether ``name`` was set: present on the wire for a decoded model,
+        or assigned by the caller for one being built.
+
+        This is how ``null`` is told from absence (§27.4 rule 5): a member the
+        server sent as ``null`` and one it did not send both read as ``None``,
+        and only the first is a member. ``name`` may be the wire name or the
+        attribute name.
+        """
+        fields = type(self).model_fields
+        attribute = next((key for key, info in fields.items() if name in (key, info.alias)), name)
+        return attribute in self.model_fields_set
+
     def to_wire(self) -> dict[str, Any]:
         """This model as its JSON-ready wire body.
 
@@ -57,13 +75,129 @@ class ManagementModel(BaseModel):
         from leaving it out.
 
         The one exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
+
+        Raises:
+            ValidationError: locally, before anything is sent, when an open-enum
+                field anywhere in the body holds a value this SDK does not know
+                (CONTRACT §29.2, §32.2: such a value decodes, and is never sent).
         """
+        _refuse_unknown_enums(self)
         exposed = _expose(self.model_dump(exclude_unset=True, by_alias=True))
         assert isinstance(exposed, dict)
         for field in _OMIT_WHEN_EMPTY:
             if field in exposed and exposed[field] == []:
                 del exposed[field]
         return exposed
+
+
+#: The pydantic ``Tag`` of every open union's catch-all arm. A discriminator value
+#: the server sends that this SDK's copy of the spec does not list is routed here
+#: by :func:`open_discriminator`; the string itself never reaches the wire.
+UNKNOWN_ARM = "__axiam_unknown_arm__"
+
+
+def open_discriminator(tag: str, known: Iterable[str]) -> Callable[[Any], str]:
+    """A pydantic ``Discriminator`` callable for an **open** tagged union.
+
+    A closed ``Field(discriminator=...)`` union fails validation on a tag value
+    it does not list, which would fail the *whole* response the value arrived
+    in. Some unions are open by contract -- CONTRACT §31.2 requires
+    ``ScimTargetAuth`` and ``ScimTargetScope`` to decode an unknown ``type``
+    without failing -- so their tag is picked here: a listed value selects its
+    arm, anything else selects the :data:`UNKNOWN_ARM` catch-all.
+    """
+    listed = frozenset(known)
+
+    def pick(value: Any) -> str:
+        """The arm ``Tag`` for ``value`` (a raw mapping or a built model)."""
+        raw = value.get(tag) if isinstance(value, dict) else getattr(value, tag, None)
+        return raw if isinstance(raw, str) and raw in listed else UNKNOWN_ARM
+
+    return pick
+
+
+#: Member names that carry a secret somewhere on this surface. The catch-all arm
+#: of an open union keeps every member it is given (``extra="allow"``), so it
+#: drops these instead: a response must never surface one (§29.5, §30.2, §31.2,
+#: §32.5), and an unknown arm is rendered in full by ``repr``.
+_SECRET_MEMBER_NAMES = frozenset(
+    {"bind_secret", "credential", "authorization_header", "private_key_pem"}
+)
+
+
+def _refuse_unknown_enums(value: Any) -> None:
+    """Walk a request body and refuse any open-enum value -- or open-union arm --
+    this SDK does not know.
+
+    Raises:
+        ValidationError: naming the model and the field, never the value.
+    """
+    if isinstance(value, OpenUnionUnknown):
+        from axiam_sdk.management._errors import local_refusal
+
+        raise local_refusal(
+            type(value).__name__,
+            "type",
+            "a union arm this SDK does not know decodes, but is never sent (CONTRACT.md §31.2)",
+        )
+    if isinstance(value, ManagementModel):
+        for field, known in type(value)._OPEN_ENUM_FIELDS.items():
+            held = getattr(value, field, None)
+            items = held if isinstance(held, list) else [held]
+            if any(isinstance(item, str) and item not in known for item in items):
+                from axiam_sdk.management._errors import local_refusal
+
+                raise local_refusal(
+                    type(value).__name__,
+                    field,
+                    "a value this SDK does not know decodes, but is never sent "
+                    "(CONTRACT.md §29.2, §32.2)",
+                )
+        for name in type(value).model_fields:
+            _refuse_unknown_enums(getattr(value, name, None))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _refuse_unknown_enums(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _refuse_unknown_enums(item)
+
+
+class OpenUnionUnknown(ManagementModel):
+    """Base of the catch-all arm of an open tagged union.
+
+    It decodes any object whose tag this SDK does not recognise, keeping every
+    member the server sent (``extra="allow"``), so an arm added server-side does
+    not fail the read it appears in. It **refuses to serialize**: a value this
+    SDK cannot describe must not be sent back (CONTRACT §31.2), so
+    :meth:`ManagementModel.to_wire` -- and ``model_dump`` -- raise rather than
+    echo it into a request body.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_secrets(cls, data: Any) -> Any:
+        """Drop every member named in :data:`_SECRET_MEMBER_NAMES` before the
+        arm keeps the rest: an unknown arm must not become a place a secret
+        the server (wrongly) sent survives to be logged."""
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in _SECRET_MEMBER_NAMES}
+        return data
+
+    @model_serializer(mode="plain")
+    def _refuse(self) -> dict[str, Any]:
+        """Refuse to serialize an arm this SDK does not recognise.
+
+        Raises:
+            ValueError: always (pydantic surfaces it as a
+                ``PydanticSerializationError``, itself a ``ValueError``).
+        """
+        raise ValueError(
+            f"{type(self).__name__}: refusing to serialize a union arm this SDK does "
+            f"not recognise; an unknown variant decodes but is never sent (CONTRACT §31.2)"
+        )
 
 
 def _expose(value: Any) -> Any:

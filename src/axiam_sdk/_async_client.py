@@ -23,6 +23,23 @@ import httpx
 from pydantic import SecretStr
 
 from axiam_sdk._account import MfaEnrollment, PasswordResetContext
+from axiam_sdk._ciba import (
+    CIBA_SLOW_DOWN_INCREMENT_SECONDS,
+    DEFAULT_CIBA_INTERVAL_SECONDS,
+    AsyncCibaClock,
+    AsyncSystemCibaClock,
+    CibaDelivery,
+    CibaInitiateResponse,
+    CibaRequestSigner,
+    ciba_error,
+    initiate_form,
+    initiate_members,
+    initiate_response,
+    local_expiry,
+    mark_terminal,
+    poll_form,
+    poll_step,
+)
 from axiam_sdk._client import (
     ACCESS_COOKIE,
     BATCH_CHECK_PATH,
@@ -43,6 +60,7 @@ from axiam_sdk._errors import (
     NetworkError,
     error_from_http_status,
     error_from_oauth2_response,
+    network_error_from_transport,
 )
 from axiam_sdk._models import (
     AccessCheck,
@@ -75,7 +93,14 @@ from axiam_sdk._oidc import (
     SSO_START_PATH,
     PollSchedule,
 )
-from axiam_sdk._retry import retry_async
+from axiam_sdk._registration import (
+    ClientRegistration,
+    check_registration_uri,
+    decode_registration,
+    registration_error,
+    registration_request,
+)
+from axiam_sdk._retry import retry_async, status_is_retryable
 from axiam_sdk._webauthn import (
     WebauthnChallenge,
     WebauthnCredential,
@@ -820,6 +845,209 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._rest_send_async(request)
         return self._handle_exchange_response(response)
+
+    # ------------------------------------------------------------------
+    # CIBA (CONTRACT.md §33, contract 1.58)
+    # ------------------------------------------------------------------
+
+    async def ciba_initiate(
+        self,
+        *,
+        scope: str,
+        login_hint: str | None = None,
+        id_token_hint: str | None = None,
+        binding_message: str | None = None,
+        requested_expiry: int | None = None,
+        acr_values: str | None = None,
+        resource: str | None = None,
+        delivery: CibaDelivery = "poll",
+        client_notification_token: SecretStr | str | None = None,
+        signer: CibaRequestSigner | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> CibaInitiateResponse:
+        """Async twin of :meth:`AxiamClient.ciba_initiate
+        <axiam_sdk.AxiamClient.ciba_initiate>` (CONTRACT.md §33.1). **Never
+        retried**, and a success proves nothing about the user."""
+        self._ensure_open()
+        auth = self._ciba_client_auth("ciba_initiate")
+        members = initiate_members(
+            scope=scope,
+            login_hint=login_hint,
+            id_token_hint=id_token_hint,
+            binding_message=binding_message,
+            requested_expiry=requested_expiry,
+            acr_values=acr_values,
+            resource=resource,
+            delivery=delivery,
+            client_notification_token=client_notification_token,
+        )
+        config = configuration or await self.oidc_discover()
+        url = self._ciba_endpoint_url(config, tenant_id)
+        form = initiate_form(members, auth, signer, config.issuer)
+        request = self._session.async_client.build_request("POST", url, data=form)
+        try:
+            response = await self._rest_send_async(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport("ciba_initiate", exc) from None
+        return initiate_response(response)
+
+    async def ciba_poll(
+        self,
+        auth_req_id: SecretStr | str,
+        *,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """Async twin of :meth:`AxiamClient.ciba_poll
+        <axiam_sdk.AxiamClient.ciba_poll>` (CONTRACT.md §33.1): one token
+        request, §16 within the call on transport/``5xx``/``408``/bodiless
+        ``429`` only. **Store the returned tokens before anything else.**"""
+        self._ensure_open()
+        auth = self._ciba_client_auth("ciba_poll")
+        config = configuration or await self.oidc_discover()
+        url = self._token_endpoint_url(config, tenant_id)
+        form = poll_form(auth_req_id, auth)
+
+        async def attempt(_: int) -> OidcTokenSet | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = self._session.async_client.build_request("POST", url, data=form)
+            try:
+                response = await self._rest_send_async(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport("ciba_poll", exc) from None
+            if not response.is_success:
+                error = ciba_error(response, "ciba_poll")
+                if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                    raise error
+                return mark_terminal(error)
+            try:
+                wire = response.json()
+            except ValueError:
+                return mark_terminal(NetworkError("ciba_poll: the response is not JSON"))
+            return self._build_token_set(wire, config, None)
+
+        outcome = await retry_async(
+            attempt, operation="ciba_poll", enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def ciba_await(
+        self,
+        initiated: CibaInitiateResponse,
+        *,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+        clock: AsyncCibaClock | None = None,
+    ) -> OidcTokenSet:
+        """Async twin of :meth:`AxiamClient.ciba_await
+        <axiam_sdk.AxiamClient.ciba_await>` (CONTRACT.md §33.7): the first
+        poll after ``interval``, ``slow_down`` +5 s for good, transient
+        failures waited out, and a local :class:`CibaExpiredTokenError` at the
+        deadline. ``clock`` is injectable (``now()`` / ``async sleep()``)."""
+        tick = clock or AsyncSystemCibaClock()
+        config = configuration or await self.oidc_discover()
+        deadline = initiated.received_at + initiated.expires_in
+        interval = initiated.interval if initiated.interval > 0 else DEFAULT_CIBA_INTERVAL_SECONDS
+        while True:
+            if tick.now() + interval >= deadline:
+                raise local_expiry()
+            await tick.sleep(interval)
+            try:
+                return await self.ciba_poll(
+                    initiated.auth_req_id, tenant_id=tenant_id, configuration=config
+                )
+            except Exception as exc:  # noqa: BLE001 - classified by §33.3 rule 6
+                step = poll_step(exc)
+                if step == "slow_down":
+                    interval += CIBA_SLOW_DOWN_INCREMENT_SECONDS
+                elif step == "terminal":
+                    raise
+
+    # ------------------------------------------------------------------
+    # RFC 7592 client configuration (CONTRACT.md §28.12, contract 1.53)
+    # ------------------------------------------------------------------
+
+    async def read_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> ClientRegistration:
+        """Async twin of :meth:`AxiamClient.read_client_registration
+        <axiam_sdk.AxiamClient.read_client_registration>` (CONTRACT.md §28.12):
+        the same origin check before any I/O, the bearer on a session-free
+        transport, and §16 retry on a transport failure, ``5xx``, ``408`` or
+        bodiless ``429`` only."""
+        self._ensure_open()
+        operation = "read_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+
+        async def attempt(_: int) -> ClientRegistration | Exception:
+            """One §16 attempt; a decisive failure is returned, not raised."""
+            request = registration_request("GET", url, registration_access_token)
+            try:
+                response = await self._session.bare_async_client.send(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport(operation, exc) from None
+            if response.is_success:
+                return decode_registration(response, operation)
+            error = registration_error(response, operation)
+            if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
+                raise error
+            return error
+
+        outcome = await retry_async(
+            attempt, operation=operation, enabled=self._retry_enabled, telemetry=self._telemetry
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def update_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+        metadata: ClientRegistration,
+    ) -> ClientRegistration:
+        """Async twin of :meth:`AxiamClient.update_client_registration
+        <axiam_sdk.AxiamClient.update_client_registration>` (CONTRACT.md §28.12).
+
+        ``metadata`` is the **whole** registration. **Persist the returned
+        ``registration_access_token`` before doing anything else**: the one
+        presented is dead from the moment the server answers. **Never
+        retried.**"""
+        self._ensure_open()
+        operation = "update_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request(
+            "PUT", url, registration_access_token, metadata.update_body()
+        )
+        try:
+            response = await self._session.bare_async_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        return decode_registration(response, operation)
+
+    async def delete_client_registration(
+        self,
+        registration_client_uri: str,
+        registration_access_token: SecretStr | str,
+    ) -> None:
+        """Async twin of :meth:`AxiamClient.delete_client_registration
+        <axiam_sdk.AxiamClient.delete_client_registration>` (CONTRACT.md
+        §28.12). ``204`` returns ``None``. **Never retried.**"""
+        self._ensure_open()
+        operation = "delete_client_registration"
+        url = check_registration_uri(self._session.base_url, registration_client_uri, operation)
+        request = registration_request("DELETE", url, registration_access_token)
+        try:
+            response = await self._session.bare_async_client.send(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport(operation, exc) from None
+        if not response.is_success:
+            raise registration_error(response, operation)
 
     async def uma_register_resource(
         self, pat: SecretStr | str, resource: ResourceSet

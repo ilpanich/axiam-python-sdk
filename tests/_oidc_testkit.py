@@ -26,6 +26,7 @@ JWKS_URI = f"{BASE_URL}/oauth2/jwks"
 DEVICE_AUTHORIZATION_ENDPOINT = f"{BASE_URL}/oauth2/device_authorization"
 END_SESSION_ENDPOINT = f"{BASE_URL}/oauth2/end_session"
 PAR_ENDPOINT = f"{BASE_URL}/oauth2/par"
+BC_AUTHORIZE_ENDPOINT = f"{BASE_URL}/oauth2/bc-authorize"
 DEVICE_CODE = "device-code-value"
 USER_CODE = "WDJB-MJHT"
 LOGOUT_SID = "session-abc"
@@ -61,6 +62,7 @@ def discovery_document(**overrides: Any) -> dict[str, Any]:
         "device_authorization_endpoint": DEVICE_AUTHORIZATION_ENDPOINT,
         "end_session_endpoint": END_SESSION_ENDPOINT,
         "pushed_authorization_request_endpoint": PAR_ENDPOINT,
+        "backchannel_authentication_endpoint": BC_AUTHORIZE_ENDPOINT,
         "backchannel_logout_supported": True,
         "backchannel_logout_session_supported": True,
     }
@@ -74,11 +76,12 @@ MTLS_INTROSPECT_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/introspect"
 MTLS_REVOKE_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/revoke"
 MTLS_DEVICE_AUTHORIZATION_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/device_authorization"
 MTLS_PAR_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/par"
+MTLS_BC_AUTHORIZE_ENDPOINT = f"{MTLS_BASE_URL}/oauth2/bc-authorize"
 
 
 def mtls_endpoint_aliases(**overrides: Any) -> dict[str, Any]:
-    """The six RFC 8705 §5 aliases, every one on :data:`MTLS_BASE_URL`
-    (CONTRACT.md §21.3 rule 2, contract 1.40)."""
+    """The seven RFC 8705 §5 aliases, every one on :data:`MTLS_BASE_URL`
+    (CONTRACT.md §21.3 rule 2, contract 1.40; the seventh, CIBA's, 1.58)."""
     aliases: dict[str, Any] = {
         "token_endpoint": MTLS_TOKEN_ENDPOINT,
         "userinfo_endpoint": f"{MTLS_BASE_URL}/oauth2/userinfo",
@@ -86,6 +89,7 @@ def mtls_endpoint_aliases(**overrides: Any) -> dict[str, Any]:
         "introspection_endpoint": MTLS_INTROSPECT_ENDPOINT,
         "device_authorization_endpoint": MTLS_DEVICE_AUTHORIZATION_ENDPOINT,
         "pushed_authorization_request_endpoint": MTLS_PAR_ENDPOINT,
+        "backchannel_authentication_endpoint": MTLS_BC_AUTHORIZE_ENDPOINT,
     }
     aliases.update(overrides)
     return aliases

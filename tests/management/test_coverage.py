@@ -17,7 +17,7 @@ import httpx
 import pytest
 import respx
 
-from axiam_sdk.management._errors import parse_field_errors
+from axiam_sdk.management._errors import ValidationError, parse_field_errors
 from axiam_sdk.management._page import Page, PageRequest, page_of, page_query
 from axiam_sdk.management._wire import _expose
 from axiam_sdk.management.manifest import (
@@ -28,7 +28,16 @@ from axiam_sdk.management.manifest import (
     RoleSpec,
     UserSpec,
 )
-from axiam_sdk.management.models import UserResponse
+from axiam_sdk.management.models import (
+    ScimTargetAuthAdapter,
+    ScimTargetAuthBearer,
+    ScimTargetAuthUnknown,
+    ScimTargetInput,
+    ScimTargetScopeAdapter,
+    ScimTargetScopeAllUsers,
+    ScimTargetScopeUnknown,
+    UserResponse,
+)
 from tests.management.test_manifest import ROLE_ID, _page, _role
 from tests.management_support import (
     BASE_URL,
@@ -140,6 +149,38 @@ def test_expose_renders_the_kinds_model_dump_leaves_as_objects() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Open tagged unions (CONTRACT §31.2)
+# ---------------------------------------------------------------------------
+
+
+def test_an_open_union_decodes_a_known_and_an_unknown_tag() -> None:
+    """A listed ``type`` selects its arm; an unlisted one decodes, not fails."""
+    known = ScimTargetAuthAdapter.validate_python({"type": "bearer"})
+    assert isinstance(known, ScimTargetAuthBearer)
+    novel = ScimTargetAuthAdapter.validate_python({"type": "mtls", "cert_ref": "x"})
+    assert isinstance(novel, ScimTargetAuthUnknown)
+    assert novel.type == "mtls"
+    scope = ScimTargetScopeAdapter.validate_python({"type": "by_attribute"})
+    assert isinstance(scope, ScimTargetScopeUnknown)
+
+
+def test_an_unknown_union_arm_is_never_sent() -> None:
+    """§31.2: an arm this SDK cannot describe decodes but refuses to serialize."""
+    body = ScimTargetInput(
+        name="downstream",
+        base_url="https://idp.example/scim/v2",
+        auth=ScimTargetAuthAdapter.validate_python({"type": "mtls"}),
+        scope=ScimTargetScopeAllUsers(type="all_users"),
+    )
+    # `to_wire` refuses it locally, as the SDK's ValidationError, before any I/O;
+    # serialising it any other way still raises, from the arm's own serializer.
+    with pytest.raises(ValidationError, match="never sent"):
+        body.to_wire()
+    with pytest.raises(ValueError, match="never sent"):
+        body.model_dump()
+
+
+# ---------------------------------------------------------------------------
 # The request path
 # ---------------------------------------------------------------------------
 
@@ -234,6 +275,10 @@ async def test_the_async_handles_are_scopable_too() -> None:
         assert client.settings.for_tenant(other_tenant) is not client.settings
         assert client.webauthn_policy.for_tenant(other_tenant) is not client.webauthn_policy
         assert client.email_config.for_tenant(other_tenant) is not client.email_config
+        # Contract 1.58: `{tenant_id}` is the context on these three too.
+        assert client.directory.for_tenant(other_tenant) is not client.directory
+        assert client.saml.for_tenant(other_tenant) is not client.saml
+        assert client.ssf.for_tenant(other_tenant) is not client.ssf
 
 
 def test_the_sync_handles_are_scopable_on_every_namespace_that_needs_it() -> None:
@@ -247,6 +292,10 @@ def test_the_sync_handles_are_scopable_on_every_namespace_that_needs_it() -> Non
         assert client.settings.for_tenant(other_tenant) is not client.settings
         assert client.webauthn_policy.for_tenant(other_tenant) is not client.webauthn_policy
         assert client.email_config.for_tenant(other_tenant) is not client.email_config
+        # Contract 1.58: `{tenant_id}` is the context on these three too.
+        assert client.directory.for_tenant(other_tenant) is not client.directory
+        assert client.saml.for_tenant(other_tenant) is not client.saml
+        assert client.ssf.for_tenant(other_tenant) is not client.ssf
 
 
 # ---------------------------------------------------------------------------

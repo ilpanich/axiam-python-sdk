@@ -30,7 +30,7 @@ import asyncio
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -38,6 +38,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from pydantic import SecretStr
 
+from axiam_sdk._ciba import handle_ping
 from axiam_sdk._errors import (
     AuthError,
     NetworkError,
@@ -713,7 +714,8 @@ class _AsyncSingleFlight:
         return await asyncio.shield(self._claim_or_join(fn))
 
 
-#: The six endpoint names RFC 8705 §5 ever aliases (CONTRACT.md §21.3 rule 2).
+#: The seven endpoint names RFC 8705 §5 ever aliases (CONTRACT.md §21.3 rule 2;
+#: the seventh, CIBA's, since contract 1.58).
 #: Naming them as a closed set is what makes `authorization_endpoint`,
 #: `end_session_endpoint` and `jwks_uri` unreachable through the alias lookup
 #: rather than merely unused — rule 2 forbids synthesising an alias for any of
@@ -725,6 +727,7 @@ _AliasableEndpoint = Literal[
     "introspection_endpoint",
     "device_authorization_endpoint",
     "pushed_authorization_request_endpoint",
+    "backchannel_authentication_endpoint",
 ]
 
 
@@ -1058,7 +1061,7 @@ class _OidcMixin:
           ``client_auth = optional`` on one listener serves both populations at
           the conventional endpoints and correctly publishes nothing.
         * ``name`` is looked up on :class:`MtlsEndpointAliases`, which carries
-          only the six aliasable endpoints, so ``authorization_endpoint``,
+          only the seven aliasable endpoints, so ``authorization_endpoint``,
           ``end_session_endpoint`` and ``jwks_uri`` cannot be reached through
           here: they are front-channel or public, and an mTLS host would raise
           a certificate-chooser dialog in the user's browser.
@@ -1658,6 +1661,84 @@ class _OidcMixin:
             "the device authorization expired before the user completed it "
             "(client-side deadline from expires_in; CONTRACT.md §14.2 rule 4)",
         )
+
+    # ------------------------------------------------------------------
+    # §33 CIBA (contract 1.58)
+    # ------------------------------------------------------------------
+
+    def _ciba_client_auth(self, operation: str) -> dict[str, str]:
+        """The client authentication both CIBA wire calls carry (§33.1): the
+        ``client_id`` plus, for a ``client_secret_post`` client, the secret.
+        A ``tls_client_auth`` client (a §6.1 client certificate) sends
+        ``client_id`` only -- its certificate is the credential.
+
+        Raises:
+            AuthError: client-side, with no request, when this client has
+                neither a secret nor a certificate -- a CIBA client is never
+                public -- or no ``client_id``.
+        """
+        client_id = self._require_oidc_client_id()
+        if self._oidc_client_secret is None and not self._session.presents_client_certificate:
+            raise AuthError(
+                f"{operation} requires client authentication: a CIBA client is never public "
+                "-- construct the client with client_secret or a §6.1 client certificate "
+                "(CONTRACT.md §33.1)."
+            )
+        auth = {"client_id": client_id}
+        self._append_client_secret(auth)
+        return auth
+
+    def _ciba_endpoint_url(self, configuration: OidcConfiguration, tenant_id: str | None) -> str:
+        """``backchannel_authentication_endpoint`` (its §21.3 rule 2 alias on an
+        mTLS call) with the mandatory ``tenant_id`` query parameter.
+
+        Raises:
+            AuthError: when the discovery document advertises none -- the URL
+                is never built by concatenation, and no alias is synthesised.
+        """
+        endpoint = self._preferred_optional_endpoint(
+            configuration,
+            "backchannel_authentication_endpoint",
+            configuration.backchannel_authentication_endpoint,
+        )
+        if not endpoint:
+            raise AuthError(
+                "the authorization server's discovery document advertises no "
+                "backchannel_authentication_endpoint: this server does not support CIBA "
+                "(CONTRACT.md §33.1)."
+            )
+        return self._endpoint_url(endpoint, tenant_id)
+
+    def ciba_handle_ping(
+        self,
+        headers: Mapping[str, Any] | Iterable[tuple[Any, Any]],
+        body: bytes | str,
+        expected_token: SecretStr | str,
+    ) -> SecretStr:
+        """Check a ping AXIAM delivered to your notification endpoint and
+        return the ``auth_req_id`` it names (CIBA Core §10.2, CONTRACT.md
+        §33.1). **No I/O**, synchronous on both clients.
+
+        ``headers`` are the request's headers in any framework's shape -- a
+        mapping, ``(name, value)`` pairs, or an object with ``multi_items()``
+        (Starlette, httpx), which lets a duplicated header be seen; ``body`` is
+        the raw body; ``expected_token`` the ``client_notification_token`` you
+        sent with the request.
+
+        1. Exactly one ``Authorization`` header: ``Bearer`` (any case), one
+           space and the token, compared in constant time
+           (:func:`hmac.compare_digest`). Otherwise :class:`~axiam_sdk.AuthError`,
+           whose message names no value.
+        2. A JSON object with a non-empty string ``auth_req_id``; any other
+           member is ignored. Otherwise a local ``ValidationError``.
+
+        It neither answers the HTTP request nor calls the token endpoint:
+        answer ``204`` as soon as this returns, **then** ``ciba_poll`` --
+        AXIAM retries a ping that is not answered quickly. Nor does it check
+        that the ``auth_req_id`` is one you issued: the token endpoint answers
+        ``invalid_grant`` for any other.
+        """
+        return handle_ping(headers, body, expected_token)
 
     # ------------------------------------------------------------------
     # §15 token exchange (RFC 8693)

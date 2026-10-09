@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract **1.58** (CONTRACT.md §28.12, §29, §30, §31, §32, §32.7, §33, §21.3.1). The vendored
+`CONTRACT.md`, `openapi.json` and `management-registry.json` come from axiam `21a9c22`;
+`proto/` was already identical.
+
+### Added
+
+- RFC 7592 client configuration (§28.12): `read_client_registration`,
+  `update_client_registration` and `delete_client_registration` on `AxiamClient` and
+  `AsyncAxiamClient`, and `ClientRegistration` (tolerant decode; unknown members kept in
+  `extra` and sent back on update). The registration access token and client secret are
+  `SecretStr`; the token is sent only as a bearer, on a session-free transport (no
+  cookie jar, no redirects); the URI must be at the client's own origin; writes are never
+  retried.
+- Management namespaces `directory` (§30), `saml` (§29), `ssf` (§32) and `scim_targets`
+  (§31): 190 operations across 28 namespaces. `bind_secret`, `authorization_header` and
+  `credential` are `SecretStr`; the contract's call-site rules are in each operation's
+  docstring; `saml.parse_sp_metadata` refuses both-or-neither locally
+  (`ParseSamlSpMetadata.from_url` / `.from_xml`); `ManagementModel.has_member()` tells an
+  explicit `null` from an absent member; read-modify-write conversions
+  `set_directory_config`, `saml_service_provider_input`, `scim_target_input` and
+  `ssf_stream_input` in `axiam_sdk.management`.
+- `axiam_sdk.ssf` — the SSF receiver helper (§32.7): `SsfReceiver` / `AsyncSsfReceiver`
+  with `verify_set` and `poll`, `SetVerificationError` and `SetFailureReason` (with
+  `push_error_code()`), `SetErr`, a pluggable `ReplayStore`, and the event-type URI
+  constants.
+- CIBA (§33): `ciba_initiate`, `ciba_poll`, `ciba_await` and `ciba_handle_ping` on both
+  clients; the signed request form (`CibaRequestSigner`, PS256 / ES256 / EdDSA); the
+  distinct terminal outcomes `CibaAccessDeniedError` and `CibaExpiredTokenError`; an
+  injectable `CibaClock` / `AsyncCibaClock`.
+
+### Changed
+
+- **Runtime dependency fix:** the package now depends on `PyJWT[crypto]` (and declares
+  `cryptography` directly) instead of plain `PyJWT`. A clean install previously had no
+  `cryptography`, so EdDSA access-, ID- and logout-token verification and DPoP proof
+  verification failed at runtime ("Algorithm not supported"); CI hid it because a dev
+  extra pulled `cryptography` in. SSF SET verification and CIBA request signing need it
+  too.
+- `MtlsEndpointAliases` decodes the seventh alias, `backchannel_authentication_endpoint`
+  (§21.3.1 amended in contract 1.58); `OidcConfiguration` decodes the four CIBA members.
+- An open-enum value or open-union arm this SDK does not know still decodes, and is now
+  refused by `to_wire()` with a local `ValidationError` instead of being sent (§29.2,
+  §31.2, §32.2).
+- `error_from_oauth2_response` gains `description_optional`, used by the §28.12 and §33
+  operations: an `/oauth2` error body without `error_description` is still an
+  `OAuthProtocolError` there. The existing §12 operations keep their mapping.
+
 ## [1.0.0-beta17] - 2026-09-25
 
 ### Added

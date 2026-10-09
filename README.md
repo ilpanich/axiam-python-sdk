@@ -23,20 +23,43 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.52**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
-§19, §20, §21, §22, §23, §24, §25, §26, §27, §28 (including §6.1 mTLS, the §10.1
-minimum local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
+This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+§19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33,
+with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
+local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
 
-§12.7, §14, §15, §20, §22, §24, §25, §26, §27 and §28 are named rather than folded into
-the range because they landed after this SDK already claimed §1–§13: widening the
-range silently would turn a statement that was true when written into a
-different claim without anyone editing it.
+§12.7, §14, §15, §20, §22, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7
+and §33 are named rather than folded into the range because they landed after this
+SDK already claimed §1–§13: widening the range silently would turn a statement that
+was true when written into a different claim without anyone editing it. The §21.3.1
+amendment of contract 1.58 (the seventh `mtls_endpoint_aliases` member,
+`backchannel_authentication_endpoint`) is decoded and honoured on an mTLS CIBA call.
 
 §28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
 guard built without `resource_metadata_url` is byte-for-byte what it was before §28
 existed. See [MCP resource-server helpers (§28)](#mcp-resource-server-helpers-28).
+
+### Contract 1.53 – 1.58 — what this SDK ships
+
+Everything below is on **both** `AxiamClient` and `AsyncAxiamClient`, under the same
+names. Nothing in these sections is carved out.
+
+| Section | Here |
+|---|---|
+| §28.12 RFC 7592 client configuration | `read_client_registration`, `update_client_registration`, `delete_client_registration`; `ClientRegistration` — see [RFC 7592 client configuration](#rfc-7592-client-configuration-2812) |
+| §29 SAML service providers | `client.saml` — eleven generated operations with the call-site notes, `ParseSamlSpMetadata.from_url` / `.from_xml`, `management.saml_service_provider_input` |
+| §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null`; `management.set_directory_config` |
+| §31 outbound SCIM targets | `client.scim_targets` — six generated operations; `credential` a `SecretStr`; `management.scim_target_input` |
+| §32 SSF streams | `client.ssf` — five generated operations; `authorization_header` a `SecretStr`; `management.ssf_stream_input` |
+| §32.7 SSF receiver helper | `axiam_sdk.ssf.SsfReceiver` / `AsyncSsfReceiver` — `verify_set`, `poll` — see [SSF receiver](#ssf-receiver-327) |
+| §33 CIBA | `ciba_initiate`, `ciba_poll`, `ciba_await`, `ciba_handle_ping` — see [CIBA](#ciba-33) |
+| §33.2 signed request | `CibaRequestSigner` (PS256, ES256, EdDSA; the caller's key and algorithm, no defaults) |
+
+Contract 1.58 also made `PyJWT[crypto]` (and `cryptography`) a declared runtime
+dependency: EdDSA verification and every signing path need `cryptography`, which a
+plain `PyJWT` install does not bring.
 
 ### Contract 1.51 — the dogfooding remediation
 
@@ -54,7 +77,7 @@ plan's C-3 task. Shipped:
 | §27.6.1 — `service_accounts` in the manifest | Shipped: `ServiceAccountSpec`, `ManagementManifest(service_accounts=...)`, `axiam_service_account` |
 | §27.6 `webhooks` | **Declined.** The contract names it and leaves it unspecified; no consumer has asked for it |
 
-§27 is the management API — 162 administrative operations across 24 namespaces,
+§27 is the management API — 190 administrative operations across 28 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1608,7 +1631,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-162 administrative operations across 24 namespaces, reached as
+190 administrative operations across 28 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 
@@ -1640,7 +1663,7 @@ The same surface exists on `AsyncAxiamClient` with `await`.
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Twenty namespaces have a `list` and fourteen a `get`; flattening 147 operations onto the client would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Nineteen namespaces have a `list` and nineteen a `get`; flattening 190 operations onto the client would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `login()` first, or an `AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.in_org(...)` / `.for_tenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. `PageRequest.search` filters **server-side**, before `offset`/`limit`, and `list_all()` carries the term across the whole walk. |
@@ -2216,6 +2239,156 @@ identically to any other `invalid_token`. The framework-independent two live
 in `tests/test_mcp.py`; the three that need a guard are duplicated against
 both frameworks in `tests/test_fastapi_mcp.py` and `tests/test_django_mcp.py`,
 alongside each surface's own off-by-default regression.
+
+## RFC 7592 client configuration (§28.12)
+
+A client that registered itself through `POST /oauth2/register` received a
+`registration_client_uri` and a `registration_access_token`, once. With them it
+manages its own registration — and only at this client's configured AXIAM: a URI at
+any other origin (scheme, host or port), or `http` unless the base URL is `http` on
+a loopback host, is refused with a local `ValidationError` before a request is sent.
+
+```python
+from pydantic import SecretStr
+
+token = SecretStr(stored_registration_access_token)
+registration = client.read_client_registration(registration_client_uri, token)
+registration.client_name = "Agent v2"
+# A full replacement: start from the read (unknown members ride along in
+# `registration.extra`). The token ROTATES -- persist the new one first.
+updated = client.update_client_registration(registration_client_uri, token, registration)
+store(updated.registration_access_token)  # SecretStr
+client.delete_client_registration(registration_client_uri, updated.registration_access_token)
+```
+
+Neither write is retried: an update whose answer was lost has already rotated the
+token. The token travels only as `Authorization: Bearer`, on a transport that carries
+no SDK session (no cookie, access token, CSRF token or `X-Tenant-ID`) and follows no
+redirect, and a `401` from these calls never triggers the §9 refresh. An answer with
+an `error` member is an `OAuthProtocolError` at any status.
+
+## Directory, SAML, SSF and SCIM targets (§29 – §32)
+
+Four management namespaces, generated like the rest of §27, with the contract's
+call-site rules in each method's docstring.
+
+```python
+from pydantic import SecretStr
+
+from axiam_sdk.management import models, scim_target_input
+
+# §30 -- moving the connection (url, start_tls, bind_dn, trust_anchors_pem) needs the
+# secret again; the SDK keeps no copy. An explicit None is sent as null (clears it);
+# a member you leave unset is not sent at all.
+client.directory.update(
+    models.UpdateDirectoryConfig(
+        url="ldaps://dc2.corp.example",
+        bind_secret=SecretStr(secret_from_vault),
+        group_filter=None,
+    )
+)
+
+# §29 -- a metadata import is a draft; nothing is stored until you create it.
+draft = client.saml.parse_sp_metadata(
+    models.ParseSamlSpMetadata.from_url("https://sp.example/metadata")
+)
+sp = client.saml.create_service_provider(draft.service_provider)
+
+# §31 / §32 -- replace updates: read, convert, change, write. The write-only secret is
+# left absent, which keeps the stored one.
+target = client.scim_targets.get(target_id)
+body = scim_target_input(target)
+body.enabled = False
+client.scim_targets.update(target_id, body)
+```
+
+`SamlIdpCredential`, `DirectoryConfig`, `ScimTargetResponse` and `SsfStream` have no
+secret member, and a decoder that meets one drops it. Open enums and the open
+`ScimTargetAuth` / `ScimTargetScope` unions decode a value this SDK does not know —
+and `to_wire()` refuses to send one, with a local `ValidationError`.
+`has_member("next_credential_id")` tells a `null` the server sent from a member it
+did not send. `delete` on a SCIM target deprovisions nothing downstream; retiring the
+active SAML credential with no successor stops SAML sign-on for the whole tenant.
+Every write in these namespaces is issued exactly once.
+
+## SSF receiver (§32.7)
+
+For the relying party that *receives* AXIAM's CAEP and RISC events
+(`AsyncSsfReceiver` is the same over `AsyncAxiamClient`):
+
+```python
+from axiam_sdk.ssf import SESSION_REVOKED, SetErr, SetVerificationError, SsfReceiver
+
+receiver = SsfReceiver(
+    client,
+    issuer="https://iam.example.com/t/<tenant>",  # the transmitter's issuer
+    audience="https://rp.example.com",  # your stream's audience
+    jwks_uri="https://iam.example.com/t/<tenant>/oauth2/jwks",  # or discovery_url=...
+    access_token_provider=lambda: fetch_ssf_manage_token(),  # for poll
+)
+
+# Push: verify, then answer 202 -- or 400 {"err": ...}.
+try:
+    event = receiver.verify_set(body.decode())
+except SetVerificationError as refused:
+    answer(400, {"err": refused.set_failure_reason.push_error_code()})
+else:
+    if event.event_type == SESSION_REVOKED:
+        end_sessions(event.sub_id)
+    answer(202)
+
+# Poll: acknowledge what you processed on the next call; refuse the rest by setErrs.
+result = receiver.poll(stream_id, return_immediately=True)
+processed = [handle(e) or e.jti for e in result.events]
+receiver.poll(
+    stream_id,
+    ack=processed,
+    set_errs={r.jti: SetErr.from_reason(r.reason) for r in result.refused},
+)
+```
+
+The verification order, the reason codes (`SetVerificationError.set_failure_reason`,
+also `.reason` on the `AuthError`) and the seven-day replay window are the
+contract's; a window below seven days is refused at construction. A verified SET is
+recorded, so one re-offered unacknowledged reads as `replayed`: acknowledge what you
+processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET.
+
+## CIBA (§33)
+
+Ask AXIAM to authenticate a user on another device, then collect the tokens.
+Both clients carry the same four names.
+
+```python
+from axiam_sdk import CibaAccessDeniedError, CibaExpiredTokenError
+
+initiated = client.ciba_initiate(
+    scope="openid", login_hint="ada", binding_message="W4SCT", tenant_id=tenant_uuid
+)  # never retried
+try:
+    tokens = client.ciba_await(initiated, tenant_id=tenant_uuid)
+except CibaAccessDeniedError:
+    ...  # the user refused
+except CibaExpiredTokenError:
+    ...  # nobody answered in time
+```
+
+**Ping mode:** initiate with `delivery="ping", client_notification_token=token`, and in
+the handler of your notification endpoint call
+`auth_req_id = client.ciba_handle_ping(request.headers, raw_body, token)` — no I/O,
+synchronous on both clients — answer `204`, then `client.ciba_poll(auth_req_id,
+tenant_id=...)` once (once more at `interval` if it answers `authorization_pending`),
+and fall back to `ciba_await` after half of `expires_in` without a ping.
+
+**Signed form:** a client registered with a request-signing algorithm passes
+`signer=CibaRequestSigner("EdDSA", private_key_pem, kid="key-1")` (or `"PS256"`,
+`"ES256"`); the form then carries only the client authentication and `request`.
+
+A CIBA client always authenticates (its `client_secret`, or the §6.1 client
+certificate for `tls_client_auth`); one built with neither is refused locally. A
+successful `ciba_initiate` proves nothing about the user: AXIAM answers an unknown or
+locked user exactly like a real one, and only `expired_token` says nobody answered.
+`auth_req_id`, the notification token, the signing key and the `request` string are
+never rendered.
 
 ## Development
 
