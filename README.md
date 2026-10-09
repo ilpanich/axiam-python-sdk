@@ -23,7 +23,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33,
 with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
@@ -36,6 +36,12 @@ SDK already claimed §1–§13: widening the range silently would turn a stateme
 was true when written into a different claim without anyone editing it. The §21.3.1
 amendment of contract 1.58 (the seventh `mtls_endpoint_aliases` member,
 `backchannel_authentication_endpoint`) is decoded and honoured on an mTLS CIBA call.
+Contract 1.59 adds no section: its §34 clarifications (P1 – P12) bind §28.12 – §33's
+behaviour, and this SDK's follow-up (F-59-03) implements the ones its review named —
+`poll` returns what it judged and lists the SETs a
+failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
+transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
+a `None` write-only secret is omitted, never sent as `null` (P12.3).
 
 §28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
 guard built without `resource_metadata_url` is byte-for-byte what it was before §28
