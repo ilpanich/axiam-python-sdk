@@ -2317,7 +2317,13 @@ For the relying party that *receives* AXIAM's CAEP and RISC events
 (`AsyncSsfReceiver` is the same over `AsyncAxiamClient`):
 
 ```python
-from axiam_sdk.ssf import SESSION_REVOKED, SetErr, SetVerificationError, SsfReceiver
+from axiam_sdk.ssf import (
+    SESSION_REVOKED,
+    SetErr,
+    SetFailureReason,
+    SetVerificationError,
+    SsfReceiver,
+)
 
 receiver = SsfReceiver(
     client,
@@ -2337,21 +2343,33 @@ else:
         end_sessions(event.sub_id)
     answer(202)
 
-# Poll: acknowledge what you processed on the next call; refuse the rest by setErrs.
+# Poll: acknowledge what you processed on the next call; refuse the rest by setErrs,
+# except a `replayed` one -- accepted earlier, so acknowledge it.
 result = receiver.poll(stream_id, return_immediately=True)
 processed = [handle(e) or e.jti for e in result.events]
+replayed = [r.jti for r in result.refused if r.reason is SetFailureReason.REPLAYED]
 receiver.poll(
     stream_id,
-    ack=processed,
-    set_errs={r.jti: SetErr.from_reason(r.reason) for r in result.refused},
-)
+    ack=processed + replayed,
+    set_errs={
+        r.jti: SetErr.from_reason(r.reason)
+        for r in result.refused
+        if r.reason is not SetFailureReason.REPLAYED
+    },
+)  # result.unjudged: neither acknowledged nor refused -- offered again
 ```
 
 The verification order, the reason codes (`SetVerificationError.set_failure_reason`,
 also `.reason` on the `AuthError`) and the seven-day replay window are the
 contract's; a window below seven days is refused at construction. A verified SET is
 recorded, so one re-offered unacknowledged reads as `replayed`: acknowledge what you
-processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET.
+processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET; a
+replay store that cannot answer raises too, never accepts. `poll` never keeps a `jti`
+it does not return: a failed fetch or store stops verification, and that SET and the
+ones after it come back in `result.unjudged` (cause in `result.unjudged_error`),
+unrecorded, for the transmitter to offer again. The default `MemoryReplayStore` is one
+process's, bounded in time (the window) but not in count; `AsyncSsfReceiver` also
+takes an `AsyncReplayStore`, whose `check_and_record` is a coroutine.
 
 ## CIBA (§33)
 

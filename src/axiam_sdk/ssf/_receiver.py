@@ -16,7 +16,7 @@ import json
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote
@@ -44,6 +44,7 @@ __all__ = [
     "SESSION_REVOKED",
     "STREAM_UPDATED",
     "VERIFICATION",
+    "AsyncReplayStore",
     "AsyncSsfReceiver",
     "MemoryReplayStore",
     "RefusedSet",
@@ -235,23 +236,57 @@ class SsfPollResult:
     refused: list[RefusedSet] = field(default_factory=list)
     """The SETs that did not verify."""
 
+    unjudged: list[str] = field(default_factory=list)
+    """The keys of the SETs left **unjudged** by a failure that is no verdict on
+    a SET -- a JWKS or discovery fetch that failed, a replay store that could
+    not answer (§34.2 P1, P3). They are in neither ``events`` nor ``refused``
+    and their ``jti`` was **not** recorded: neither acknowledge nor refuse them,
+    and the transmitter offers them again. Verification stops at the first such
+    failure, so every SET after it is listed here too."""
+
+    unjudged_error: Exception | None = None
+    """The failure that left ``unjudged`` unjudged (a :class:`NetworkError` for
+    a fetch, the store's own exception for a store), or ``None``."""
+
 
 class ReplayStore(Protocol):
     """Remembers the ``jti`` values already accepted, for step 9.
 
     Pluggable so a receiver running several instances can share one store
-    (§32.7). :class:`MemoryReplayStore` is the default.
+    (§32.7). :class:`MemoryReplayStore` is the default. :class:`AsyncSsfReceiver`
+    also takes an :class:`AsyncReplayStore`.
+
+    **Fail closed** (§34.2 P4): a store that cannot answer -- its backend is
+    down, a call timed out -- MUST raise, never return ``True``. The receiver
+    treats the exception as no verdict on the SET: ``verify_set`` raises it,
+    ``poll`` leaves that SET unjudged and unrecorded.
     """
 
     def check_and_record(self, jti: str, window_seconds: float) -> bool:
         """Record ``jti`` for ``window_seconds`` and return ``True``, or return
         ``False`` without recording when it is already held. MUST be atomic:
-        two concurrent calls with one ``jti`` must not both see ``True``."""
+        two concurrent calls with one ``jti`` must not both see ``True``.
+        Raise when the store cannot answer."""
+        ...  # pragma: no cover - protocol
+
+
+class AsyncReplayStore(Protocol):
+    """:class:`ReplayStore` with a coroutine ``check_and_record``, for
+    :class:`AsyncSsfReceiver` over an asynchronous backend (a shared cache
+    reached through an async driver). The same atomicity and fail-closed rules
+    apply."""
+
+    async def check_and_record(self, jti: str, window_seconds: float) -> bool:
+        """Async :meth:`ReplayStore.check_and_record`."""
         ...  # pragma: no cover - protocol
 
 
 class MemoryReplayStore:
-    """The in-memory :class:`ReplayStore`: one process, lost on restart."""
+    """The in-memory :class:`ReplayStore`: one process, lost on restart.
+
+    Bounded in time -- an entry is forgotten after its window -- but **not in
+    count**: it holds every ``jti`` accepted within the window (§34.2 P4).
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         """Build an empty store; ``clock`` is injectable for tests."""
@@ -344,7 +379,6 @@ class _ReceiverCore:
         jwks_uri: str | None,
         discovery_url: str | None,
         replay_window_seconds: float,
-        replay_store: ReplayStore | None,
         clock: Callable[[], float],
     ) -> None:
         """Validate the configuration locally, before any I/O.
@@ -379,7 +413,6 @@ class _ReceiverCore:
         self.jwks_uri = jwks_uri
         self.discovery_url = discovery_url
         self.replay_window = replay_window_seconds
-        self.replay_store: ReplayStore = replay_store or MemoryReplayStore()
         self.clock = clock
         self.keys: dict[str, jwt.PyJWK] | None = None
         self.fetched_at = 0.0
@@ -500,12 +533,13 @@ class _ReceiverCore:
             raise NetworkError("ssf: the SSF configuration carries no jwks_uri")
         return _check_url("jwks_uri", jwks_uri)
 
-    # -- steps 5-9 -----------------------------------------------------------
+    # -- steps 5-8 -----------------------------------------------------------
 
-    def finish(
+    def judge(
         self, parsed: _Parsed, key: jwt.PyJWK | None, expected_jti: str | None
     ) -> SecurityEvent:
-        """Steps 5-9 for a SET whose ``kid`` resolved to ``key`` (or did not).
+        """Steps 5-8 for a SET whose ``kid`` resolved to ``key`` (or did not);
+        step 9, the replay store, is the receiver's (:func:`_replayed`).
 
         Raises:
             SetVerificationError: at the first failing step.
@@ -556,8 +590,6 @@ class _ReceiverCore:
                 SetFailureReason.INVALID_REQUEST, "the poll key is not the SET's jti"
             )
         ((event_type, event),) = events.items()
-        if not self.replay_store.check_and_record(jti, self.replay_window):
-            raise SetVerificationError(SetFailureReason.REPLAYED, "jti already seen")
         txn = claims.get("txn")
         return SecurityEvent(
             jti=jti,
@@ -631,10 +663,24 @@ class _ReceiverCore:
         return pairs, reply.get("moreAvailable") is True
 
 
+def _replayed() -> SetVerificationError:
+    """Step 9's refusal: the store already held the ``jti``."""
+    return SetVerificationError(SetFailureReason.REPLAYED, "jti already seen")
+
+
 def _bearer(token: TokenValue) -> dict[str, str]:
     """The poll's headers: the provider's bearer, and JSON."""
     value = token.get_secret_value() if isinstance(token, SecretStr) else token
     return {"Authorization": f"Bearer {value}", "Accept": "application/json"}
+
+
+def _left_unjudged(
+    result: SsfPollResult, pairs: list[tuple[str, Any]], jti: str, failure: Exception
+) -> SsfPollResult:
+    """``result`` with the SET under ``jti`` and every one after it left
+    unjudged by ``failure`` (§34.2 P1): none of them was recorded."""
+    keys = [key for key, _ in pairs]
+    return replace(result, unjudged=keys[keys.index(jti) :], unjudged_error=failure)
 
 
 def _no_provider() -> AuthError:
@@ -683,9 +729,9 @@ class SsfReceiver:
             jwks_uri=jwks_uri,
             discovery_url=discovery_url,
             replay_window_seconds=replay_window_seconds,
-            replay_store=replay_store,
             clock=clock,
         )
+        self._store: ReplayStore = replay_store or MemoryReplayStore()
         self._provider = access_token_provider
         self._lock = threading.Lock()
 
@@ -722,9 +768,12 @@ class SsfReceiver:
             return core.keys.get(kid)
 
     def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
-        """Steps 1-9, the key lookup between them."""
+        """Steps 1-9, the key lookup between them; the ``jti`` is recorded last."""
         parsed = self._core.parse(set_token)
-        return self._core.finish(parsed, self._key_for(parsed.kid), expected_jti)
+        event = self._core.judge(parsed, self._key_for(parsed.kid), expected_jti)
+        if not self._store.check_and_record(event.jti, self._core.replay_window):
+            raise _replayed()
+        return event
 
     def verify_set(self, set_token: str) -> SecurityEvent:
         """Verify one compact SET (§32.7), refusing at the first failing step:
@@ -753,6 +802,8 @@ class SsfReceiver:
                 reason.
             NetworkError: the JWKS (or discovery document) could not be
                 fetched -- not a verdict on the SET.
+            Exception: whatever the replay store raised when it could not
+                answer -- not a verdict either; the ``jti`` was not recorded.
         """
         return self._verify(set_token, None)
 
@@ -771,15 +822,23 @@ class SsfReceiver:
         ``ack`` and ``set_errs`` are sent exactly as given, and only when given.
         **Nothing is acknowledged on your behalf**: acknowledge, on the next
         call, the ``jti`` values you processed, and pass each refused one in
-        ``set_errs`` (``SetErr.from_reason(refused.reason)``). A SET you neither
-        acknowledge nor refuse is re-offered -- and, having been recorded when it
-        verified, then reads as ``replayed``.
+        ``set_errs`` (``SetErr.from_reason(refused.reason)``) -- except a
+        ``replayed`` one, which this receiver accepted earlier: acknowledge it
+        (§34.2 P2). A SET you neither acknowledge nor refuse is re-offered --
+        and, having been recorded when it verified, then reads as ``replayed``.
 
         Retried per §16 on a transport failure, ``5xx``, ``408`` or ``429``,
         never on another ``4xx`` (``400`` is a ``ValidationError``, ``404`` a
         ``NotFoundError``). A SET whose verified ``jti`` is not its map key is
-        refused ``invalid_request``, a non-string SET ``malformed``. A JWKS
-        fetch failure aborts the poll with that ``NetworkError``.
+        refused ``invalid_request``, a non-string SET ``malformed``.
+
+        **Never keeps a ``jti`` it does not return** (§34.2 P1): a failure that
+        is no verdict on a SET -- a JWKS or discovery fetch that fails, a replay
+        store that cannot answer -- stops verification there. The SETs judged
+        before it are returned as usual; that SET and every one after it are
+        listed in ``unjudged`` with the failure in ``unjudged_error``, are not
+        recorded, and are offered again by the transmitter: neither acknowledge
+        nor refuse them.
 
         Raises:
             AuthError: locally, when no ``access_token_provider`` was configured.
@@ -824,6 +883,8 @@ class SsfReceiver:
                 result.events.append(self._verify(set_token, jti))
             except SetVerificationError as refusal:
                 result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
+            except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
+                return _left_unjudged(result, pairs, jti, failure)
         return result
 
 
@@ -845,10 +906,11 @@ class AsyncSsfReceiver:
         discovery_url: str | None = None,
         access_token_provider: AsyncAccessTokenProvider | None = None,
         replay_window_seconds: float = MIN_REPLAY_WINDOW_SECONDS,
-        replay_store: ReplayStore | None = None,
+        replay_store: ReplayStore | AsyncReplayStore | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """See :class:`SsfReceiver`.
+        """See :class:`SsfReceiver`. ``replay_store`` may also be an
+        :class:`AsyncReplayStore`, whose ``check_and_record`` is awaited.
 
         Raises:
             ValidationError: locally, for a configuration §32.7 refuses.
@@ -861,9 +923,9 @@ class AsyncSsfReceiver:
             jwks_uri=jwks_uri,
             discovery_url=discovery_url,
             replay_window_seconds=replay_window_seconds,
-            replay_store=replay_store,
             clock=clock,
         )
+        self._store: ReplayStore | AsyncReplayStore = replay_store or MemoryReplayStore()
         self._provider = access_token_provider
         self._lock: asyncio.Lock | None = None
 
@@ -902,9 +964,16 @@ class AsyncSsfReceiver:
             return core.keys.get(kid)
 
     async def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
-        """Steps 1-9, the key lookup between them."""
+        """Steps 1-9, the key lookup between them; the ``jti`` is recorded last,
+        awaiting an :class:`AsyncReplayStore`."""
         parsed = self._core.parse(set_token)
-        return self._core.finish(parsed, await self._key_for(parsed.kid), expected_jti)
+        event = self._core.judge(parsed, await self._key_for(parsed.kid), expected_jti)
+        fresh = self._store.check_and_record(event.jti, self._core.replay_window)
+        if inspect.isawaitable(fresh):
+            fresh = await fresh
+        if not fresh:
+            raise _replayed()
+        return event
 
     async def verify_set(self, set_token: str) -> SecurityEvent:
         """Async twin of :meth:`SsfReceiver.verify_set`.
@@ -925,7 +994,8 @@ class AsyncSsfReceiver:
         set_errs: Mapping[str, SetErr] | None = None,
     ) -> SsfPollResult:
         """Async twin of :meth:`SsfReceiver.poll`. **Nothing is acknowledged on
-        your behalf.**
+        your behalf**, and a ``jti`` is never kept that is not returned: SETs a
+        failed fetch or store left unjudged are in ``unjudged``, unrecorded.
 
         Raises:
             AuthError: locally, when no ``access_token_provider`` was configured.
@@ -973,4 +1043,6 @@ class AsyncSsfReceiver:
                 result.events.append(await self._verify(set_token, jti))
             except SetVerificationError as refusal:
                 result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
+            except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
+                return _left_unjudged(result, pairs, jti, failure)
         return result
