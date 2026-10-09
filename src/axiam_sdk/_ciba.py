@@ -55,6 +55,7 @@ from axiam_sdk._errors import (
     AuthError,
     NetworkError,
     OAuthProtocolError,
+    error_from_http_status,
     error_from_oauth2_response,
 )
 
@@ -449,6 +450,22 @@ def ciba_error(response: httpx.Response, operation: str) -> Exception:
         description_optional=True,
     )
     return typed_poll_error(error) if isinstance(error, OAuthProtocolError) else error
+
+
+def ciba_poll_error(response: httpx.Response) -> Exception:
+    """A failed ``ciba_poll``: :func:`ciba_error`, except that a ``5xx`` maps by
+    status (§2: ``NetworkError``) **whatever its body**.
+
+    AXIAM's own token endpoint answers an internal failure
+    ``500 {"error":"server_error"}``, and ``503 {"error":"temporarily_unavailable"}``
+    is the same kind of answer: on ``ciba_poll`` both are retried under §16 and
+    never end ``ciba_await`` (CONTRACT.md §33.4, §33.7 rule 5, §34.2 P8 --
+    which prevails over §33.4's "at any status" for this operation only).
+    """
+    status = response.status_code
+    if 500 <= status <= 599:
+        return error_from_http_status(status, f"ciba_poll failed with HTTP {status}", response)
+    return ciba_error(response, "ciba_poll")
 
 
 def poll_form(auth_req_id: SecretStr | str, auth: Mapping[str, str]) -> dict[str, str]:

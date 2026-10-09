@@ -31,7 +31,7 @@ from axiam_sdk._ciba import (
     CibaDelivery,
     CibaInitiateResponse,
     CibaRequestSigner,
-    ciba_error,
+    ciba_poll_error,
     initiate_form,
     initiate_members,
     initiate_response,
@@ -901,8 +901,9 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
     ) -> OidcTokenSet:
         """Async twin of :meth:`AxiamClient.ciba_poll
         <axiam_sdk.AxiamClient.ciba_poll>` (CONTRACT.md §33.1): one token
-        request, §16 within the call on transport/``5xx``/``408``/bodiless
-        ``429`` only. **Store the returned tokens before anything else.**"""
+        request, §16 within the call on transport/``5xx`` (whatever its body,
+        §34.2 P8)/``408``/bodiless ``429`` only. **Store the returned tokens
+        before anything else.**"""
         self._ensure_open()
         auth = self._ciba_client_auth("ciba_poll")
         config = configuration or await self.oidc_discover()
@@ -917,7 +918,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             except httpx.TransportError as exc:
                 raise network_error_from_transport("ciba_poll", exc) from None
             if not response.is_success:
-                error = ciba_error(response, "ciba_poll")
+                error = ciba_poll_error(response)
                 if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
                     raise error
                 return mark_terminal(error)
