@@ -128,8 +128,19 @@ def test_a_credential_in_a_response_is_dropped() -> None:
             target_body(credential=leaked, auth={"type": "mtls", "credential": leaked}),
         )
         target = client.scim_targets.get(target_id)
-    for rendering in (repr(target), str(target)):
+    # Rendered for a log line -- printed, debug-formatted and serialized -- the
+    # unknown arm renders (§34.2 P12.2: rendering it never fails) and carries
+    # no fragment of the credential.
+    renderings = [
+        repr(target),
+        str(target),
+        target.model_dump_json(),
+        json.dumps(target.model_dump(mode="json")),
+        target.auth.model_dump_json(),
+    ]
+    for rendering in renderings:
         assert_no_fragment(rendering, leaked)
+    assert json.loads(target.auth.model_dump_json())["type"] == "mtls"
     assert "credential" not in models.ScimTargetResponse.model_fields
     assert not hasattr(target, "credential")
     assert isinstance(target.auth, models.ScimTargetAuthUnknown)
@@ -225,11 +236,15 @@ def test_unknown_values_decode_and_the_pager_carries_search() -> None:
         for call in listing.calls:
             assert call.request.url.params.get("search") == "downstream"
 
-        # An unknown arm or enum value decodes, converts, and is never sent.
+        # An unknown arm or enum value decodes, converts, and is never sent --
+        # refused locally -- while the body still renders for a log line.
         put = mount_json(router, "PUT", f"{TARGETS}/{item.id}", 200, target_body())
+        body = scim_target_input(item)
         with pytest.raises(ValidationError):
-            client.scim_targets.update(item.id, scim_target_input(item))
+            client.scim_targets.update(item.id, body)
         assert put.call_count == 0
+        assert json.loads(body.model_dump_json())["auth"]["type"] == "mtls"
+        assert "mtls" in repr(body)
 
 
 # ── 5. No retry ──────────────────────────────────────────────────────────────

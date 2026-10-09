@@ -165,7 +165,8 @@ def test_an_open_union_decodes_a_known_and_an_unknown_tag() -> None:
 
 
 def test_an_unknown_union_arm_is_never_sent() -> None:
-    """§31.2: an arm this SDK cannot describe decodes but refuses to serialize."""
+    """§31.2: an arm this SDK cannot describe decodes but is never sent; §34.2
+    P12.2: it is refused locally, and rendering it for a log line never fails."""
     body = ScimTargetInput(
         name="downstream",
         base_url="https://idp.example/scim/v2",
@@ -173,11 +174,12 @@ def test_an_unknown_union_arm_is_never_sent() -> None:
         scope=ScimTargetScopeAllUsers(type="all_users"),
     )
     # `to_wire` refuses it locally, as the SDK's ValidationError, before any I/O;
-    # serialising it any other way still raises, from the arm's own serializer.
+    # rendered for a log line it renders, never raises.
     with pytest.raises(ValidationError, match="never sent"):
         body.to_wire()
-    with pytest.raises(ValueError, match="never sent"):
-        body.model_dump()
+    assert body.model_dump()["auth"] == {"type": "mtls"}
+    assert '"type":"mtls"' in body.model_dump_json()
+    assert "mtls" in repr(body)
 
 
 # ---------------------------------------------------------------------------

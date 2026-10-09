@@ -59,8 +59,8 @@ RENAMED_SCHEMAS = {
 
 #: Internally-tagged unions that are **open** by contract: an unknown tag value
 #: MUST decode without failing and MUST NOT be sent (CONTRACT §31.2). Each gets a
-#: catch-all ``<Name>Unknown`` arm (an ``OpenUnionUnknown``, which refuses to
-#: serialize) selected by ``open_discriminator`` instead of a closed
+#: catch-all ``<Name>Unknown`` arm (an ``OpenUnionUnknown``, which ``to_wire``
+#: refuses to send) selected by ``open_discriminator`` instead of a closed
 #: ``Field(discriminator=...)``. Listed by name rather than applied to every
 #: union so the closed ones (``ProviderConfig``, ``MdsRefreshOutcome``) keep
 #: their existing behaviour.
@@ -763,7 +763,8 @@ def emit_open_union(
     The listed arms were already emitted by the caller. What differs from a
     closed union is that the tag is chosen by ``open_discriminator`` -- an
     unlisted value selects ``<rname>Unknown`` rather than failing validation --
-    and that the catch-all refuses to serialize (CONTRACT §31.2).
+    and that ``to_wire`` refuses to send the catch-all (CONTRACT §31.2), which
+    still renders for a log line (§34.2 P12.2).
     """
     unknown = f"{rname}Unknown"
     out = [f"class {unknown}(OpenUnionUnknown):"]
@@ -772,7 +773,9 @@ def emit_open_union(
             f"An arm of :data:`{rname}` whose ``{tag}`` this SDK does not recognise."
             f"\n\nIt decodes, keeping every member the server sent, so a variant added "
             f"server-side does not fail the read it appears in. It is **never sent**: "
-            f"serializing it -- including inside a request body -- raises (CONTRACT §31.2).",
+            f"``to_wire`` refuses a request body that carries it, locally (CONTRACT "
+            f"§31.2). It still renders for a log line -- ``repr``, ``model_dump``, "
+            f"``model_dump_json`` (CONTRACT §34.2 P12.2).",
             "    ",
         )
     )

@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discriminator"]
 
@@ -168,10 +168,12 @@ class OpenUnionUnknown(ManagementModel):
 
     It decodes any object whose tag this SDK does not recognise, keeping every
     member the server sent (``extra="allow"``), so an arm added server-side does
-    not fail the read it appears in. It **refuses to serialize**: a value this
-    SDK cannot describe must not be sent back (CONTRACT §31.2), so
-    :meth:`ManagementModel.to_wire` -- and ``model_dump`` -- raise rather than
-    echo it into a request body.
+    not fail the read it appears in. It is **never sent**: a value this SDK
+    cannot describe must not be sent back (CONTRACT §31.2), so
+    :meth:`ManagementModel.to_wire` refuses it locally, with a
+    ``ValidationError``, before anything goes on the wire. Rendering it for a
+    log line never fails: ``repr``, ``model_dump`` and ``model_dump_json``
+    render it like any other model (CONTRACT §34.2 P12.2).
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
@@ -185,19 +187,6 @@ class OpenUnionUnknown(ManagementModel):
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if k not in _SECRET_MEMBER_NAMES}
         return data
-
-    @model_serializer(mode="plain")
-    def _refuse(self) -> dict[str, Any]:
-        """Refuse to serialize an arm this SDK does not recognise.
-
-        Raises:
-            ValueError: always (pydantic surfaces it as a
-                ``PydanticSerializationError``, itself a ``ValueError``).
-        """
-        raise ValueError(
-            f"{type(self).__name__}: refusing to serialize a union arm this SDK does "
-            f"not recognise; an unknown variant decodes but is never sent (CONTRACT §31.2)"
-        )
 
 
 def _expose(value: Any) -> Any:

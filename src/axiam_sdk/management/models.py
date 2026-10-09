@@ -4855,8 +4855,9 @@ class ScimTargetAuthUnknown(OpenUnionUnknown):
 
     It decodes, keeping every member the server sent, so a variant added
     server-side does not fail the read it appears in. It is **never sent**:
-    serializing it -- including inside a request body -- raises (CONTRACT
-    §31.2).
+    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
+    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
+    ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -5064,8 +5065,9 @@ class ScimTargetScopeUnknown(OpenUnionUnknown):
 
     It decodes, keeping every member the server sent, so a variant added
     server-side does not fail the read it appears in. It is **never sent**:
-    serializing it -- including inside a request body -- raises (CONTRACT
-    §31.2).
+    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
+    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
+    ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
