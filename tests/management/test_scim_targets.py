@@ -367,3 +367,22 @@ def test_an_assigned_none_credential_is_omitted_never_sent_as_null() -> None:
         client.scim_targets.update(target_id, body)
         for route in (post, put):
             assert "credential" not in json.loads(route.calls[0].request.content)
+
+
+# ── §31.3 rule 2 at both call sites ─────────────────────────────────────────
+
+
+def test_the_credential_url_binding_is_documented_at_both_call_sites() -> None:
+    """§31.3 rule 2: "An SDK MUST document the rule at both call sites" --
+    ``create`` and ``update``, on both handles (§34.3 R-29)."""
+    import inspect
+
+    from axiam_sdk.management.ops.scim_targets import AsyncScimTargetsApi, ScimTargetsApi
+
+    for api in (ScimTargetsApi, AsyncScimTargetsApi):
+        for name in ("create", "update"):
+            doc = " ".join((inspect.getdoc(getattr(api, name)) or "").split())
+            where = f"{api.__name__}.{name}"
+            assert "The credential is bound to its URL" in doc, where
+            for named in ("``base_url``", "``auth.token_url``", "``auth.type``", "§31.3 rule 2"):
+                assert named in doc, f"{where} does not name {named}"

@@ -196,7 +196,12 @@ class ScimTargetsApi:
         """``POST /api/v1/scim-targets``
 
         ``credential`` is required here (§31.3 rule 2). It is write-only: no
-        response ever carries it, and the SDK keeps no copy.
+        response ever carries it, and the SDK keeps no copy. **The
+        credential is bound to its URL** (§31.3 rule 2): a later ``update``
+        that changes ``base_url`` of a bearer target, ``auth.token_url`` or
+        ``base_url`` of a client-credentials target, or ``auth.type``, must
+        carry ``credential`` again or is refused ``400`` -- so keep the
+        credential where you can supply it; the SDK holds none to re-send.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
@@ -320,7 +325,12 @@ class AsyncScimTargetsApi:
         """``POST /api/v1/scim-targets``
 
         ``credential`` is required here (§31.3 rule 2). It is write-only: no
-        response ever carries it, and the SDK keeps no copy.
+        response ever carries it, and the SDK keeps no copy. **The
+        credential is bound to its URL** (§31.3 rule 2): a later ``update``
+        that changes ``base_url`` of a bearer target, ``auth.token_url`` or
+        ``base_url`` of a client-credentials target, or ``auth.type``, must
+        carry ``credential`` again or is refused ``400`` -- so keep the
+        credential where you can supply it; the SDK holds none to re-send.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
