@@ -2023,6 +2023,7 @@ top-level entry of the same name wherever the document publishes one:
 | `revoke` | `revocation_endpoint` |
 | `device_authorize` | `device_authorization_endpoint` |
 | `oidc_par` | `pushed_authorization_request_endpoint` |
+| `ciba_initiate` | `backchannel_authentication_endpoint` (contract 1.58) |
 
 Three things this deliberately does **not** do:
 
@@ -2033,9 +2034,9 @@ Three things this deliberately does **not** do:
   correctly publishes nothing. The same holds one level in: every field of
   `MtlsEndpointAliases` is optional, and an endpoint the object does not name
   falls back rather than failing the document.
-- **No alias is ever synthesised.** Only the six endpoints RFC 8705 §5 lists
-  can be aliased — never `authorization_endpoint`, `end_session_endpoint` or
-  `jwks_uri`. The first two are front-channel and the third is public key
+- **No alias is ever synthesised.** Only the seven endpoints
+  `MtlsEndpointAliases` models (CONTRACT.md §21.3.1) can be aliased — never
+  `authorization_endpoint`, `end_session_endpoint` or `jwks_uri`. The first two are front-channel and the third is public key
   material; sending a browser to an mTLS host raises a native
   certificate-chooser dialog most users cannot answer.
 - **`issuer` does not move.** It is an identifier, not an endpoint. §12.4

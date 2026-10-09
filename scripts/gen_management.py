@@ -1252,10 +1252,12 @@ def operation_doc(op: dict[str, Any], canonical: str = "") -> str:
         text += "\n\n" + CALL_SITE_NOTES[canonical]
     if op["update_style"] == "replace":
         text += (
-            "\n\n**This is a replacement, not a patch** (§27.4 rule 5). Every field of the "
-            "body is required, and what you do not carry over from a prior read is not "
-            "preserved -- it is overwritten. Read first, change the field you mean, send "
-            "the whole thing back."
+            "\n\n**This is a replacement, not a patch** (§27.4 rule 5). The body's type "
+            "says which members are required; an optional member you leave out is not kept "
+            "-- the server applies its default -- so what you do not carry over from a "
+            "prior read is not preserved, it is overwritten (a write-only secret is the "
+            "exception: absent keeps it). Read first, change the field you mean, send the "
+            "whole thing back."
         )
     if op["sensitive_response_fields"]:
         joined = ", ".join(f"``{f}``" for f in op["sensitive_response_fields"])

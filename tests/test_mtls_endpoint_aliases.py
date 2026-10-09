@@ -302,6 +302,18 @@ def test_the_alias_model_carries_only_the_seven_aliasable_endpoints() -> None:
     }
 
 
+def test_the_readme_counts_the_aliases_the_model_has() -> None:
+    """The README's alias count follows the model, not RFC 8705's older list
+    (§21.3.1's seven keys; §34.3 R-28), and its table names CIBA's alias."""
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert len(MtlsEndpointAliases.model_fields) == 7
+    assert "Only the six endpoints" not in readme
+    assert "Only the seven endpoints" in readme
+    assert "| `ciba_initiate` | `backchannel_authentication_endpoint`" in readme
+
+
 # ── Consequence 3: issuer is never aliased ─────────────────────────────────
 
 
