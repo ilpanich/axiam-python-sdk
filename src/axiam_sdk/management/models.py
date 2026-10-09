@@ -4956,6 +4956,10 @@ class ScimTargetInput(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     deprovision: DeprovisionPolicy | None = None
@@ -5426,6 +5430,10 @@ class SetDirectoryConfig(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     enabled: bool
@@ -5975,6 +5983,10 @@ class SsfStreamInput(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     clear_authorization_header: bool | None = None
@@ -6421,6 +6433,10 @@ class UpdateDirectoryConfig(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     enabled: bool | None = None

@@ -333,3 +333,21 @@ async def test_the_async_handle_sends_the_same_sparse_body() -> None:
         route = mount_json(router, "PATCH", DIRECTORY, 200, config_body())
         await client.directory.update(models.UpdateDirectoryConfig(group_base_dn=None))
         assert sent(route) == {"group_base_dn": None}
+
+
+# ── §34.2 P12.3: a write-only secret is present or absent, never null ───────
+
+
+def test_an_assigned_none_secret_is_omitted_never_sent_as_null() -> None:
+    """``bind_secret=None`` on either request type is "keep", not a third state:
+    the member is absent from the wire, while a nullable non-secret member set
+    to ``None`` still goes as ``null`` (§30.2, §34.2 P12.3)."""
+    with with_client() as (router, client):
+        put = mount_json(router, "PUT", DIRECTORY, 200, config_body())
+        patch = mount_json(router, "PATCH", DIRECTORY, 200, config_body())
+        body = set_body()
+        body.bind_secret = None
+        client.directory.set(body)
+        client.directory.update(models.UpdateDirectoryConfig(bind_secret=None, group_filter=None))
+        assert "bind_secret" not in sent(put), "null is not a third state"
+        assert sent(patch) == {"group_filter": None}

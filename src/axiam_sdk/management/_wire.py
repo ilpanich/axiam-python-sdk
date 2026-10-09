@@ -43,6 +43,14 @@ __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discrimin
 #: dropping it would make "remove every entry" inexpressible.
 _OMIT_WHEN_EMPTY = frozenset({"tenant_scope"})
 
+#: The write-only secrets of §30 – §32 (``SetDirectoryConfig`` /
+#: ``UpdateDirectoryConfig.bind_secret``, ``ScimTargetInput.credential``,
+#: ``SsfStreamInput.authorization_header``). Each is **present or absent, never
+#: ``null``** (CONTRACT §34.2 P12.3): sent to replace the stored value, omitted
+#: to keep it. An explicitly assigned ``None`` therefore means "keep" and is
+#: dropped by :meth:`ManagementModel.to_wire` rather than sent as a third state.
+_NEVER_NULL_SECRETS = frozenset({"bind_secret", "credential", "authorization_header"})
+
 
 class ManagementModel(BaseModel):
     """Base of every generated §27 request and response model."""
@@ -72,9 +80,11 @@ class ManagementModel(BaseModel):
         Unset fields are omitted entirely (§27.4 rule 5) and secrets are
         unwrapped (§27.5). A field explicitly set to ``None`` *is* sent as
         ``null`` — that is the caller saying so, which is a different statement
-        from leaving it out.
+        from leaving it out — except a write-only secret, which is present or
+        absent and never ``null``: ``None`` there is omitted, and keeps the
+        stored value (see :data:`_NEVER_NULL_SECRETS`).
 
-        The one exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
+        The other exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
 
         Raises:
             ValidationError: locally, before anything is sent, when an open-enum
@@ -86,6 +96,9 @@ class ManagementModel(BaseModel):
         assert isinstance(exposed, dict)
         for field in _OMIT_WHEN_EMPTY:
             if field in exposed and exposed[field] == []:
+                del exposed[field]
+        for field in _NEVER_NULL_SECRETS:
+            if field in exposed and exposed[field] is None:
                 del exposed[field]
         return exposed
 

@@ -66,6 +66,11 @@ RENAMED_SCHEMAS = {
 #: their existing behaviour.
 OPEN_UNIONS = {"ScimTargetAuth", "ScimTargetScope"}
 
+#: The write-only secrets of §30 – §32 that are present or absent, never
+#: ``null`` (CONTRACT §34.2 P12.3) -- the same names as ``_NEVER_NULL_SECRETS``
+#: in ``axiam_sdk.management._wire``, which drops an assigned ``None``.
+NEVER_NULL_SECRETS = {"bind_secret", "credential", "authorization_header"}
+
 #: Members where an explicit ``null`` is a different statement from an absent
 #: member (§27.4 rule 5, "null is not absent"). §30.2 names two on
 #: ``UpdateDirectoryConfig``: ``null`` clears the value, absence keeps it. §29.8
@@ -666,6 +671,12 @@ def field_lines(
         text += (
             "\n\n**Secret.** Redacted from every string, log and JSON rendering; "
             "call ``.get_secret_value()`` to read it."
+        )
+    if secret and name in NEVER_NULL_SECRETS:
+        text += (
+            "\n\n**Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to "
+            "replace the stored value, leave it unset to keep it. Setting it to ``None`` "
+            "is the same as leaving it unset -- ``to_wire`` omits it."
         )
     if explicit_null:
         text += (

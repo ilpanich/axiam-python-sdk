@@ -278,3 +278,21 @@ def test_a_read_converts_into_the_replacement_body_without_the_header() -> None:
     assert wire["events_requested"] == [SESSION_REVOKED]
     assert wire["description"] == "the RP"
     assert wire["status"] == "enabled"
+
+
+# ── §34.2 P12.3: a write-only secret is present or absent, never null ───────
+
+
+def test_an_assigned_none_push_header_is_omitted_never_sent_as_null() -> None:
+    """``authorization_header=None`` keeps the stored header: no key on the
+    wire, on ``create_stream`` or ``update_stream`` (§32.2, §34.2 P12.3)."""
+    stream_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        post = mount_json(router, "POST", STREAMS, 201, stream_body())
+        put = mount_json(router, "PUT", f"{STREAMS}/{stream_id}", 200, stream_body())
+        body = stream_input()
+        body.authorization_header = None
+        client.ssf.create_stream(body)
+        client.ssf.update_stream(stream_id, body)
+        for route in (post, put):
+            assert "authorization_header" not in json.loads(route.calls[0].request.content)

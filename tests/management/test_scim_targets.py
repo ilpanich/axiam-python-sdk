@@ -349,3 +349,21 @@ def test_a_read_converts_into_the_replacement_body_without_a_credential() -> Non
     assert "credential" not in wire
     assert wire["auth"] == {"type": "bearer"}
     assert wire["scope"] == {"type": "all_users"}
+
+
+# ── §34.2 P12.3: a write-only secret is present or absent, never null ───────
+
+
+def test_an_assigned_none_credential_is_omitted_never_sent_as_null() -> None:
+    """``credential=None`` keeps the stored credential: no key on the wire, on
+    ``create`` or ``update`` (§31.3 rule 2, §34.2 P12.3)."""
+    target_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        post = mount_json(router, "POST", TARGETS, 201, target_body())
+        put = mount_json(router, "PUT", f"{TARGETS}/{target_id}", 200, target_body())
+        body = target_input()
+        body.credential = None
+        client.scim_targets.create(body)
+        client.scim_targets.update(target_id, body)
+        for route in (post, put):
+            assert "credential" not in json.loads(route.calls[0].request.content)

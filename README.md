@@ -50,7 +50,7 @@ names. Nothing in these sections is carved out.
 |---|---|
 | §28.12 RFC 7592 client configuration | `read_client_registration`, `update_client_registration`, `delete_client_registration`; `ClientRegistration` — see [RFC 7592 client configuration](#rfc-7592-client-configuration-2812) |
 | §29 SAML service providers | `client.saml` — eleven generated operations with the call-site notes, `ParseSamlSpMetadata.from_url` / `.from_xml`, `management.saml_service_provider_input` |
-| §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null`; `management.set_directory_config` |
+| §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null` for `group_base_dn` / `group_filter`, while a `None` secret is omitted (kept), never `null`; `management.set_directory_config` |
 | §31 outbound SCIM targets | `client.scim_targets` — six generated operations; `credential` a `SecretStr`; `management.scim_target_input` |
 | §32 SSF streams | `client.ssf` — five generated operations; `authorization_header` a `SecretStr`; `management.ssf_stream_input` |
 | §32.7 SSF receiver helper | `axiam_sdk.ssf.SsfReceiver` / `AsyncSsfReceiver` — `verify_set`, `poll` — see [SSF receiver](#ssf-receiver-327) |
