@@ -31,7 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 ManagementMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 """The HTTP verbs this surface uses.
 
-``PATCH`` arrived with ``directory.update`` (contract 1.58), the registry's first
+``PATCH`` arrived with ``directory.update`` (contract 1.54), the registry's first
 sparse update issued as a ``PATCH`` rather than a ``PUT``. Like every other
 write it is never retried (§27.4 rule 8).
 """

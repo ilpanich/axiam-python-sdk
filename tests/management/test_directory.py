@@ -351,3 +351,15 @@ def test_an_assigned_none_secret_is_omitted_never_sent_as_null() -> None:
         client.directory.update(models.UpdateDirectoryConfig(bind_secret=None, group_filter=None))
         assert "bind_secret" not in sent(put), "null is not a third state"
         assert sent(patch) == {"group_filter": None}
+
+
+def test_the_patch_verb_is_dated_to_section_30s_contract() -> None:
+    """``directory.update``'s ``PATCH`` arrived with §30, contract 1.54 -- the
+    ``ManagementMethod`` documentation must not date it later (§34.3 R-41)."""
+    from axiam_sdk.management import _request
+
+    source = inspect.getsource(_request)
+    start = source.index("ManagementMethod = ")
+    doc = " ".join(source[start : source.index('"""', source.index('"""', start) + 3)].split())
+    assert "``directory.update`` (contract 1.54)" in doc
+    assert "1.58" not in doc
