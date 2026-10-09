@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract **1.59** (CONTRACT.md §34, the cross-SDK review of the Phase 23 ports: its
+clarifications P1 – P12 of §32.7, §33.4, §33.7 and §28.12 – §33, and this SDK's follow-up
+F-59-03, ilpanich/axiam#578). `CONTRACT.md` is re-vendored byte for byte from axiam
+`fe369eb`; `openapi.json`, `management-registry.json` and `proto/` are unchanged. No wire
+shape changes.
+
+### Fixed
+
+- **`SsfReceiver.poll` / `AsyncSsfReceiver.poll` no longer lose events** (§34.3 R-1,
+  §34.2 P1, P3). A failure that is no verdict on a SET -- a JWKS or discovery fetch that
+  fails, a replay store that cannot answer -- on a later SET of a batch aborted the poll
+  after the earlier SETs had been recorded; offered again, they read as `replayed`. `poll`
+  now takes **P1's second form**: it returns what it judged, stops at the failure, and
+  lists that SET and every one after it in the new `SsfPollResult.unjudged` (cause in
+  `unjudged_error`), unrecorded, for the transmitter to offer again. A poll whose first
+  SET hits the failure therefore returns it in `unjudged` rather than raising.
+- **A `5xx` on `ciba_poll` is transient whatever its body** (§34.3 R-11, §34.2 P8). The
+  server's own `500 {"error":"server_error"}` was an `OAuthProtocolError` that was neither
+  retried under §16 nor survived by `ciba_await`; it is now a `NetworkError` retried within
+  the call and waited out by the loop.
+- **A decoded unknown union arm renders for a log line** (§34.3 R-21, §34.2 P12.2):
+  `model_dump` / `model_dump_json` of a `ScimTargetResponse` with an unknown `auth` or
+  `scope` arm no longer raise. `to_wire()` still refuses to send it, locally.
+- **A `None` write-only secret is omitted, never sent as `null`** (§34.3 R-25, §34.2
+  P12.3): `bind_secret`, `credential` and `authorization_header` set to `None` now mean
+  "keep", like leaving them unset.
+- **Documentation** (§34.3 R-28, R-29, R-41): the generated replacement docstrings no
+  longer say every field of the body is required (the type decides); `scim_targets.create`
+  states §31.3 rule 2's URL binding, as `update` does; the README counts the seven
+  `mtls_endpoint_aliases` and lists `ciba_initiate`'s; `ManagementMethod` dates `PATCH` to
+  contract 1.54; `poll` and the README say a `replayed` SET is acknowledged, not reported
+  (§34.2 P2).
+
+### Added
+
+- `axiam_sdk.ssf.AsyncReplayStore`: `AsyncSsfReceiver` also takes a replay store whose
+  `check_and_record` is a coroutine, and awaits it (§34.3 R-41). `ReplayStore` documents
+  that a store that cannot answer raises (fails closed, §34.2 P4), and `MemoryReplayStore`
+  that it is bounded in time, not in count.
+
+### Tests
+
+- §32.8 helper test 8 gains the two-SET batch whose second SET's key refetch fails (sync and
+  async), plus a store-failure batch; §33.8 test 8's `500` carries
+  `{"error":"server_error"}` and the async twin's `503` `{"error":"temporarily_unavailable"}`.
+
+Choices where §34.2 offers one: **P1** -- the second form (return what was judged, list the
+unjudged `jti`s); **P4** -- this SDK's store interface can report failure (it raises), so
+the fail-closed rule is met in code and documented on `ReplayStore`; **P10** -- the deadline
+stays anchored at `CibaInitiateResponse.received_at`, the instant the initiate response was
+received, read from `time.monotonic()` -- the default clock's timebase (no change; §34.3
+R-14 requires none).
+
 Contract **1.58** (CONTRACT.md §28.12, §29, §30, §31, §32, §32.7, §33, §21.3.1). The vendored
 `CONTRACT.md`, `openapi.json` and `management-registry.json` come from axiam `21a9c22`;
 `proto/` was already identical.

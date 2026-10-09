@@ -23,7 +23,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.58**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33,
 with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
@@ -36,6 +36,12 @@ SDK already claimed §1–§13: widening the range silently would turn a stateme
 was true when written into a different claim without anyone editing it. The §21.3.1
 amendment of contract 1.58 (the seventh `mtls_endpoint_aliases` member,
 `backchannel_authentication_endpoint`) is decoded and honoured on an mTLS CIBA call.
+Contract 1.59 adds no section: its §34 clarifications (P1 – P12) bind §28.12 – §33's
+behaviour, and this SDK's follow-up (F-59-03) implements the ones its review named —
+`poll` returns what it judged and lists the SETs a
+failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
+transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
+a `None` write-only secret is omitted, never sent as `null` (P12.3).
 
 §28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
 guard built without `resource_metadata_url` is byte-for-byte what it was before §28
@@ -50,7 +56,7 @@ names. Nothing in these sections is carved out.
 |---|---|
 | §28.12 RFC 7592 client configuration | `read_client_registration`, `update_client_registration`, `delete_client_registration`; `ClientRegistration` — see [RFC 7592 client configuration](#rfc-7592-client-configuration-2812) |
 | §29 SAML service providers | `client.saml` — eleven generated operations with the call-site notes, `ParseSamlSpMetadata.from_url` / `.from_xml`, `management.saml_service_provider_input` |
-| §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null`; `management.set_directory_config` |
+| §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null` for `group_base_dn` / `group_filter`, while a `None` secret is omitted (kept), never `null`; `management.set_directory_config` |
 | §31 outbound SCIM targets | `client.scim_targets` — six generated operations; `credential` a `SecretStr`; `management.scim_target_input` |
 | §32 SSF streams | `client.ssf` — five generated operations; `authorization_header` a `SecretStr`; `management.ssf_stream_input` |
 | §32.7 SSF receiver helper | `axiam_sdk.ssf.SsfReceiver` / `AsyncSsfReceiver` — `verify_set`, `poll` — see [SSF receiver](#ssf-receiver-327) |
@@ -2023,6 +2029,7 @@ top-level entry of the same name wherever the document publishes one:
 | `revoke` | `revocation_endpoint` |
 | `device_authorize` | `device_authorization_endpoint` |
 | `oidc_par` | `pushed_authorization_request_endpoint` |
+| `ciba_initiate` | `backchannel_authentication_endpoint` (contract 1.58) |
 
 Three things this deliberately does **not** do:
 
@@ -2033,9 +2040,9 @@ Three things this deliberately does **not** do:
   correctly publishes nothing. The same holds one level in: every field of
   `MtlsEndpointAliases` is optional, and an endpoint the object does not name
   falls back rather than failing the document.
-- **No alias is ever synthesised.** Only the six endpoints RFC 8705 §5 lists
-  can be aliased — never `authorization_endpoint`, `end_session_endpoint` or
-  `jwks_uri`. The first two are front-channel and the third is public key
+- **No alias is ever synthesised.** Only the seven endpoints
+  `MtlsEndpointAliases` models (CONTRACT.md §21.3.1) can be aliased — never
+  `authorization_endpoint`, `end_session_endpoint` or `jwks_uri`. The first two are front-channel and the third is public key
   material; sending a browser to an mTLS host raises a native
   certificate-chooser dialog most users cannot answer.
 - **`issuer` does not move.** It is an identifier, not an endpoint. §12.4
@@ -2317,7 +2324,13 @@ For the relying party that *receives* AXIAM's CAEP and RISC events
 (`AsyncSsfReceiver` is the same over `AsyncAxiamClient`):
 
 ```python
-from axiam_sdk.ssf import SESSION_REVOKED, SetErr, SetVerificationError, SsfReceiver
+from axiam_sdk.ssf import (
+    SESSION_REVOKED,
+    SetErr,
+    SetFailureReason,
+    SetVerificationError,
+    SsfReceiver,
+)
 
 receiver = SsfReceiver(
     client,
@@ -2337,21 +2350,33 @@ else:
         end_sessions(event.sub_id)
     answer(202)
 
-# Poll: acknowledge what you processed on the next call; refuse the rest by setErrs.
+# Poll: acknowledge what you processed on the next call; refuse the rest by setErrs,
+# except a `replayed` one -- accepted earlier, so acknowledge it.
 result = receiver.poll(stream_id, return_immediately=True)
 processed = [handle(e) or e.jti for e in result.events]
+replayed = [r.jti for r in result.refused if r.reason is SetFailureReason.REPLAYED]
 receiver.poll(
     stream_id,
-    ack=processed,
-    set_errs={r.jti: SetErr.from_reason(r.reason) for r in result.refused},
-)
+    ack=processed + replayed,
+    set_errs={
+        r.jti: SetErr.from_reason(r.reason)
+        for r in result.refused
+        if r.reason is not SetFailureReason.REPLAYED
+    },
+)  # result.unjudged: neither acknowledged nor refused -- offered again
 ```
 
 The verification order, the reason codes (`SetVerificationError.set_failure_reason`,
 also `.reason` on the `AuthError`) and the seven-day replay window are the
 contract's; a window below seven days is refused at construction. A verified SET is
 recorded, so one re-offered unacknowledged reads as `replayed`: acknowledge what you
-processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET.
+processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET; a
+replay store that cannot answer raises too, never accepts. `poll` never keeps a `jti`
+it does not return: a failed fetch or store stops verification, and that SET and the
+ones after it come back in `result.unjudged` (cause in `result.unjudged_error`),
+unrecorded, for the transmitter to offer again. The default `MemoryReplayStore` is one
+process's, bounded in time (the window) but not in count; `AsyncSsfReceiver` also
+takes an `AsyncReplayStore`, whose `check_and_record` is a coroutine.
 
 ## CIBA (§33)
 

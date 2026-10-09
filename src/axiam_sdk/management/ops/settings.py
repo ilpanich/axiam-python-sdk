@@ -200,10 +200,12 @@ class SettingsApi:
     def set_org(self, body: models.SetOrgSettings) -> models.SecuritySettings:
         """``PUT /api/v1/organizations/{org_id}/settings``
 
-        **This is a replacement, not a patch** (§27.4 rule 5). Every field
-        of the body is required, and what you do not carry over from a prior
-        read is not preserved -- it is overwritten. Read first, change the
-        field you mean, send the whole thing back.
+        **This is a replacement, not a patch** (§27.4 rule 5). The body's
+        type says which members are required; an optional member you leave
+        out is not kept -- the server applies its default -- so what you do
+        not carry over from a prior read is not preserved, it is overwritten
+        (a write-only secret is the exception: absent keeps it). Read first,
+        change the field you mean, send the whole thing back.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
@@ -311,10 +313,12 @@ class AsyncSettingsApi:
     async def set_org(self, body: models.SetOrgSettings) -> models.SecuritySettings:
         """``PUT /api/v1/organizations/{org_id}/settings``
 
-        **This is a replacement, not a patch** (§27.4 rule 5). Every field
-        of the body is required, and what you do not carry over from a prior
-        read is not preserved -- it is overwritten. Read first, change the
-        field you mean, send the whole thing back.
+        **This is a replacement, not a patch** (§27.4 rule 5). The body's
+        type says which members are required; an optional member you leave
+        out is not kept -- the server applies its default -- so what you do
+        not carry over from a prior read is not preserved, it is overwritten
+        (a write-only secret is the exception: absent keeps it). Read first,
+        change the field you mean, send the whole thing back.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.

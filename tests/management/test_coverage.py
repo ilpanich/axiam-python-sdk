@@ -9,14 +9,19 @@ objects, the scoped async handles, and every ``update`` branch of the reconciler
 from __future__ import annotations
 
 import datetime
+import importlib
+import inspect
 import json
+import pkgutil
 import uuid
 from enum import Enum
 
 import httpx
+import pydantic
 import pytest
 import respx
 
+from axiam_sdk.management import models, ops
 from axiam_sdk.management._errors import ValidationError, parse_field_errors
 from axiam_sdk.management._page import Page, PageRequest, page_of, page_query
 from axiam_sdk.management._wire import _expose
@@ -165,7 +170,8 @@ def test_an_open_union_decodes_a_known_and_an_unknown_tag() -> None:
 
 
 def test_an_unknown_union_arm_is_never_sent() -> None:
-    """§31.2: an arm this SDK cannot describe decodes but refuses to serialize."""
+    """§31.2: an arm this SDK cannot describe decodes but is never sent; §34.2
+    P12.2: it is refused locally, and rendering it for a log line never fails."""
     body = ScimTargetInput(
         name="downstream",
         base_url="https://idp.example/scim/v2",
@@ -173,11 +179,12 @@ def test_an_unknown_union_arm_is_never_sent() -> None:
         scope=ScimTargetScopeAllUsers(type="all_users"),
     )
     # `to_wire` refuses it locally, as the SDK's ValidationError, before any I/O;
-    # serialising it any other way still raises, from the arm's own serializer.
+    # rendered for a log line it renders, never raises.
     with pytest.raises(ValidationError, match="never sent"):
         body.to_wire()
-    with pytest.raises(ValueError, match="never sent"):
-        body.model_dump()
+    assert body.model_dump()["auth"] == {"type": "mtls"}
+    assert '"type":"mtls"' in body.model_dump_json()
+    assert "mtls" in repr(body)
 
 
 # ---------------------------------------------------------------------------
@@ -519,3 +526,43 @@ async def test_every_drifted_kind_is_updated_on_the_async_path() -> None:
         assert report.is_complete()
         assert report.changed_count() == 5
         assert all(route.call_count == 1 for route in routes.values())
+
+
+# ---------------------------------------------------------------------------
+# Generated documentation agrees with the types (§27.4 rule 5, §34.3 R-28)
+# ---------------------------------------------------------------------------
+
+
+def _replacement_operations() -> list[tuple[str, str, type[pydantic.BaseModel]]]:
+    """``(qualified name, normalised docstring, body model)`` of every generated
+    operation documented as a replacement, on both handles."""
+    found: list[tuple[str, str, type[pydantic.BaseModel]]] = []
+    for module_info in pkgutil.iter_modules(ops.__path__):
+        module = importlib.import_module(f"{ops.__name__}.{module_info.name}")
+        for cls_name, cls in inspect.getmembers(module, inspect.isclass):
+            if cls.__module__ != module.__name__:
+                continue
+            for name, method in inspect.getmembers(cls, inspect.isfunction):
+                doc = " ".join((inspect.getdoc(method) or "").split())
+                if "replacement, not a patch" not in doc:
+                    continue
+                annotation = inspect.signature(method).parameters["body"].annotation
+                model = getattr(models, str(annotation).rsplit(".", 1)[-1])
+                found.append((f"{cls_name}.{name}", doc, model))
+    return found
+
+
+def test_replacement_docs_do_not_call_optional_members_required() -> None:
+    """A replacement whose body has optional members must not say "every field
+    of the body is required" (F-P6, §27.4 rule 5): the type is the authority."""
+    operations = _replacement_operations()
+    assert len(operations) >= 2 * 8, "the replace operations of §27 and §29 – §32, both handles"
+    with_optional = 0
+    for qualified, doc, model in operations:
+        if all(f.is_required() for f in model.model_fields.values()):
+            continue
+        with_optional += 1
+        assert "every field of the body is required" not in doc.lower(), (
+            f"{qualified}: {model.__name__} has optional members"
+        )
+    assert with_optional >= 2 * 4, "§29 – §32's replacements carry optional members"

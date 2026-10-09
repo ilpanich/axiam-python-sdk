@@ -503,14 +503,15 @@ def test_t07_no_request_after_expires_in_and_expired_token_is_raised_locally(
 
 
 def test_t08_a_500_and_a_429_mid_loop_are_survived(router: respx.MockRouter) -> None:
-    """``pending``, ``500`` (retried within the poll), ``429``, then tokens."""
+    """``pending``, ``500 {"error":"server_error"}`` (retried within the poll --
+    a ``5xx`` is transient whatever its body, §34.2 P8), ``429``, then tokens."""
     client = make_client(secret=random())
     clock = TestClock()
     seen = script(
         router,
         [
             oauth_error(400, "authorization_pending"),
-            httpx.Response(500),
+            httpx.Response(500, json={"error": "server_error"}),
             oauth_error(429, "rate_limit_exceeded"),
             tokens_with_id_token(client),
         ],
@@ -909,7 +910,7 @@ async def test_the_async_client_initiates_polls_and_awaits_alike(router: respx.M
         router,
         [
             oauth_error(400, "slow_down"),
-            httpx.Response(503),
+            httpx.Response(503, json={"error": "temporarily_unavailable"}),
             oauth_error(429, "rate_limit_exceeded"),
             tokens_with_id_token(client),
         ],

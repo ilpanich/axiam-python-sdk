@@ -6,6 +6,7 @@ here: no key literal, no captured token. Failure messages print fixed text.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import secrets
@@ -371,17 +372,117 @@ def test_poll_is_not_retried_on_400_and_is_on_503(router: respx.MockRouter) -> N
         r.poll("s-3")
 
 
-def test_a_jwks_failure_aborts_the_poll_and_is_not_a_verdict(router: respx.MockRouter) -> None:
-    """A JWKS fetch failure is a ``NetworkError``, never a refusal."""
+class RecordingStore:
+    """A replay store whose held ``jti`` values the test reads, and which can be
+    told to fail -- a store that cannot answer -- on one ``jti``."""
+
+    def __init__(self, fail_on: str | None = None) -> None:
+        """Empty; ``fail_on`` names the ``jti`` it cannot answer for."""
+        self.held: set[str] = set()
+        self.fail_on = fail_on
+
+    def check_and_record(self, jti: str, window_seconds: float) -> bool:
+        """Record a new ``jti``; raise for ``fail_on``."""
+        if jti == self.fail_on:
+            raise RuntimeError("the replay store cannot answer")
+        if jti in self.held:
+            return False
+        self.held.add(jti)
+        return True
+
+
+def test_poll_never_keeps_a_jti_it_does_not_return_when_a_later_key_fetch_fails(
+    router: respx.MockRouter,
+) -> None:
+    """§32.8 helper test 8's two-SET batch (contract 1.59, §34.2 P1): the second
+    SET names an unknown ``kid`` while the refetch fails. The first SET's ``jti``
+    is not in the store, or the first SET is returned -- here, returned; the
+    second is unjudged: neither returned nor refused, and not recorded."""
+    key, rotated = Key(), Key()
+    jwks = router.get(JWKS).mock(
+        side_effect=[
+            httpx.Response(200, json={"keys": [key.jwk()]}),
+            httpx.Response(500),
+            httpx.Response(200, json={"keys": [key.jwk(), rotated.jwk()]}),
+        ]
+    )
+    store = RecordingStore()
+    now = [1000.0]
+    r = receiver(replay_store=store, clock=lambda: now[0])
+    first, second = claims(), claims()
+    poll = router.post(f"{BASE}/ssf/v1/poll/s").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "sets": {
+                    first["jti"]: key.sign_set(first),
+                    second["jti"]: rotated.sign_set(second),
+                }
+            },
+        )
+    )
+    result = r.poll("s")
+    assert jwks.call_count == 2, "the fill, then the failed refetch"
+    returned = [e.jti for e in result.events]
+    assert first["jti"] not in store.held or returned == [first["jti"]], (
+        "a jti recorded but not returned is an event lost"
+    )
+    assert returned == [first["jti"]], "this SDK returns what it judged (P1, second form)"
+    assert result.refused == [], "a failed key fetch is no verdict (P3)"
+    assert result.unjudged == [second["jti"]]
+    assert second["jti"] not in store.held
+    assert isinstance(result.unjudged_error, NetworkError)
+    assert not isinstance(result.unjudged_error, SetVerificationError)
+
+    # Re-offered once the JWKS answers again, the second SET verifies: nothing lost.
+    now[0] += 61
+    poll.mock(
+        return_value=httpx.Response(200, json={"sets": {second["jti"]: rotated.sign_set(second)}})
+    )
+    again = r.poll("s", ack=[first["jti"]])
+    assert [e.jti for e in again.events] == [second["jti"]]
+    assert again.unjudged == [] and again.unjudged_error is None
+
+
+def test_poll_leaves_the_rest_of_a_batch_unjudged_when_the_store_cannot_answer(
+    router: respx.MockRouter,
+) -> None:
+    """A store that cannot answer is no verdict either (P3, P4): the SETs before
+    it are returned, it and the ones after it are unjudged and unrecorded."""
+    key = Key()
+    serve_jwks(router, key)
+    first, second, third = claims(), claims(), claims()
+    store = RecordingStore(fail_on=second["jti"])
+    router.post(f"{BASE}/ssf/v1/poll/s").mock(
+        return_value=httpx.Response(
+            200,
+            json={"sets": {c["jti"]: key.sign_set(c) for c in (first, second, third)}},
+        )
+    )
+    result = receiver(replay_store=store).poll("s")
+    assert [e.jti for e in result.events] == [first["jti"]]
+    assert result.refused == []
+    assert result.unjudged == [second["jti"], third["jti"]]
+    assert store.held == {first["jti"]}, "every recorded jti is a returned one"
+    assert isinstance(result.unjudged_error, RuntimeError)
+
+
+def test_a_jwks_failure_leaves_the_poll_unjudged_and_is_not_a_verdict(
+    router: respx.MockRouter,
+) -> None:
+    """A JWKS fetch failure is a ``NetworkError``, never a refusal: ``poll``
+    leaves the SET unjudged and unrecorded (§34.2 P1, P3)."""
     key = Key()
     router.get(JWKS).mock(return_value=httpx.Response(500))
     router.post(f"{BASE}/ssf/v1/poll/s").mock(
         return_value=httpx.Response(200, json={"sets": {"j": key.sign_set(claims(jti="j"))}})
     )
-    r = receiver()
-    with pytest.raises(NetworkError) as excinfo:
-        r.poll("s")
-    assert not isinstance(excinfo.value, SetVerificationError)
+    store = RecordingStore()
+    result = receiver(replay_store=store).poll("s")
+    assert result.events == [] and result.refused == [] and result.unjudged == ["j"]
+    assert isinstance(result.unjudged_error, NetworkError)
+    assert not isinstance(result.unjudged_error, SetVerificationError)
+    assert store.held == set()
     for body in ("not json", json.dumps({"no": "keys"})):
         router.routes.clear()
         router.get(JWKS).mock(return_value=httpx.Response(200, text=body))
@@ -585,4 +686,80 @@ async def test_the_async_receiver_verifies_polls_and_refuses_alike(
         await AsyncSsfReceiver(client, issuer=ISSUER, audience=AUDIENCE, jwks_uri=JWKS).verify_set(
             key.sign_set(claims())
         )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_async_poll_never_keeps_a_jti_it_does_not_return(
+    router: respx.MockRouter,
+) -> None:
+    """§32.8 helper test 8's two-SET batch over ``AsyncSsfReceiver`` (P1)."""
+    key = Key()
+    router.get(JWKS).mock(
+        side_effect=[httpx.Response(200, json={"keys": [key.jwk()]}), httpx.Response(503)]
+    )
+    store = RecordingStore()
+    first, second = claims(), claims()
+    router.post(f"{BASE}/ssf/v1/poll/s").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "sets": {first["jti"]: key.sign_set(first), second["jti"]: Key().sign_set(second)}
+            },
+        )
+    )
+    client = AsyncAxiamClient(base_url=BASE, tenant_slug="acme")
+    r = AsyncSsfReceiver(
+        client,
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        jwks_uri=JWKS,
+        access_token_provider=lambda: f"cc-{secrets.token_urlsafe(16)}",
+        replay_store=store,
+    )
+    result = await r.poll("s")
+    assert first["jti"] not in store.held or [e.jti for e in result.events] == [first["jti"]]
+    assert [e.jti for e in result.events] == [first["jti"]]
+    assert result.refused == [] and result.unjudged == [second["jti"]]
+    assert second["jti"] not in store.held
+    assert isinstance(result.unjudged_error, NetworkError)
+    await client.aclose()
+
+
+class AsyncRecordingStore:
+    """An asynchronous replay store, as a shared store over an async driver is."""
+
+    def __init__(self) -> None:
+        """Empty."""
+        self.held: set[str] = set()
+        self.calls = 0
+
+    async def check_and_record(self, jti: str, window_seconds: float) -> bool:
+        """Record a new ``jti`` after yielding to the loop."""
+        self.calls += 1
+        await asyncio.sleep(0)
+        if jti in self.held:
+            return False
+        self.held.add(jti)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_the_async_receiver_awaits_an_async_replay_store(router: respx.MockRouter) -> None:
+    """``AsyncSsfReceiver`` takes a store whose ``check_and_record`` is a
+    coroutine, awaits it, and refuses the second sighting as ``replayed``."""
+    key = Key()
+    serve_jwks(router, key)
+    store = AsyncRecordingStore()
+    client = AsyncAxiamClient(base_url=BASE, tenant_slug="acme")
+    r = AsyncSsfReceiver(
+        client, issuer=ISSUER, audience=AUDIENCE, jwks_uri=JWKS, replay_store=store
+    )
+    set_token = key.sign_set(claims())
+    event = await r.verify_set(set_token)
+    assert store.held == {event.jti} and store.calls == 1
+    with pytest.raises(SetVerificationError) as replayed:
+        await r.verify_set(set_token)
+    assert replayed.value.set_failure_reason is SetFailureReason.REPLAYED
+    assert store.calls == 2
     await client.aclose()

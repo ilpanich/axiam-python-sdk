@@ -59,12 +59,17 @@ RENAMED_SCHEMAS = {
 
 #: Internally-tagged unions that are **open** by contract: an unknown tag value
 #: MUST decode without failing and MUST NOT be sent (CONTRACT §31.2). Each gets a
-#: catch-all ``<Name>Unknown`` arm (an ``OpenUnionUnknown``, which refuses to
-#: serialize) selected by ``open_discriminator`` instead of a closed
+#: catch-all ``<Name>Unknown`` arm (an ``OpenUnionUnknown``, which ``to_wire``
+#: refuses to send) selected by ``open_discriminator`` instead of a closed
 #: ``Field(discriminator=...)``. Listed by name rather than applied to every
 #: union so the closed ones (``ProviderConfig``, ``MdsRefreshOutcome``) keep
 #: their existing behaviour.
 OPEN_UNIONS = {"ScimTargetAuth", "ScimTargetScope"}
+
+#: The write-only secrets of §30 – §32 that are present or absent, never
+#: ``null`` (CONTRACT §34.2 P12.3) -- the same names as ``_NEVER_NULL_SECRETS``
+#: in ``axiam_sdk.management._wire``, which drops an assigned ``None``.
+NEVER_NULL_SECRETS = {"bind_secret", "credential", "authorization_header"}
 
 #: Members where an explicit ``null`` is a different statement from an absent
 #: member (§27.4 rule 5, "null is not absent"). §30.2 names two on
@@ -178,7 +183,11 @@ CALL_SITE_NOTES: dict[str, str] = {
     ),
     "scim_targets.create": (
         "``credential`` is required here (§31.3 rule 2). It is write-only: no response "
-        "ever carries it, and the SDK keeps no copy."
+        "ever carries it, and the SDK keeps no copy. **The credential is bound to its "
+        "URL** (§31.3 rule 2): a later ``update`` that changes ``base_url`` of a bearer "
+        "target, ``auth.token_url`` or ``base_url`` of a client-credentials target, or "
+        "``auth.type``, must carry ``credential`` again or is refused ``400`` -- so keep "
+        "the credential where you can supply it; the SDK holds none to re-send."
     ),
     "scim_targets.update": (
         "**The credential is bound to its URL** (§31.3 rule 2): absent ``credential`` "
@@ -667,6 +676,12 @@ def field_lines(
             "\n\n**Secret.** Redacted from every string, log and JSON rendering; "
             "call ``.get_secret_value()`` to read it."
         )
+    if secret and name in NEVER_NULL_SECRETS:
+        text += (
+            "\n\n**Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to "
+            "replace the stored value, leave it unset to keep it. Setting it to ``None`` "
+            "is the same as leaving it unset -- ``to_wire`` omits it."
+        )
     if explicit_null:
         text += (
             "\n\n**``null`` is not absent** (§27.4 rule 5). In a request, leaving this "
@@ -763,7 +778,8 @@ def emit_open_union(
     The listed arms were already emitted by the caller. What differs from a
     closed union is that the tag is chosen by ``open_discriminator`` -- an
     unlisted value selects ``<rname>Unknown`` rather than failing validation --
-    and that the catch-all refuses to serialize (CONTRACT §31.2).
+    and that ``to_wire`` refuses to send the catch-all (CONTRACT §31.2), which
+    still renders for a log line (§34.2 P12.2).
     """
     unknown = f"{rname}Unknown"
     out = [f"class {unknown}(OpenUnionUnknown):"]
@@ -772,7 +788,9 @@ def emit_open_union(
             f"An arm of :data:`{rname}` whose ``{tag}`` this SDK does not recognise."
             f"\n\nIt decodes, keeping every member the server sent, so a variant added "
             f"server-side does not fail the read it appears in. It is **never sent**: "
-            f"serializing it -- including inside a request body -- raises (CONTRACT §31.2).",
+            f"``to_wire`` refuses a request body that carries it, locally (CONTRACT "
+            f"§31.2). It still renders for a log line -- ``repr``, ``model_dump``, "
+            f"``model_dump_json`` (CONTRACT §34.2 P12.2).",
             "    ",
         )
     )
@@ -1238,10 +1256,12 @@ def operation_doc(op: dict[str, Any], canonical: str = "") -> str:
         text += "\n\n" + CALL_SITE_NOTES[canonical]
     if op["update_style"] == "replace":
         text += (
-            "\n\n**This is a replacement, not a patch** (§27.4 rule 5). Every field of the "
-            "body is required, and what you do not carry over from a prior read is not "
-            "preserved -- it is overwritten. Read first, change the field you mean, send "
-            "the whole thing back."
+            "\n\n**This is a replacement, not a patch** (§27.4 rule 5). The body's type "
+            "says which members are required; an optional member you leave out is not kept "
+            "-- the server applies its default -- so what you do not carry over from a "
+            "prior read is not preserved, it is overwritten (a write-only secret is the "
+            "exception: absent keeps it). Read first, change the field you mean, send the "
+            "whole thing back."
         )
     if op["sensitive_response_fields"]:
         joined = ", ".join(f"``{f}``" for f in op["sensitive_response_fields"])

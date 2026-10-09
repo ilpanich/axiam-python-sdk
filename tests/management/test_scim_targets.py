@@ -128,8 +128,19 @@ def test_a_credential_in_a_response_is_dropped() -> None:
             target_body(credential=leaked, auth={"type": "mtls", "credential": leaked}),
         )
         target = client.scim_targets.get(target_id)
-    for rendering in (repr(target), str(target)):
+    # Rendered for a log line -- printed, debug-formatted and serialized -- the
+    # unknown arm renders (§34.2 P12.2: rendering it never fails) and carries
+    # no fragment of the credential.
+    renderings = [
+        repr(target),
+        str(target),
+        target.model_dump_json(),
+        json.dumps(target.model_dump(mode="json")),
+        target.auth.model_dump_json(),
+    ]
+    for rendering in renderings:
         assert_no_fragment(rendering, leaked)
+    assert json.loads(target.auth.model_dump_json())["type"] == "mtls"
     assert "credential" not in models.ScimTargetResponse.model_fields
     assert not hasattr(target, "credential")
     assert isinstance(target.auth, models.ScimTargetAuthUnknown)
@@ -225,11 +236,15 @@ def test_unknown_values_decode_and_the_pager_carries_search() -> None:
         for call in listing.calls:
             assert call.request.url.params.get("search") == "downstream"
 
-        # An unknown arm or enum value decodes, converts, and is never sent.
+        # An unknown arm or enum value decodes, converts, and is never sent --
+        # refused locally -- while the body still renders for a log line.
         put = mount_json(router, "PUT", f"{TARGETS}/{item.id}", 200, target_body())
+        body = scim_target_input(item)
         with pytest.raises(ValidationError):
-            client.scim_targets.update(item.id, scim_target_input(item))
+            client.scim_targets.update(item.id, body)
         assert put.call_count == 0
+        assert json.loads(body.model_dump_json())["auth"]["type"] == "mtls"
+        assert "mtls" in repr(body)
 
 
 # ── 5. No retry ──────────────────────────────────────────────────────────────
@@ -334,3 +349,40 @@ def test_a_read_converts_into_the_replacement_body_without_a_credential() -> Non
     assert "credential" not in wire
     assert wire["auth"] == {"type": "bearer"}
     assert wire["scope"] == {"type": "all_users"}
+
+
+# ── §34.2 P12.3: a write-only secret is present or absent, never null ───────
+
+
+def test_an_assigned_none_credential_is_omitted_never_sent_as_null() -> None:
+    """``credential=None`` keeps the stored credential: no key on the wire, on
+    ``create`` or ``update`` (§31.3 rule 2, §34.2 P12.3)."""
+    target_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        post = mount_json(router, "POST", TARGETS, 201, target_body())
+        put = mount_json(router, "PUT", f"{TARGETS}/{target_id}", 200, target_body())
+        body = target_input()
+        body.credential = None
+        client.scim_targets.create(body)
+        client.scim_targets.update(target_id, body)
+        for route in (post, put):
+            assert "credential" not in json.loads(route.calls[0].request.content)
+
+
+# ── §31.3 rule 2 at both call sites ─────────────────────────────────────────
+
+
+def test_the_credential_url_binding_is_documented_at_both_call_sites() -> None:
+    """§31.3 rule 2: "An SDK MUST document the rule at both call sites" --
+    ``create`` and ``update``, on both handles (§34.3 R-29)."""
+    import inspect
+
+    from axiam_sdk.management.ops.scim_targets import AsyncScimTargetsApi, ScimTargetsApi
+
+    for api in (ScimTargetsApi, AsyncScimTargetsApi):
+        for name in ("create", "update"):
+            doc = " ".join((inspect.getdoc(getattr(api, name)) or "").split())
+            where = f"{api.__name__}.{name}"
+            assert "The credential is bound to its URL" in doc, where
+            for named in ("``base_url``", "``auth.token_url``", "``auth.type``", "§31.3 rule 2"):
+                assert named in doc, f"{where} does not name {named}"

@@ -34,7 +34,7 @@ from axiam_sdk._ciba import (
     CibaInitiateResponse,
     CibaRequestSigner,
     SystemCibaClock,
-    ciba_error,
+    ciba_poll_error,
     initiate_form,
     initiate_members,
     initiate_response,
@@ -2114,8 +2114,10 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         (:class:`CibaExpiredTokenError`) -- two distinct terminal outcomes --
         and ``invalid_grant``. None is retried.
 
-        Retried per §16 within the call on a transport failure, a ``5xx``, a
-        ``408`` or a bodiless ``429``; never on another ``4xx``. A ``200``'s
+        Retried per §16 within the call on a transport failure, a ``5xx`` --
+        whatever its body, ``500 {"error":"server_error"}`` included (§34.2
+        P8) -- a ``408`` or a bodiless ``429``; never on another ``4xx``. A
+        ``5xx`` that outlives §16 is a :class:`~axiam_sdk.NetworkError`. A ``200``'s
         ID token is validated as for every other grant (no nonce). **Store the
         returned tokens before anything else**: a request is redeemed once, and
         a second ``ciba_poll`` for it is ``invalid_grant`` (§33.7 rule 7).
@@ -2137,7 +2139,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             except httpx.TransportError as exc:
                 raise network_error_from_transport("ciba_poll", exc) from None
             if not response.is_success:
-                error = ciba_error(response, "ciba_poll")
+                error = ciba_poll_error(response)
                 if isinstance(error, NetworkError) and status_is_retryable(response.status_code):
                     raise error
                 return mark_terminal(error)
@@ -2170,9 +2172,9 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
           ``slow_down`` and a longer wait.
         * ``slow_down`` adds 5 s to the interval, cumulatively and
           permanently; ``authorization_pending`` never lowers it.
-        * A transport failure, ``5xx`` or ``429`` (``rate_limit_exceeded``)
-          that outlived §16 is not terminal: the loop waits the interval and
-          polls again.
+        * A transport failure, ``5xx`` (with or without an ``error`` member)
+          or ``429`` (``rate_limit_exceeded``) that outlived §16 is not
+          terminal: the loop waits the interval and polls again.
         * Polling stops at ``received_at + expires_in`` even if the server has
           not said ``expired_token``; :class:`CibaExpiredTokenError` is then
           raised locally, with no further request.

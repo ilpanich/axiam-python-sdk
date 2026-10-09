@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discriminator"]
 
@@ -42,6 +42,14 @@ __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discrimin
 #: others ``[]`` is meaningful (a replacement body clearing a list), and
 #: dropping it would make "remove every entry" inexpressible.
 _OMIT_WHEN_EMPTY = frozenset({"tenant_scope"})
+
+#: The write-only secrets of §30 – §32 (``SetDirectoryConfig`` /
+#: ``UpdateDirectoryConfig.bind_secret``, ``ScimTargetInput.credential``,
+#: ``SsfStreamInput.authorization_header``). Each is **present or absent, never
+#: ``null``** (CONTRACT §34.2 P12.3): sent to replace the stored value, omitted
+#: to keep it. An explicitly assigned ``None`` therefore means "keep" and is
+#: dropped by :meth:`ManagementModel.to_wire` rather than sent as a third state.
+_NEVER_NULL_SECRETS = frozenset({"bind_secret", "credential", "authorization_header"})
 
 
 class ManagementModel(BaseModel):
@@ -72,9 +80,11 @@ class ManagementModel(BaseModel):
         Unset fields are omitted entirely (§27.4 rule 5) and secrets are
         unwrapped (§27.5). A field explicitly set to ``None`` *is* sent as
         ``null`` — that is the caller saying so, which is a different statement
-        from leaving it out.
+        from leaving it out — except a write-only secret, which is present or
+        absent and never ``null``: ``None`` there is omitted, and keeps the
+        stored value (see :data:`_NEVER_NULL_SECRETS`).
 
-        The one exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
+        The other exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
 
         Raises:
             ValidationError: locally, before anything is sent, when an open-enum
@@ -86,6 +96,9 @@ class ManagementModel(BaseModel):
         assert isinstance(exposed, dict)
         for field in _OMIT_WHEN_EMPTY:
             if field in exposed and exposed[field] == []:
+                del exposed[field]
+        for field in _NEVER_NULL_SECRETS:
+            if field in exposed and exposed[field] is None:
                 del exposed[field]
         return exposed
 
@@ -168,10 +181,12 @@ class OpenUnionUnknown(ManagementModel):
 
     It decodes any object whose tag this SDK does not recognise, keeping every
     member the server sent (``extra="allow"``), so an arm added server-side does
-    not fail the read it appears in. It **refuses to serialize**: a value this
-    SDK cannot describe must not be sent back (CONTRACT §31.2), so
-    :meth:`ManagementModel.to_wire` -- and ``model_dump`` -- raise rather than
-    echo it into a request body.
+    not fail the read it appears in. It is **never sent**: a value this SDK
+    cannot describe must not be sent back (CONTRACT §31.2), so
+    :meth:`ManagementModel.to_wire` refuses it locally, with a
+    ``ValidationError``, before anything goes on the wire. Rendering it for a
+    log line never fails: ``repr``, ``model_dump`` and ``model_dump_json``
+    render it like any other model (CONTRACT §34.2 P12.2).
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
@@ -185,19 +200,6 @@ class OpenUnionUnknown(ManagementModel):
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if k not in _SECRET_MEMBER_NAMES}
         return data
-
-    @model_serializer(mode="plain")
-    def _refuse(self) -> dict[str, Any]:
-        """Refuse to serialize an arm this SDK does not recognise.
-
-        Raises:
-            ValueError: always (pydantic surfaces it as a
-                ``PydanticSerializationError``, itself a ``ValueError``).
-        """
-        raise ValueError(
-            f"{type(self).__name__}: refusing to serialize a union arm this SDK does "
-            f"not recognise; an unknown variant decodes but is never sent (CONTRACT §31.2)"
-        )
 
 
 def _expose(value: Any) -> Any:

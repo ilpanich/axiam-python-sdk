@@ -4855,8 +4855,9 @@ class ScimTargetAuthUnknown(OpenUnionUnknown):
 
     It decodes, keeping every member the server sent, so a variant added
     server-side does not fail the read it appears in. It is **never sent**:
-    serializing it -- including inside a request body -- raises (CONTRACT
-    §31.2).
+    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
+    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
+    ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -4955,6 +4956,10 @@ class ScimTargetInput(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     deprovision: DeprovisionPolicy | None = None
@@ -5064,8 +5069,9 @@ class ScimTargetScopeUnknown(OpenUnionUnknown):
 
     It decodes, keeping every member the server sent, so a variant added
     server-side does not fail the read it appears in. It is **never sent**:
-    serializing it -- including inside a request body -- raises (CONTRACT
-    §31.2).
+    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
+    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
+    ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -5424,6 +5430,10 @@ class SetDirectoryConfig(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     enabled: bool
@@ -5973,6 +5983,10 @@ class SsfStreamInput(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     clear_authorization_header: bool | None = None
@@ -6419,6 +6433,10 @@ class UpdateDirectoryConfig(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+
+    **Present or absent, never ``null``** (CONTRACT §34.2 P12.3): set it to
+    replace the stored value, leave it unset to keep it. Setting it to
+    ``None`` is the same as leaving it unset -- ``to_wire`` omits it.
     """
 
     enabled: bool | None = None
