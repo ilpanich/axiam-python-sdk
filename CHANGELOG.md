@@ -16,7 +16,7 @@ major version. It ships two clients with the same surface, `AxiamClient` (sync) 
 the reactor). It conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15,
 §17, §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and
 §34, with §32.7 and §33.2 signed. `CONTRACT.md`, `openapi.json` and
-`management-registry.json` are vendored byte for byte from axiam `3ed6547`; `proto/` is
+`management-registry.json` are vendored byte for byte from axiam `8df0e11`; `proto/` is
 unchanged. The changes below are those since `v1.0.0-beta17`.
 
 ### Breaking changes
