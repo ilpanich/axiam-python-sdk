@@ -18,7 +18,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -256,10 +256,14 @@ class ReplayStore(Protocol):
     (§32.7). :class:`MemoryReplayStore` is the default. :class:`AsyncSsfReceiver`
     also takes an :class:`AsyncReplayStore`.
 
-    **Fail closed** (§34.2 P4): a store that cannot answer -- its backend is
-    down, a call timed out -- MUST raise, never return ``True``. The receiver
-    treats the exception as no verdict on the SET: ``verify_set`` raises it,
-    ``poll`` leaves that SET unjudged and unrecorded.
+    **A store has three answers** (§34.2 P4, contract 1.60): ``True`` (new,
+    recorded), ``False`` (already held) and *cannot answer*, which it gives by
+    **raising** -- its backend is down, a call timed out. It MUST NOT answer
+    ``False`` for that: the receiver would read it as ``replayed``, which
+    ``poll``'s caller acknowledges, and an event that was never processed would
+    be lost. The receiver treats the exception as no verdict on the SET:
+    ``verify_set`` raises it, ``poll`` leaves that SET unjudged and unrecorded,
+    never accepted and never refused.
     """
 
     def check_and_record(self, jti: str, window_seconds: float) -> bool:
@@ -481,6 +485,27 @@ class _ReceiverCore:
         return (
             self.last_forced is None
             or self.clock() - self.last_forced >= _FORCED_REFETCH_MIN_INTERVAL_SECONDS
+        )
+
+    def note_failed_fetch(self) -> None:
+        """Count a fetch that failed toward the once-a-minute limit.
+
+        §34.2 P6 (contract 1.60): the limit counts every refetch and every
+        **failed** fetch, a failed cold-cache fill included, so that a JWKS
+        outage is not one fetch per SET. A fill that succeeds is not counted.
+        """
+        self.last_forced = self.clock()
+
+    def refuse_fetch_within_the_minute(self) -> NoReturn:
+        """Refuse an unprompted fetch while a counted one is under a minute old.
+
+        Raises:
+            NetworkError: always -- no verdict on the SET (§34.2 P3): it makes
+                no fetch and is left unjudged for the transmitter to offer again.
+        """
+        raise NetworkError(
+            "ssf: the JWKS could not be fetched and the limit of one fetch a minute "
+            "has not elapsed; no fetch was made"
         )
 
     def store_jwks(self, response: httpx.Response, *, forced: bool) -> None:
@@ -749,18 +774,24 @@ class SsfReceiver:
     def _fetch_jwks(self, *, forced: bool) -> None:
         """(Re)load the JWKS, resolving the discovery document first if needed."""
         core = self._core
-        if core.jwks_uri is None:
-            assert core.discovery_url is not None
-            core.jwks_uri = core.discovered_jwks_uri(
-                self._get(_check_url("discovery_url", core.discovery_url))
-            )
-        core.store_jwks(self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        try:
+            if core.jwks_uri is None:
+                assert core.discovery_url is not None
+                core.jwks_uri = core.discovered_jwks_uri(
+                    self._get(_check_url("discovery_url", core.discovery_url))
+                )
+            core.store_jwks(self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        except NetworkError:
+            core.note_failed_fetch()  # a failed fetch counts, cold fill included (P6)
+            raise
 
     def _key_for(self, kid: str) -> jwt.PyJWK | None:
         """The key for ``kid``: cached, or after one forced refetch at most."""
         with self._lock:
             core = self._core
             if core.needs_fetch():
+                if not core.may_force():
+                    core.refuse_fetch_within_the_minute()
                 self._fetch_jwks(forced=False)
             assert core.keys is not None
             if kid not in core.keys and core.may_force():
@@ -943,12 +974,16 @@ class AsyncSsfReceiver:
     async def _fetch_jwks(self, *, forced: bool) -> None:
         """(Re)load the JWKS, resolving the discovery document first if needed."""
         core = self._core
-        if core.jwks_uri is None:
-            assert core.discovery_url is not None
-            core.jwks_uri = core.discovered_jwks_uri(
-                await self._get(_check_url("discovery_url", core.discovery_url))
-            )
-        core.store_jwks(await self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        try:
+            if core.jwks_uri is None:
+                assert core.discovery_url is not None
+                core.jwks_uri = core.discovered_jwks_uri(
+                    await self._get(_check_url("discovery_url", core.discovery_url))
+                )
+            core.store_jwks(await self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        except NetworkError:
+            core.note_failed_fetch()  # a failed fetch counts, cold fill included (P6)
+            raise
 
     async def _key_for(self, kid: str) -> jwt.PyJWK | None:
         """The key for ``kid``: cached, or after one forced refetch at most."""
@@ -957,6 +992,8 @@ class AsyncSsfReceiver:
         async with self._lock:
             core = self._core
             if core.needs_fetch():
+                if not core.may_force():
+                    core.refuse_fetch_within_the_minute()
                 await self._fetch_jwks(forced=False)
             assert core.keys is not None
             if kid not in core.keys and core.may_force():

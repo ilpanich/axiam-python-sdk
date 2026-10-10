@@ -292,6 +292,55 @@ def test_an_unknown_kid_costs_one_refetch_and_a_second_one_none(router: respx.Mo
     assert jwks.call_count == 4, "past its lifespan the JWKS is fetched again"
 
 
+def test_a_failed_cold_cache_fill_counts_toward_the_once_a_minute_limit(
+    router: respx.MockRouter,
+) -> None:
+    """§32.8 helper test 7, contract 1.60 (§34.2 P6, row A3): a fill that fails
+    counts, so the next SET within the minute makes no fetch and is left
+    unjudged -- a no-verdict ``NetworkError``, never a refusal -- and a minute
+    later one fetch is made again."""
+    key = Key()
+    jwks = router.get(JWKS).mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.Response(200, json={"keys": [key.jwk()]}),
+        ]
+    )
+    now = [1000.0]
+    r = receiver(clock=lambda: now[0])
+    for _ in range(3):
+        with pytest.raises(NetworkError) as failed:
+            r.verify_set(key.sign_set(claims()))
+        assert not isinstance(failed.value, SetVerificationError)
+    assert jwks.call_count == 1, "the failed fill is the only fetch within the minute"
+    now[0] += 61
+    r.verify_set(key.sign_set(claims()))
+    assert jwks.call_count == 2, "a minute later, the fill is tried again"
+
+
+def test_a_failed_fill_that_never_reached_the_wire_counts_too(router: respx.MockRouter) -> None:
+    """A transport failure and an unparseable body are failed fills as well."""
+    key = Key()
+    jwks = router.get(JWKS).mock(side_effect=httpx.ConnectError("refused"))
+    r = receiver()
+    for _ in range(2):
+        with pytest.raises(NetworkError):
+            r.verify_set(key.sign_set(claims()))
+    assert jwks.call_count == 1
+
+
+def test_a_successful_fill_is_not_a_refetch(router: respx.MockRouter) -> None:
+    """The other half of P6 (§32.8 test 7): an unknown ``kid`` right after a
+    fill that succeeded is refetched once."""
+    key = Key()
+    jwks = serve_jwks(router, key)
+    r = receiver()
+    assert reason(r, Key().sign_set(claims())) is SetFailureReason.INVALID_KEY
+    assert jwks.call_count == 2, "the fill, then the one refetch"
+    assert reason(r, Key().sign_set(claims())) is SetFailureReason.INVALID_KEY
+    assert jwks.call_count == 2
+
+
 # ── 8 ──
 
 
@@ -492,6 +541,28 @@ def test_a_jwks_failure_leaves_the_poll_unjudged_and_is_not_a_verdict(
     router.get(JWKS).mock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(NetworkError):
         receiver().verify_set(key.sign_set(claims()))
+
+
+def test_a_store_that_cannot_answer_is_no_verdict_for_verify_set(
+    router: respx.MockRouter,
+) -> None:
+    """§32.8 helper test 6, contract 1.60 (§34.2 P4, row B1 *verify*): a store
+    that raises is never read as ``replayed``. ``verify_set`` raises the store's
+    own failure -- no ``SetVerificationError``, no reason code -- the ``jti`` is
+    not recorded, and the same SET verifies once the store answers again."""
+    key = Key()
+    serve_jwks(router, key)
+    set_claims = claims()
+    set_token = key.sign_set(set_claims)
+    store = RecordingStore(fail_on=set_claims["jti"])
+    r = receiver(replay_store=store)
+    with pytest.raises(RuntimeError) as failed:
+        r.verify_set(set_token)
+    assert not isinstance(failed.value, SetVerificationError | AuthError)
+    assert store.held == set()
+    store.fail_on = None
+    assert r.verify_set(set_token).jti == set_claims["jti"], "never accepted, never refused"
+    assert reason(r, set_token) is SetFailureReason.REPLAYED
 
 
 def test_discovery_supplies_the_jwks_uri_and_must_name_the_issuer(
@@ -762,4 +833,87 @@ async def test_the_async_receiver_awaits_an_async_replay_store(router: respx.Moc
         await r.verify_set(set_token)
     assert replayed.value.set_failure_reason is SetFailureReason.REPLAYED
     assert store.calls == 2
+    await client.aclose()
+
+
+class FailingAsyncStore:
+    """An asynchronous store that cannot answer for one ``jti``."""
+
+    def __init__(self, fail_on: str) -> None:
+        """Name the ``jti`` it cannot answer for."""
+        self.held: set[str] = set()
+        self.fail_on: str | None = fail_on
+
+    async def check_and_record(self, jti: str, window_seconds: float) -> bool:
+        """Record a new ``jti``; raise for ``fail_on``."""
+        await asyncio.sleep(0)
+        if jti == self.fail_on:
+            raise RuntimeError("the replay store cannot answer")
+        if jti in self.held:
+            return False
+        self.held.add(jti)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_the_async_store_that_cannot_answer_is_no_verdict(router: respx.MockRouter) -> None:
+    """§32.8 helper test 6, store-failure case, under ``AsyncSsfReceiver``:
+    ``verify_set`` raises the store's failure (never ``replayed``) and ``poll``
+    returns the SET in neither ``events`` nor ``refused``, unrecorded."""
+    key = Key()
+    serve_jwks(router, key)
+    first, second = claims(), claims()
+    store = FailingAsyncStore(fail_on=second["jti"])
+    client = AsyncAxiamClient(base_url=BASE, tenant_slug="acme")
+    r = AsyncSsfReceiver(
+        client, issuer=ISSUER, audience=AUDIENCE, jwks_uri=JWKS, replay_store=store
+    )
+    with pytest.raises(RuntimeError) as failed:
+        await r.verify_set(key.sign_set(second))
+    assert not isinstance(failed.value, SetVerificationError | AuthError)
+    assert store.held == set()
+
+    token = f"cc-{secrets.token_urlsafe(8)}"
+    r2 = AsyncSsfReceiver(
+        client,
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        jwks_uri=JWKS,
+        replay_store=store,
+        access_token_provider=lambda: SecretStr(token),
+    )
+    router.post(f"{BASE}/ssf/v1/poll/s").mock(
+        return_value=httpx.Response(
+            200, json={"sets": {c["jti"]: key.sign_set(c) for c in (first, second)}}
+        )
+    )
+    result = await r2.poll("s")
+    assert [e.jti for e in result.events] == [first["jti"]]
+    assert result.refused == []
+    assert result.unjudged == [second["jti"]]
+    assert store.held == {first["jti"]}
+    assert isinstance(result.unjudged_error, RuntimeError)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_async_failed_cold_cache_fill_counts(router: respx.MockRouter) -> None:
+    """Row A3 under ``AsyncSsfReceiver``: a failed fill counts toward the limit."""
+    key = Key()
+    jwks = router.get(JWKS).mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, json={"keys": [key.jwk()]})]
+    )
+    now = [1000.0]
+    client = AsyncAxiamClient(base_url=BASE, tenant_slug="acme")
+    r = AsyncSsfReceiver(
+        client, issuer=ISSUER, audience=AUDIENCE, jwks_uri=JWKS, clock=lambda: now[0]
+    )
+    for _ in range(2):
+        with pytest.raises(NetworkError) as failed:
+            await r.verify_set(key.sign_set(claims()))
+        assert not isinstance(failed.value, SetVerificationError)
+    assert jwks.call_count == 1
+    now[0] += 61
+    await r.verify_set(key.sign_set(claims()))
+    assert jwks.call_count == 2
     await client.aclose()
