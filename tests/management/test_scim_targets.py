@@ -144,7 +144,9 @@ def test_a_credential_in_a_response_is_dropped() -> None:
     assert "credential" not in models.ScimTargetResponse.model_fields
     assert not hasattr(target, "credential")
     assert isinstance(target.auth, models.ScimTargetAuthUnknown)
-    assert "credential" not in (target.auth.model_extra or {})
+    # §34.2 P12.1: the unknown arm keeps its discriminator and nothing else.
+    assert not target.auth.model_extra
+    assert target.auth.model_dump() == {"type": "mtls"}
     with pytest.raises(pydantic.ValidationError):
         models.ScimTargetAuthUnknown.model_validate("not an object")
 

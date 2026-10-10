@@ -165,8 +165,32 @@ def test_an_open_union_decodes_a_known_and_an_unknown_tag() -> None:
     novel = ScimTargetAuthAdapter.validate_python({"type": "mtls", "cert_ref": "x"})
     assert isinstance(novel, ScimTargetAuthUnknown)
     assert novel.type == "mtls"
+    assert not novel.model_extra
+    assert novel.model_dump() == {"type": "mtls"}
     scope = ScimTargetScopeAdapter.validate_python({"type": "by_attribute"})
     assert isinstance(scope, ScimTargetScopeUnknown)
+
+
+def test_an_unknown_union_arm_keeps_its_discriminator_and_nothing_else() -> None:
+    """§34.2 P12.1 / R-20 (contract 1.60 A5): an unknown arm keeps the tag and no
+    other member -- not every member but a denylist -- so a member the server
+    sent that this SDK never declared (a secret under any name, a nested object)
+    is not retained, rendered or serialized."""
+    wire = {
+        "type": "mtls",
+        "cert_ref": "x",
+        "client_secret": "hunter2-not-on-the-denylist",
+        "nested": {"token": "hunter2-nested"},
+    }
+    for adapter in (ScimTargetAuthAdapter, ScimTargetScopeAdapter):
+        arm = adapter.validate_python(wire)
+        assert arm.type == "mtls"
+        assert not arm.model_extra
+        assert arm.model_dump() == {"type": "mtls"}
+        assert arm.model_dump_json() == '{"type":"mtls"}'
+        assert "hunter2" not in repr(arm)
+        assert not hasattr(arm, "client_secret")
+        assert not hasattr(arm, "cert_ref")
 
 
 def test_an_unknown_union_arm_is_never_sent() -> None:

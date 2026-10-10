@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 __all__ = ["UNKNOWN_ARM", "ManagementModel", "OpenUnionUnknown", "open_discriminator"]
 
@@ -129,15 +129,6 @@ def open_discriminator(tag: str, known: Iterable[str]) -> Callable[[Any], str]:
     return pick
 
 
-#: Member names that carry a secret somewhere on this surface. The catch-all arm
-#: of an open union keeps every member it is given (``extra="allow"``), so it
-#: drops these instead: a response must never surface one (§29.5, §30.2, §31.2,
-#: §32.5), and an unknown arm is rendered in full by ``repr``.
-_SECRET_MEMBER_NAMES = frozenset(
-    {"bind_secret", "credential", "authorization_header", "private_key_pem"}
-)
-
-
 def _refuse_unknown_enums(value: Any) -> None:
     """Walk a request body and refuse any open-enum value -- or open-union arm --
     this SDK does not know.
@@ -179,27 +170,20 @@ def _refuse_unknown_enums(value: Any) -> None:
 class OpenUnionUnknown(ManagementModel):
     """Base of the catch-all arm of an open tagged union.
 
-    It decodes any object whose tag this SDK does not recognise, keeping every
-    member the server sent (``extra="allow"``), so an arm added server-side does
-    not fail the read it appears in. It is **never sent**: a value this SDK
-    cannot describe must not be sent back (CONTRACT §31.2), so
+    It decodes any object whose tag this SDK does not recognise, so an arm added
+    server-side does not fail the read it appears in. It keeps the discriminator
+    and **nothing else**: only declared members are kept from a response, in a
+    known arm and in an unknown one (CONTRACT §34.2 P12.1, §29.5), so a member the
+    server sent beyond the tag -- a secret it should not have, say -- never
+    survives to be logged. It is **never sent**: a value this SDK cannot
+    describe must not be sent back (CONTRACT §31.2), so
     :meth:`ManagementModel.to_wire` refuses it locally, with a
     ``ValidationError``, before anything goes on the wire. Rendering it for a
     log line never fails: ``repr``, ``model_dump`` and ``model_dump_json``
     render it like any other model (CONTRACT §34.2 P12.2).
     """
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_secrets(cls, data: Any) -> Any:
-        """Drop every member named in :data:`_SECRET_MEMBER_NAMES` before the
-        arm keeps the rest: an unknown arm must not become a place a secret
-        the server (wrongly) sent survives to be logged."""
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in _SECRET_MEMBER_NAMES}
-        return data
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
 def _expose(value: Any) -> Any:

@@ -4853,11 +4853,11 @@ class ScimTargetAuthUnknown(OpenUnionUnknown):
     """An arm of :data:`ScimTargetAuth` whose ``type`` this SDK does not
     recognise.
 
-    It decodes, keeping every member the server sent, so a variant added
-    server-side does not fail the read it appears in. It is **never sent**:
-    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
-    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
-    ``model_dump_json`` (CONTRACT §34.2 P12.2).
+    It decodes, keeping the ``type`` and no other member (CONTRACT §34.2
+    P12.1), so a variant added server-side does not fail the read it appears
+    in. It is **never sent**: ``to_wire`` refuses a request body that
+    carries it, locally (CONTRACT §31.2). It still renders for a log line --
+    ``repr``, ``model_dump``, ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -5067,11 +5067,11 @@ class ScimTargetScopeUnknown(OpenUnionUnknown):
     """An arm of :data:`ScimTargetScope` whose ``type`` this SDK does not
     recognise.
 
-    It decodes, keeping every member the server sent, so a variant added
-    server-side does not fail the read it appears in. It is **never sent**:
-    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
-    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
-    ``model_dump_json`` (CONTRACT §34.2 P12.2).
+    It decodes, keeping the ``type`` and no other member (CONTRACT §34.2
+    P12.1), so a variant added server-side does not fail the read it appears
+    in. It is **never sent**: ``to_wire`` refuses a request body that
+    carries it, locally (CONTRACT §31.2). It still renders for a log line --
+    ``repr``, ``model_dump``, ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str

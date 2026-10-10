@@ -786,8 +786,9 @@ def emit_open_union(
     out.extend(
         docstring(
             f"An arm of :data:`{rname}` whose ``{tag}`` this SDK does not recognise."
-            f"\n\nIt decodes, keeping every member the server sent, so a variant added "
-            f"server-side does not fail the read it appears in. It is **never sent**: "
+            f"\n\nIt decodes, keeping the ``{tag}`` and no other member (CONTRACT §34.2 "
+            f"P12.1), so a variant added server-side does not fail the read it appears in. "
+            f"It is **never sent**: "
             f"``to_wire`` refuses a request body that carries it, locally (CONTRACT "
             f"§31.2). It still renders for a log line -- ``repr``, ``model_dump``, "
             f"``model_dump_json`` (CONTRACT §34.2 P12.2).",
