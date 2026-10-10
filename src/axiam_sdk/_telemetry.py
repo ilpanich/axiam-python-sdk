@@ -29,6 +29,8 @@ __all__ = [
     "Retry",
     "Refresh",
     "ConfigClamped",
+    "SsfUnjudged",
+    "UnjudgedCategory",
     "TelemetryEvent",
     "TelemetryHook",
     "TelemetryDispatcher",
@@ -39,6 +41,10 @@ Outcome = Literal["success", "failure"]
 
 #: Whether this caller performed a §9 refresh or waited on another's.
 RefreshRole = Literal["leader", "follower"]
+
+#: The failure that left SETs unjudged: a JWKS or discovery fetch, or a replay
+#: store that could not answer.
+UnjudgedCategory = Literal["key_fetch", "replay_store"]
 
 
 @dataclass(frozen=True)
@@ -125,8 +131,26 @@ class ConfigClamped:
     contract_reference: str
 
 
+@dataclass(frozen=True)
+class SsfUnjudged:
+    """Emitted when ``ssf.poll`` (§32.7) returns normally leaving at least one
+    SET unjudged (§19.1, contract 1.60; §34.2 P1).
+
+    A poll that returns is not an error, so an outage of the JWKS endpoint or
+    the replay store would otherwise be visible only to a caller who inspects
+    ``SsfPollResult.unjudged``. Carries no ``jti`` and no SET.
+    """
+
+    #: Canonical operation name: ``ssf.poll``.
+    operation: str
+    #: How many SETs of the batch were left unjudged.
+    unjudged: int
+    #: What left them unjudged.
+    category: UnjudgedCategory
+
+
 #: A §19 telemetry event.
-TelemetryEvent = RequestStart | RequestEnd | Retry | Refresh | ConfigClamped
+TelemetryEvent = RequestStart | RequestEnd | Retry | Refresh | ConfigClamped | SsfUnjudged
 
 #: A caller-supplied telemetry sink.
 #:

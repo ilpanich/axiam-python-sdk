@@ -114,6 +114,7 @@ from axiam_sdk._telemetry import (
     RequestEnd,
     RequestStart,
     Retry,
+    SsfUnjudged,
     TelemetryEvent,
     TelemetryHook,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "RequestEnd",
     "Retry",
     "Refresh",
+    "SsfUnjudged",
     "__version__",
     "AxiamClient",
     "AsyncAxiamClient",
