@@ -276,3 +276,51 @@ def test_discovery_still_parses_a_document_that_omits_them(
     assert configuration.token_endpoint_auth_signing_alg_values_supported is None
     # Absence is NOT read as "S256 is available".
     assert configuration.token_endpoint == f"{BASE_URL}/oauth2/token"
+
+
+# ── §21.5 / §12.1 (contract 1.60): the revocation and introspection members ──
+
+_FOUR = {
+    "revocation_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "private_key_jwt",
+        "none",
+    ],
+    "introspection_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "private_key_jwt",
+    ],
+    "revocation_endpoint_auth_signing_alg_values_supported": ["PS256", "ES256", "EdDSA"],
+    "introspection_endpoint_auth_signing_alg_values_supported": ["PS256", "ES256", "EdDSA"],
+}
+
+
+def _vector_a() -> dict[str, object]:
+    """§21.3.1 vector A, read from the vendored CONTRACT.md."""
+    import json
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "CONTRACT.md").read_text()
+    section = text[text.index("**Vector A") :]
+    match = re.search(r"```json\n(.*?)\n```", section, re.S)
+    assert match is not None
+    return dict(json.loads(match.group(1)))
+
+
+def test_the_four_revocation_and_introspection_members_decode_as_optional() -> None:
+    """A 1.0.0 document carrying all four decodes them; vector A (which lacks
+    them) and a pre-1.0.0 document without them still decode, reading ``None``."""
+    from axiam_sdk import OidcConfiguration
+
+    full = OidcConfiguration.model_validate(discovery_document(**_FOUR))
+    for name, value in _FOUR.items():
+        assert getattr(full, name) == value
+
+    vector = _vector_a()
+    assert not set(_FOUR) & set(vector)
+    for document in (discovery_document(**vector), discovery_document()):
+        older = OidcConfiguration.model_validate(document)
+        assert all(getattr(older, name) is None for name in _FOUR)

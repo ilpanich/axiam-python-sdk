@@ -90,12 +90,18 @@ def scim_target_input(target: models.ScimTargetResponse) -> models.ScimTargetInp
     which requires sending it again (§31.3 rule 2). A target whose ``auth`` or
     ``scope`` arm this SDK does not know converts, but cannot be sent:
     ``to_wire`` refuses an unknown arm (§31.2).
+
+    ``expected_updated_at`` is the ``updated_at`` that was read (§31.3 rule 4,
+    contract 1.60): the update then lands only if nobody has written the target
+    since, and is otherwise ``409`` -- reload and retry. Unset it to fall back
+    to last-writer-wins.
     """
     return models.ScimTargetInput(
         auth=target.auth.model_copy(),
         base_url=target.base_url,
         deprovision=target.deprovision,
         enabled=target.enabled,
+        expected_updated_at=target.updated_at,
         name=target.name,
         push_groups=target.push_groups,
         scope=target.scope.model_copy(),

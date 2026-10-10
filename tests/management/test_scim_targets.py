@@ -144,7 +144,9 @@ def test_a_credential_in_a_response_is_dropped() -> None:
     assert "credential" not in models.ScimTargetResponse.model_fields
     assert not hasattr(target, "credential")
     assert isinstance(target.auth, models.ScimTargetAuthUnknown)
-    assert "credential" not in (target.auth.model_extra or {})
+    # §34.2 P12.1: the unknown arm keeps its discriminator and nothing else.
+    assert not target.auth.model_extra
+    assert target.auth.model_dump() == {"type": "mtls"}
     with pytest.raises(pydantic.ValidationError):
         models.ScimTargetAuthUnknown.model_validate("not an object")
 
@@ -190,6 +192,39 @@ def test_update_without_a_credential_sends_no_key_and_the_variants_keep_their_sh
     ]
     for model, wire in shapes:
         assert model.to_wire() == wire
+
+
+def test_expected_updated_at_is_passed_through_unchanged_and_a_409_surfaces() -> None:
+    """§31.8 test 3 (contract 1.60): ``expected_updated_at`` set is sent on
+    ``update`` exactly as given -- the string, not re-formatted -- and unset is
+    absent from the body; a target written since is ``409`` -> ``ConflictError``,
+    sent once and never retried (§31.3 rule 4)."""
+    read_at = "2026-10-05T09:30:00.123456789+02:00"
+    target_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        route = mount_json(router, "PUT", f"{TARGETS}/{target_id}", 200, target_body())
+        body = target_input()
+        client.scim_targets.update(target_id, body)
+        assert "expected_updated_at" not in sent(route, 0)
+        body.expected_updated_at = read_at
+        client.scim_targets.update(target_id, body)
+        assert sent(route, 1)["expected_updated_at"] == read_at
+        assert json.dumps(read_at) in route.calls[1].request.content.decode()
+
+    with with_client() as (router, client):
+        route = mount_json(
+            router,
+            "PUT",
+            f"{TARGETS}/{target_id}",
+            409,
+            {"error": "conflict", "message": "the SCIM target changed since it was read"},
+        )
+        body = target_input()
+        body.expected_updated_at = read_at
+        with pytest.raises(ConflictError):
+            client.scim_targets.update(target_id, body)
+        assert route.call_count == 1
+        assert sent(route, 0)["expected_updated_at"] == read_at
 
 
 # ── 4. Open decoding and pagination ──────────────────────────────────────────
@@ -349,6 +384,10 @@ def test_a_read_converts_into_the_replacement_body_without_a_credential() -> Non
     assert "credential" not in wire
     assert wire["auth"] == {"type": "bearer"}
     assert wire["scope"] == {"type": "all_users"}
+    # §31.3 rule 4 (contract 1.60): the composed read-modify-write sends the
+    # version it read, so an overtaken update is a 409 rather than a silent
+    # overwrite.
+    assert wire["expected_updated_at"] == target.updated_at
 
 
 # ── §34.2 P12.3: a write-only secret is present or absent, never null ───────

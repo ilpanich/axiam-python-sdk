@@ -87,6 +87,24 @@ EXPLICIT_NULL_FIELDS = {
     ("UpdateDirectoryConfig", "group_filter"),
     ("SamlIdpInfo", "active_credential_id"),
     ("SamlIdpInfo", "next_credential_id"),
+    # §27.15 note 8 (contract 1.60): every nullable member of the federation
+    # update body is cleared by an explicit ``null`` and left as stored when
+    # omitted. The other members of that body cannot be cleared.
+    *(
+        ("UpdateFederationConfigRequest", member)
+        for member in (
+            "metadata_url",
+            "idp_signing_cert_pem",
+            "idp_metadata_signing_cert_pem",
+            "provider_slug",
+            "authorization_endpoint",
+            "token_endpoint",
+            "userinfo_endpoint",
+            "apple_team_id",
+            "apple_key_id",
+            "button_icon",
+        )
+    ),
 }
 
 #: Call-site documentation the contract makes an SDK repeat (§29.3, §30.3,
@@ -204,6 +222,18 @@ CALL_SITE_NOTES: dict[str, str] = {
         "created in the service provider stay there, and AXIAM no longer knows them. "
         "To remove them, set ``deprovision`` to ``delete``, let AXIAM push, and only "
         "then delete the target."
+    ),
+    "federation.update_config": (
+        "**An explicit ``None`` clears; unset leaves as stored** (§27.15 note 8, "
+        "contract 1.60). For the ten nullable members -- ``metadata_url``, "
+        "``idp_signing_cert_pem``, ``idp_metadata_signing_cert_pem``, ``provider_slug``, "
+        "the three ``OAuth2`` endpoints, ``apple_team_id``, ``apple_key_id`` and "
+        "``button_icon`` -- a member set to ``None`` is sent as ``null`` and clears the "
+        "stored value, and a member never set is not sent and is left as stored. A "
+        "``null`` is still held to the relational rules: an ``OAuth2`` configuration's "
+        "three endpoints are required (``400``), and ``apple_team_id`` / "
+        "``apple_key_id`` clear only together. The other members cannot be cleared: "
+        "the server reads a ``null`` there as absent."
     ),
     "scim_targets.reconcile": (
         "Starts a reconciliation in the background and answers ``202``; its outcome is "
@@ -638,6 +668,14 @@ Three shapes recur and are worth knowing before reading:
 #: this contract to.
 DEFAULT_TRUE_FIELDS = {"inherit"}
 
+#: The ``False`` counterpart of :data:`DEFAULT_TRUE_FIELDS`.
+#: ``FederationConfigResponse.allow_sha1_signatures`` is required in the
+#: schema because this server always sends it, but a server before 1.0.0 omits
+#: it, and CONTRACT §27.15 note 6 (contract 1.60) has such a response decode as
+#: ``false`` -- the SHA-2-only acceptance a configuration has unless an
+#: administrator turned the escape hatch on.
+DEFAULT_FALSE_FIELDS = {"allow_sha1_signatures"}
+
 
 def field_lines(
     name: str,
@@ -652,9 +690,12 @@ def field_lines(
     ident = safe(name)
     alias = f'Field(alias="{name}")' if ident != name else None
     default_true = required and name in DEFAULT_TRUE_FIELDS
+    default_false = required and name in DEFAULT_FALSE_FIELDS
 
     if default_true:
         default = f' = Field(default=True, alias="{name}")' if alias else " = True"
+    elif default_false:
+        default = f' = Field(default=False, alias="{name}")' if alias else " = False"
     elif required:
         default = f" = {alias}" if alias else ""
     elif annotation.endswith("| None"):
@@ -670,6 +711,12 @@ def field_lines(
             "schema marks it required: a server older than contract 1.51 omits it, and "
             "an inheritable assignment is what every assignment meant before this field "
             "existed (CONTRACT §27.13 S-10 rule 3)."
+        )
+    if default_false:
+        text += (
+            "\n\n**Defaults to ``False`` when absent from the wire**, even though the "
+            "schema marks it required: a server before 1.0.0 omits it, and such a "
+            "response decodes as ``false`` (CONTRACT §27.15 note 6)."
         )
     if secret:
         text += (
@@ -786,8 +833,9 @@ def emit_open_union(
     out.extend(
         docstring(
             f"An arm of :data:`{rname}` whose ``{tag}`` this SDK does not recognise."
-            f"\n\nIt decodes, keeping every member the server sent, so a variant added "
-            f"server-side does not fail the read it appears in. It is **never sent**: "
+            f"\n\nIt decodes, keeping the ``{tag}`` and no other member (CONTRACT §34.2 "
+            f"P12.1), so a variant added server-side does not fail the read it appears in. "
+            f"It is **never sent**: "
             f"``to_wire`` refuses a request body that carries it, locally (CONTRACT "
             f"§31.2). It still renders for a log line -- ``repr``, ``model_dump``, "
             f"``model_dump_json`` (CONTRACT §34.2 P12.2).",

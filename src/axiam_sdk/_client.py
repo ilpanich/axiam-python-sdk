@@ -1797,6 +1797,12 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         single-flight guard the cookie-session :meth:`refresh` uses, so an
         ``oidc_refresh`` and a concurrent cookie-session refresh can never
         interleave.
+
+        The returned set's ``scope`` is the response's, which may be narrower
+        than the original grant's: the server intersects the grant with the
+        client's registration at every refresh, and drops the ID token once
+        ``openid`` is gone (§12.1, contract 1.60). Read it from the result
+        rather than assuming it is unchanged.
         """
 
         def do_refresh() -> OidcTokenSet:
@@ -1977,6 +1983,16 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         * **No default ``actor_token``** (§15.2 rule 1). Passing none asks for
           *impersonation*; the SDK will not quietly reuse the client's own
           session token as the actor and turn that into a delegation.
+        * **``actor_token`` is yours to obtain** (§15.2 rule 9, contract 1.60).
+          The token must have been issued to *this* exchanging client; the usual
+          one is this client's own ``client_credentials`` token
+          (``login_client_credentials().access_token``), whose ``sub`` becomes
+          the issued token's ``act.sub``. Any other actor token -- another
+          client's, a console sign-in, a service account's -- is answered
+          ``400 invalid_request`` (``actor_token was not issued to the
+          exchanging client``), which surfaces as an
+          :class:`~axiam_sdk.OAuthProtocolError`, unchanged, not retried and not
+          repaired by substituting a token of the SDK's own.
         * **No retry or downgrade on ``unauthorized_client``** (rule 2) — a
           registration fact an operator must fix.
         * **No auto-narrowing on ``invalid_scope``** (rule 3). The server

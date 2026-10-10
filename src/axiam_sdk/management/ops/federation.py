@@ -277,6 +277,18 @@ class FederationApi:
     ) -> models.FederationConfigResponse:
         """``PUT /api/v1/federation-configs/{id}``
 
+        **An explicit ``None`` clears; unset leaves as stored** (§27.15 note
+        8, contract 1.60). For the ten nullable members -- ``metadata_url``,
+        ``idp_signing_cert_pem``, ``idp_metadata_signing_cert_pem``,
+        ``provider_slug``, the three ``OAuth2`` endpoints,
+        ``apple_team_id``, ``apple_key_id`` and ``button_icon`` -- a member
+        set to ``None`` is sent as ``null`` and clears the stored value, and
+        a member never set is not sent and is left as stored. A ``null`` is
+        still held to the relational rules: an ``OAuth2`` configuration's
+        three endpoints are required (``400``), and ``apple_team_id`` /
+        ``apple_key_id`` clear only together. The other members cannot be
+        cleared: the server reads a ``null`` there as absent.
+
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.
         """
@@ -408,6 +420,18 @@ class AsyncFederationApi:
         body: models.UpdateFederationConfigRequest,
     ) -> models.FederationConfigResponse:
         """``PUT /api/v1/federation-configs/{id}``
+
+        **An explicit ``None`` clears; unset leaves as stored** (§27.15 note
+        8, contract 1.60). For the ten nullable members -- ``metadata_url``,
+        ``idp_signing_cert_pem``, ``idp_metadata_signing_cert_pem``,
+        ``provider_slug``, the three ``OAuth2`` endpoints,
+        ``apple_team_id``, ``apple_key_id`` and ``button_icon`` -- a member
+        set to ``None`` is sent as ``null`` and clears the stored value, and
+        a member never set is not sent and is left as stored. A ``null`` is
+        still held to the relational rules: an ``OAuth2`` configuration's
+        three endpoints are required (``400``), and ``apple_team_id`` /
+        ``apple_key_id`` clear only together. The other members cannot be
+        cleared: the server reads a ``null`` there as absent.
 
         Not retried on failure (§27.4 rule 8): every write on this surface
         is issued exactly once, including the ones that look idempotent.

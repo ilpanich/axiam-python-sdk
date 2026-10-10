@@ -7,105 +7,148 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Contract **1.59** (CONTRACT.md §34, the cross-SDK review of the Phase 23 ports: its
-clarifications P1 – P12 of §32.7, §33.4, §33.7 and §28.12 – §33, and this SDK's follow-up
-F-59-03, ilpanich/axiam#578). `CONTRACT.md` is re-vendored byte for byte from axiam
-`fe369eb`; `openapi.json`, `management-registry.json` and `proto/` are unchanged. No wire
-shape changes.
+`axiam-sdk` 1.0.0 is the first stable release of the Python SDK for AXIAM. From this
+version the public API follows Semantic Versioning: a breaking change waits for the next
+major version. It ships two clients with the same surface, `AxiamClient` (sync) and
+`AsyncAxiamClient` (async), over three transports — REST (`httpx`), gRPC (`grpcio`:
+`AuthzGrpcClient` / `AsyncAuthzGrpcClient` for authorization checks, `get_user_info`,
+`validate_token` and `introspect_token`) and AMQP (the HMAC-verified event consumer and
+the reactor). It conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15,
+§17, §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and
+§34, with §32.7 and §33.2 signed. `CONTRACT.md`, `openapi.json` and
+`management-registry.json` are vendored byte for byte from axiam `8df0e11`; `proto/` is
+unchanged. The changes below are those since `v1.0.0-beta17`.
 
-### Fixed
+### Breaking changes
 
-- **`SsfReceiver.poll` / `AsyncSsfReceiver.poll` no longer lose events** (§34.3 R-1,
-  §34.2 P1, P3). A failure that is no verdict on a SET -- a JWKS or discovery fetch that
-  fails, a replay store that cannot answer -- on a later SET of a batch aborted the poll
-  after the earlier SETs had been recorded; offered again, they read as `replayed`. `poll`
-  now takes **P1's second form**: it returns what it judged, stops at the failure, and
-  lists that SET and every one after it in the new `SsfPollResult.unjudged` (cause in
-  `unjudged_error`), unrecorded, for the transmitter to offer again. A poll whose first
-  SET hits the failure therefore returns it in `unjudged` rather than raising.
-- **A `5xx` on `ciba_poll` is transient whatever its body** (§34.3 R-11, §34.2 P8). The
-  server's own `500 {"error":"server_error"}` was an `OAuthProtocolError` that was neither
-  retried under §16 nor survived by `ciba_await`; it is now a `NetworkError` retried within
-  the call and waited out by the loop.
-- **A decoded unknown union arm renders for a log line** (§34.3 R-21, §34.2 P12.2):
-  `model_dump` / `model_dump_json` of a `ScimTargetResponse` with an unknown `auth` or
-  `scope` arm no longer raise. `to_wire()` still refuses to send it, locally.
-- **A `None` write-only secret is omitted, never sent as `null`** (§34.3 R-25, §34.2
-  P12.3): `bind_secret`, `credential` and `authorization_header` set to `None` now mean
-  "keep", like leaving them unset.
-- **Documentation** (§34.3 R-28, R-29, R-41): the generated replacement docstrings no
-  longer say every field of the body is required (the type decides); `scim_targets.create`
-  states §31.3 rule 2's URL binding, as `update` does; the README counts the seven
-  `mtls_endpoint_aliases` and lists `ciba_initiate`'s; `ManagementMethod` dates `PATCH` to
-  contract 1.54; `poll` and the README say a `replayed` SET is acknowledged, not reported
-  (§34.2 P2).
+- **An open-enum value or open-union arm this SDK does not know is no longer sent**
+  (§29.2, §31.2, §32.2). It still decodes, but `to_wire()` — and so every management
+  write — now refuses it locally with `axiam_sdk.management.ValidationError`, before any
+  request, instead of sending it back. *Migration:* a read-modify-write that may carry a
+  value from a newer server sets the field to a value this SDK lists (or upgrades the
+  SDK) before writing; catch `ValidationError` where you do not control the value.
+- **The §19 `TelemetryEvent` union gains `SsfUnjudged`** (contract 1.60, §19.1). A hook
+  that ignores events it does not know is unaffected. *Migration:* a hook that matches
+  the union exhaustively (`match` with `assert_never`, or a type checker enforcing it)
+  adds a case for `SsfUnjudged`.
 
 ### Added
 
-- `axiam_sdk.ssf.AsyncReplayStore`: `AsyncSsfReceiver` also takes a replay store whose
-  `check_and_record` is a coroutine, and awaits it (§34.3 R-41). `ReplayStore` documents
-  that a store that cannot answer raises (fails closed, §34.2 P4), and `MemoryReplayStore`
-  that it is bounded in time, not in count.
-
-### Tests
-
-- §32.8 helper test 8 gains the two-SET batch whose second SET's key refetch fails (sync and
-  async), plus a store-failure batch; §33.8 test 8's `500` carries
-  `{"error":"server_error"}` and the async twin's `503` `{"error":"temporarily_unavailable"}`.
-
-Choices where §34.2 offers one: **P1** -- the second form (return what was judged, list the
-unjudged `jti`s); **P4** -- this SDK's store interface can report failure (it raises), so
-the fail-closed rule is met in code and documented on `ReplayStore`; **P10** -- the deadline
-stays anchored at `CibaInitiateResponse.received_at`, the instant the initiate response was
-received, read from `time.monotonic()` -- the default clock's timebase (no change; §34.3
-R-14 requires none).
-
-Contract **1.58** (CONTRACT.md §28.12, §29, §30, §31, §32, §32.7, §33, §21.3.1). The vendored
-`CONTRACT.md`, `openapi.json` and `management-registry.json` come from axiam `21a9c22`;
-`proto/` was already identical.
-
-### Added
-
-- RFC 7592 client configuration (§28.12): `read_client_registration`,
-  `update_client_registration` and `delete_client_registration` on `AxiamClient` and
-  `AsyncAxiamClient`, and `ClientRegistration` (tolerant decode; unknown members kept in
-  `extra` and sent back on update). The registration access token and client secret are
-  `SecretStr`; the token is sent only as a bearer, on a session-free transport (no
-  cookie jar, no redirects); the URI must be at the client's own origin; writes are never
-  retried.
-- Management namespaces `directory` (§30), `saml` (§29), `ssf` (§32) and `scim_targets`
-  (§31): 190 operations across 28 namespaces. `bind_secret`, `authorization_header` and
-  `credential` are `SecretStr`; the contract's call-site rules are in each operation's
-  docstring; `saml.parse_sp_metadata` refuses both-or-neither locally
+- **Contract 1.60 models** (§27.15, §31), from the regenerated §27 surface:
+  - `ScimTargetInput.expected_updated_at` — sent on `scim_targets.update` exactly as
+    given, the string unchanged, and absent when unset. `scim_target_input()` fills it
+    with the `updated_at` it read, so an update another administrator overtook is a
+    `409` (`ConflictError`, never retried) rather than a silent overwrite.
+  - `window_minutes` on `CreateNotificationRuleRequest`, `UpdateNotificationRuleRequest`
+    and `NotificationRuleResponse` — passed through as given and never clamped (the
+    server answers `400` outside 1 – 1440); omitted when unset (the server stores 15).
+  - `allow_sha1_signatures` on `CreateFederationConfigRequest`,
+    `UpdateFederationConfigRequest` and `FederationConfigResponse` — sent only when set;
+    a response from a server before 1.0.0, which lacks it, decodes as `False`.
+  - `idp_metadata_signing_cert_pem` on the same three models — an optional, nullable
+    string, sent only when set.
+- **RFC 7592 client configuration** (§28.12): `read_client_registration`,
+  `update_client_registration` and `delete_client_registration` on both clients, and
+  `ClientRegistration` (tolerant decode; unknown members kept in `extra` and sent back on
+  update). An update sends no list member the read did not carry.
+- **Management namespaces `directory` (§30), `saml` (§29), `ssf` (§32) and `scim_targets`
+  (§31)** — 190 operations across 28 namespaces. The contract's call-site rules are in
+  each operation's docstring; `saml.parse_sp_metadata` refuses both-or-neither locally
   (`ParseSamlSpMetadata.from_url` / `.from_xml`); `ManagementModel.has_member()` tells an
-  explicit `null` from an absent member; read-modify-write conversions
-  `set_directory_config`, `saml_service_provider_input`, `scim_target_input` and
-  `ssf_stream_input` in `axiam_sdk.management`.
-- `axiam_sdk.ssf` — the SSF receiver helper (§32.7): `SsfReceiver` / `AsyncSsfReceiver`
-  with `verify_set` and `poll`, `SetVerificationError` and `SetFailureReason` (with
-  `push_error_code()`), `SetErr`, a pluggable `ReplayStore`, and the event-type URI
-  constants.
-- CIBA (§33): `ciba_initiate`, `ciba_poll`, `ciba_await` and `ciba_handle_ping` on both
-  clients; the signed request form (`CibaRequestSigner`, PS256 / ES256 / EdDSA); the
-  distinct terminal outcomes `CibaAccessDeniedError` and `CibaExpiredTokenError`; an
-  injectable `CibaClock` / `AsyncCibaClock`.
-
-### Changed
-
-- **Runtime dependency fix:** the package now depends on `PyJWT[crypto]` (and declares
-  `cryptography` directly) instead of plain `PyJWT`. A clean install previously had no
-  `cryptography`, so EdDSA access-, ID- and logout-token verification and DPoP proof
-  verification failed at runtime ("Algorithm not supported"); CI hid it because a dev
-  extra pulled `cryptography` in. SSF SET verification and CIBA request signing need it
-  too.
-- `MtlsEndpointAliases` decodes the seventh alias, `backchannel_authentication_endpoint`
-  (§21.3.1 amended in contract 1.58); `OidcConfiguration` decodes the four CIBA members.
-- An open-enum value or open-union arm this SDK does not know still decodes, and is now
-  refused by `to_wire()` with a local `ValidationError` instead of being sent (§29.2,
-  §31.2, §32.2).
+  explicit `null` from an absent member; `set_directory_config`,
+  `saml_service_provider_input`, `scim_target_input` and `ssf_stream_input` turn a read
+  into a write. An open union (`ScimTargetAuth`, `ScimTargetScope`) decodes an unknown
+  arm as `ScimTargetAuthUnknown` / `ScimTargetScopeUnknown`, which keeps its `type` and
+  nothing else, renders for a log line, and is never sent.
+- **The SSF receiver helper** (§32.7), `axiam_sdk.ssf`: `SsfReceiver` /
+  `AsyncSsfReceiver` with `verify_set` and `poll`; `SetVerificationError` and
+  `SetFailureReason` (with `push_error_code()`); `SetErr`; `SsfPollResult` with
+  `unjudged` / `unjudged_error`; a pluggable `ReplayStore`, its coroutine twin
+  `AsyncReplayStore`, and `MemoryReplayStore` (bounded in time, not in count); and the
+  CAEP / RISC / SSF event-type constants. `poll` never keeps a `jti` it does not return
+  (§34.2 P1, second form): it returns what it judged and lists the SETs a failed key
+  fetch or an unavailable replay store left unjudged, unrecorded, for the transmitter to
+  offer again. A `replayed` SET on a later poll is acknowledged, not reported (P2).
+- **CIBA** (§33): `ciba_initiate`, `ciba_poll`, `ciba_await` and `ciba_handle_ping` on both
+  clients; the signed request form (`CibaRequestSigner`, PS256 / ES256 / EdDSA, the
+  caller's key and algorithm); the terminal outcomes `CibaAccessDeniedError` and
+  `CibaExpiredTokenError`; an injectable `CibaClock` / `AsyncCibaClock`. A `5xx` on
+  `ciba_poll` is transient whatever its body: a `NetworkError`, retried within the call
+  and waited out by `ciba_await` (§34.2 P8). The deadline is anchored at
+  `CibaInitiateResponse.received_at` (P10).
+- **`SsfUnjudged`, the §19.1 `ssf_unjudged` telemetry event** (contract 1.60): emitted
+  when `poll` returns leaving SETs unjudged, with the count and the category
+  (`key_fetch` or `replay_store`) — never a `jti` — so an outage the caller cannot see in
+  an error is visible.
+- `OidcConfiguration` decodes the four revocation and introspection discovery members of
+  §21.5 (`revocation_endpoint_auth_methods_supported`,
+  `introspection_endpoint_auth_methods_supported` and the two
+  `…_auth_signing_alg_values_supported`) as optional: a server before 1.0.0 omits them.
+  It also decodes the four CIBA members and the seventh `mtls_endpoint_aliases` member,
+  `backchannel_authentication_endpoint`, which an mTLS CIBA call honours (§21.3.1).
 - `error_from_oauth2_response` gains `description_optional`, used by the §28.12 and §33
   operations: an `/oauth2` error body without `error_description` is still an
   `OAuthProtocolError` there. The existing §12 operations keep their mapping.
+
+### Changed
+
+- **`federation.update_config`: an explicit `None` clears** (§27.15 note 8). For the ten
+  nullable members of `UpdateFederationConfigRequest` — `metadata_url`,
+  `idp_signing_cert_pem`, `idp_metadata_signing_cert_pem`, `provider_slug`, the three
+  `OAuth2` endpoints, `apple_team_id`, `apple_key_id`, `button_icon` — a member set to
+  `None` is sent as `null` and clears the stored value, and a member left unset is not
+  sent and stays as stored. The SDK always sent what the caller set; a 1.0.0 server now
+  honours the `null` (before 1.0.0 it read most of them as absent). The rule is on each
+  field's docstring and at both `update_config` call sites.
+- **The package is stable**: the trove classifier is `Development Status :: 5 -
+  Production/Stable`, and the README states conformance at contract 1.60.
+- `oidc_refresh` documents that its result's `scope` is the response's, which may be
+  narrower than the grant's (§12.1, contract 1.60); `introspect_token` documents that an
+  account that may no longer sign in introspects `active: False`, returned and never
+  raised, while `validate_token` reads no account (§1.1.1 rule 7).
+- Token exchange (§15.2 rule 9): the README, the `token_exchange` docstring and
+  `examples/token_exchange.py` obtain the `actor_token` from the same client's
+  `login_client_credentials()`; a `400 invalid_request` for an actor token issued to
+  another client surfaces unchanged, in one request.
+- README (§8): a broker confirm is not evidence that AXIAM saw a message, and a
+  minimal-profile server reads no AMQP queue.
+- Documentation: the generated replacement docstrings no longer say every field of the
+  body is required (the type decides); `scim_targets.create` states §31.3 rule 2's
+  credential-to-URL binding, as `update` does; `ManagementMethod` dates `PATCH` to
+  contract 1.54; the README counts the seven `mtls_endpoint_aliases` members.
+
+### Fixed
+
+- **A clean install could not verify EdDSA tokens.** The package depended on plain
+  `PyJWT`, so without a dev extra there was no `cryptography`, and access-, ID- and
+  logout-token verification and DPoP proof verification failed at runtime ("Algorithm
+  not supported"). It now depends on `PyJWT[crypto]` and declares `cryptography`
+  directly; SSF SET verification and CIBA request signing need it too.
+
+### Security
+
+- **A replay store that cannot answer is no verdict** (§34.2 P3, P4, contract 1.60). The
+  store says so by raising — it must never answer `False`, which would read as
+  `replayed` and be acknowledged, losing an event. `verify_set` then raises
+  `NetworkError` with the store's exception as its `__cause__` and no reason code (an
+  SDK error the store raised passes through, a `SetVerificationError` is wrapped too), the
+  `jti` is not recorded, and nothing is accepted. In a `poll` batch the store is asked
+  nothing more after its first failure: the SETs recorded before it are returned, that SET
+  and every later one that verifies are unjudged, and a later one that fails verification
+  is refused as usual (P1).
+- **The SSF key cache cannot be turned into a fetch per SET** (§34.2 P6). The cache
+  expires after 300 s (the contract's bound is 10 minutes); a failed fill and a failed
+  refresh of an expired cache each count toward the once-a-minute fetch limit, so while
+  the JWKS or discovery endpoint is down a SET within the minute makes no fetch and raises
+  `NetworkError`, unjudged by `poll`. A successful fill or refresh does not count, so an
+  unknown `kid` right after it is refetched once.
+- **Secrets stay out of renderings.** `bind_secret`, `credential`, `authorization_header`
+  and the RFC 7592 registration access token and client secret are `SecretStr`; a
+  write-only secret set to `None` means "keep" and is omitted, never sent as `null`
+  (§34.2 P12.3); a decoder that meets a secret member on a response drops it; an unknown
+  union arm retains no member but its discriminator, whatever it is called (P12.1). The
+  registration access token is sent only as a bearer, on a session-free transport (no
+  cookie jar, no redirects), to the client's own origin; writes are never retried.
 
 ## [1.0.0-beta17] - 2026-09-25
 

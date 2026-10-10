@@ -661,6 +661,12 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         single-flight guard the cookie-session :meth:`refresh` uses, so an
         ``oidc_refresh`` and a concurrent cookie-session refresh can never
         interleave.
+
+        The returned set's ``scope`` is the response's, which may be narrower
+        than the original grant's: the server intersects the grant with the
+        client's registration at every refresh, and drops the ID token once
+        ``openid`` is gone (§12.1, contract 1.60). Read it from the result
+        rather than assuming it is unchanged.
         """
 
         async def do_refresh() -> OidcTokenSet:

@@ -18,7 +18,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 from urllib.parse import quote
 
 import httpx
@@ -27,8 +27,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from jwt.algorithms import OKPAlgorithm
 from pydantic import SecretStr
 
-from axiam_sdk._errors import AuthError, NetworkError, network_error_from_transport
+from axiam_sdk._errors import AuthError, AuthzError, NetworkError, network_error_from_transport
 from axiam_sdk._retry import retry_async, retry_sync, status_is_retryable
+from axiam_sdk._telemetry import SsfUnjudged, TelemetryDispatcher, UnjudgedCategory
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from axiam_sdk._async_client import AsyncAxiamClient
@@ -241,12 +242,16 @@ class SsfPollResult:
     a SET -- a JWKS or discovery fetch that failed, a replay store that could
     not answer (§34.2 P1, P3). They are in neither ``events`` nor ``refused``
     and their ``jti`` was **not** recorded: neither acknowledge nor refuse them,
-    and the transmitter offers them again. Verification stops at the first such
-    failure, so every SET after it is listed here too."""
+    and the transmitter offers them again. After a failed fetch verification
+    stops, so every SET after it is listed here too; after a store failure the
+    store is asked nothing more, a later SET that fails steps 1-8 is refused as
+    usual and one that passes them is listed here (§34.2 P1, contract 1.60)."""
 
     unjudged_error: Exception | None = None
-    """The failure that left ``unjudged`` unjudged (a :class:`NetworkError` for
-    a fetch, the store's own exception for a store), or ``None``."""
+    """The first failure that left SETs unjudged, or ``None``: a
+    :class:`NetworkError` for a fetch, and for a replay store a
+    :class:`NetworkError` chaining the store's own exception as its
+    ``__cause__`` (§34.2 P3, contract 1.60)."""
 
 
 class ReplayStore(Protocol):
@@ -256,10 +261,16 @@ class ReplayStore(Protocol):
     (§32.7). :class:`MemoryReplayStore` is the default. :class:`AsyncSsfReceiver`
     also takes an :class:`AsyncReplayStore`.
 
-    **Fail closed** (§34.2 P4): a store that cannot answer -- its backend is
-    down, a call timed out -- MUST raise, never return ``True``. The receiver
-    treats the exception as no verdict on the SET: ``verify_set`` raises it,
-    ``poll`` leaves that SET unjudged and unrecorded.
+    **A store has three answers** (§34.2 P4, contract 1.60): ``True`` (new,
+    recorded), ``False`` (already held) and *cannot answer*, which it gives by
+    **raising** -- its backend is down, a call timed out. It MUST NOT answer
+    ``False`` for that: the receiver would read it as ``replayed``, which
+    ``poll``'s caller acknowledges, and an event that was never processed would
+    be lost. The receiver treats the exception as no verdict on the SET:
+    ``verify_set`` raises :class:`NetworkError` with the store's exception as
+    its ``__cause__`` (an SDK error other than a SET refusal passes through
+    unchanged; §34.2 P3), and ``poll`` leaves that SET unjudged and
+    unrecorded, never accepted and never refused.
     """
 
     def check_and_record(self, jti: str, window_seconds: float) -> bool:
@@ -483,6 +494,27 @@ class _ReceiverCore:
             or self.clock() - self.last_forced >= _FORCED_REFETCH_MIN_INTERVAL_SECONDS
         )
 
+    def note_failed_fetch(self) -> None:
+        """Count a fetch that failed toward the once-a-minute limit.
+
+        §34.2 P6 (contract 1.60): the limit counts every refetch and every
+        **failed** fetch, a failed cold-cache fill included, so that a JWKS
+        outage is not one fetch per SET. A fill that succeeds is not counted.
+        """
+        self.last_forced = self.clock()
+
+    def refuse_fetch_within_the_minute(self) -> NoReturn:
+        """Refuse an unprompted fetch while a counted one is under a minute old.
+
+        Raises:
+            NetworkError: always -- no verdict on the SET (§34.2 P3): it makes
+                no fetch and is left unjudged for the transmitter to offer again.
+        """
+        raise NetworkError(
+            "ssf: the JWKS could not be fetched and the limit of one fetch a minute "
+            "has not elapsed; no fetch was made"
+        )
+
     def store_jwks(self, response: httpx.Response, *, forced: bool) -> None:
         """Replace the cache from a JWKS response.
 
@@ -674,13 +706,36 @@ def _bearer(token: TokenValue) -> dict[str, str]:
     return {"Authorization": f"Bearer {value}", "Accept": "application/json"}
 
 
-def _left_unjudged(
-    result: SsfPollResult, pairs: list[tuple[str, Any]], jti: str, failure: Exception
+def _store_failure(failure: Exception) -> Exception:
+    """What ``verify_set`` raises for a replay store that could not answer
+    (§34.2 P3, contract 1.60): a :class:`NetworkError` with the store's failure
+    as its ``__cause__`` and no reason code. An SDK error the store raised
+    passes through unchanged -- except a :class:`SetVerificationError`, which
+    is wrapped too, so that no store failure carries a reason code."""
+    if isinstance(failure, AuthError | AuthzError | NetworkError) and not isinstance(
+        failure, SetVerificationError
+    ):
+        return failure
+    return NetworkError(
+        "ssf: the replay store could not answer; the SET was not judged", cause=failure
+    )
+
+
+def _finish_poll(
+    result: SsfPollResult,
+    failure: Exception | None,
+    category: UnjudgedCategory | None,
+    telemetry: TelemetryDispatcher,
 ) -> SsfPollResult:
-    """``result`` with the SET under ``jti`` and every one after it left
-    unjudged by ``failure`` (§34.2 P1): none of them was recorded."""
-    keys = [key for key, _ in pairs]
-    return replace(result, unjudged=keys[keys.index(jti) :], unjudged_error=failure)
+    """``result`` with its first non-verdict failure attached, and §19.1's
+    ``ssf_unjudged`` event emitted when it leaves any SET unjudged (§34.2 P1,
+    contract 1.60) -- the count and the category, never a ``jti``."""
+    if not result.unjudged or category is None:
+        return result
+    telemetry.emit(
+        SsfUnjudged(operation="ssf.poll", unjudged=len(result.unjudged), category=category)
+    )
+    return replace(result, unjudged_error=failure)
 
 
 def _no_provider() -> AuthError:
@@ -749,31 +804,53 @@ class SsfReceiver:
     def _fetch_jwks(self, *, forced: bool) -> None:
         """(Re)load the JWKS, resolving the discovery document first if needed."""
         core = self._core
-        if core.jwks_uri is None:
-            assert core.discovery_url is not None
-            core.jwks_uri = core.discovered_jwks_uri(
-                self._get(_check_url("discovery_url", core.discovery_url))
-            )
-        core.store_jwks(self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        try:
+            if core.jwks_uri is None:
+                assert core.discovery_url is not None
+                core.jwks_uri = core.discovered_jwks_uri(
+                    self._get(_check_url("discovery_url", core.discovery_url))
+                )
+            core.store_jwks(self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        except NetworkError:
+            core.note_failed_fetch()  # a failed fetch counts, cold fill included (P6)
+            raise
 
     def _key_for(self, kid: str) -> jwt.PyJWK | None:
         """The key for ``kid``: cached, or after one forced refetch at most."""
         with self._lock:
             core = self._core
             if core.needs_fetch():
+                if not core.may_force():
+                    core.refuse_fetch_within_the_minute()
                 self._fetch_jwks(forced=False)
             assert core.keys is not None
             if kid not in core.keys and core.may_force():
                 self._fetch_jwks(forced=True)
             return core.keys.get(kid)
 
-    def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
-        """Steps 1-9, the key lookup between them; the ``jti`` is recorded last."""
+    def _judge(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
+        """Steps 1-8, the key lookup between them; the store is not asked."""
         parsed = self._core.parse(set_token)
-        event = self._core.judge(parsed, self._key_for(parsed.kid), expected_jti)
-        if not self._store.check_and_record(event.jti, self._core.replay_window):
+        return self._core.judge(parsed, self._key_for(parsed.kid), expected_jti)
+
+    def _record(self, event: SecurityEvent) -> SecurityEvent:
+        """Step 9: record the ``jti``, or refuse it as ``replayed``.
+
+        Raises:
+            SetVerificationError: ``replayed``.
+            NetworkError: the store could not answer (:func:`_store_failure`).
+        """
+        try:
+            fresh = self._store.check_and_record(event.jti, self._core.replay_window)
+        except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P3, P4)
+            raise _store_failure(failure) from failure
+        if not fresh:
             raise _replayed()
         return event
+
+    def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
+        """Steps 1-9; the ``jti`` is recorded last."""
+        return self._record(self._judge(set_token, expected_jti))
 
     def verify_set(self, set_token: str) -> SecurityEvent:
         """Verify one compact SET (§32.7), refusing at the first failing step:
@@ -801,9 +878,9 @@ class SsfReceiver:
             SetVerificationError: the refusal, an ``AuthError`` carrying the
                 reason.
             NetworkError: the JWKS (or discovery document) could not be
-                fetched -- not a verdict on the SET.
-            Exception: whatever the replay store raised when it could not
-                answer -- not a verdict either; the ``jti`` was not recorded.
+                fetched, or the replay store could not answer (its exception
+                chained as ``__cause__``) -- not a verdict on the SET; the
+                ``jti`` was not recorded.
         """
         return self._verify(set_token, None)
 
@@ -834,11 +911,16 @@ class SsfReceiver:
 
         **Never keeps a ``jti`` it does not return** (§34.2 P1): a failure that
         is no verdict on a SET -- a JWKS or discovery fetch that fails, a replay
-        store that cannot answer -- stops verification there. The SETs judged
-        before it are returned as usual; that SET and every one after it are
-        listed in ``unjudged`` with the failure in ``unjudged_error``, are not
-        recorded, and are offered again by the transmitter: neither acknowledge
-        nor refuse them.
+        store that cannot answer -- leaves SETs **unjudged**. The SETs judged
+        before it are returned as usual. A failed fetch stops verification:
+        that SET and every one after it are unjudged. A store failure stops the
+        store being asked: that SET, and every later one that passes steps 1-8,
+        are unjudged, while a later one that fails them is refused as usual.
+        Unjudged SETs are listed in ``unjudged`` with the first failure in
+        ``unjudged_error``, are not recorded, and are offered again by the
+        transmitter: neither acknowledge nor refuse them. The poll still
+        returns normally, and emits the §19 :class:`~axiam_sdk.SsfUnjudged`
+        telemetry event so the outage is visible.
 
         Raises:
             AuthError: locally, when no ``access_token_provider`` was configured.
@@ -875,17 +957,32 @@ class SsfReceiver:
             raise outcome
         pairs, more = core.poll_reply(outcome)
         result = SsfPollResult(more_available=more)
-        for jti, set_token in pairs:
+        failure: Exception | None = None
+        category: UnjudgedCategory | None = None
+        for index, (jti, set_token) in enumerate(pairs):
             if not isinstance(set_token, str):
                 result.refused.append(RefusedSet(jti, SetFailureReason.MALFORMED))
                 continue
             try:
-                result.events.append(self._verify(set_token, jti))
+                event = self._judge(set_token, jti)
             except SetVerificationError as refusal:
                 result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
-            except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
-                return _left_unjudged(result, pairs, jti, failure)
-        return result
+                continue
+            except Exception as fetch:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
+                failure, category = failure or fetch, category or "key_fetch"
+                result.unjudged.extend(key for key, _ in pairs[index:])
+                break
+            if failure is not None:  # the store failed earlier: ask it nothing more
+                result.unjudged.append(jti)
+                continue
+            try:
+                result.events.append(self._record(event))
+            except SetVerificationError as refusal:
+                result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
+            except NetworkError as store:
+                failure, category = store, "replay_store"
+                result.unjudged.append(jti)
+        return _finish_poll(result, failure, category, self._client._telemetry)
 
 
 class AsyncSsfReceiver:
@@ -943,12 +1040,16 @@ class AsyncSsfReceiver:
     async def _fetch_jwks(self, *, forced: bool) -> None:
         """(Re)load the JWKS, resolving the discovery document first if needed."""
         core = self._core
-        if core.jwks_uri is None:
-            assert core.discovery_url is not None
-            core.jwks_uri = core.discovered_jwks_uri(
-                await self._get(_check_url("discovery_url", core.discovery_url))
-            )
-        core.store_jwks(await self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        try:
+            if core.jwks_uri is None:
+                assert core.discovery_url is not None
+                core.jwks_uri = core.discovered_jwks_uri(
+                    await self._get(_check_url("discovery_url", core.discovery_url))
+                )
+            core.store_jwks(await self._get(_check_url("jwks_uri", core.jwks_uri)), forced=forced)
+        except NetworkError:
+            core.note_failed_fetch()  # a failed fetch counts, cold fill included (P6)
+            raise
 
     async def _key_for(self, kid: str) -> jwt.PyJWK | None:
         """The key for ``kid``: cached, or after one forced refetch at most."""
@@ -957,30 +1058,43 @@ class AsyncSsfReceiver:
         async with self._lock:
             core = self._core
             if core.needs_fetch():
+                if not core.may_force():
+                    core.refuse_fetch_within_the_minute()
                 await self._fetch_jwks(forced=False)
             assert core.keys is not None
             if kid not in core.keys and core.may_force():
                 await self._fetch_jwks(forced=True)
             return core.keys.get(kid)
 
-    async def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
-        """Steps 1-9, the key lookup between them; the ``jti`` is recorded last,
-        awaiting an :class:`AsyncReplayStore`."""
+    async def _judge(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
+        """Steps 1-8, the key lookup between them; the store is not asked."""
         parsed = self._core.parse(set_token)
-        event = self._core.judge(parsed, await self._key_for(parsed.kid), expected_jti)
-        fresh = self._store.check_and_record(event.jti, self._core.replay_window)
-        if inspect.isawaitable(fresh):
-            fresh = await fresh
+        return self._core.judge(parsed, await self._key_for(parsed.kid), expected_jti)
+
+    async def _record(self, event: SecurityEvent) -> SecurityEvent:
+        """Step 9, awaiting an :class:`AsyncReplayStore`; see
+        :meth:`SsfReceiver._record`."""
+        try:
+            fresh = self._store.check_and_record(event.jti, self._core.replay_window)
+            if inspect.isawaitable(fresh):
+                fresh = await fresh
+        except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P3, P4)
+            raise _store_failure(failure) from failure
         if not fresh:
             raise _replayed()
         return event
+
+    async def _verify(self, set_token: str, expected_jti: str | None) -> SecurityEvent:
+        """Steps 1-9; the ``jti`` is recorded last."""
+        return await self._record(await self._judge(set_token, expected_jti))
 
     async def verify_set(self, set_token: str) -> SecurityEvent:
         """Async twin of :meth:`SsfReceiver.verify_set`.
 
         Raises:
             SetVerificationError: the refusal.
-            NetworkError: the JWKS could not be fetched.
+            NetworkError: the JWKS could not be fetched, or the replay store
+                could not answer (its exception chained as ``__cause__``).
         """
         return await self._verify(set_token, None)
 
@@ -1035,14 +1149,29 @@ class AsyncSsfReceiver:
             raise outcome
         pairs, more = core.poll_reply(outcome)
         result = SsfPollResult(more_available=more)
-        for jti, set_token in pairs:
+        failure: Exception | None = None
+        category: UnjudgedCategory | None = None
+        for index, (jti, set_token) in enumerate(pairs):
             if not isinstance(set_token, str):
                 result.refused.append(RefusedSet(jti, SetFailureReason.MALFORMED))
                 continue
             try:
-                result.events.append(await self._verify(set_token, jti))
+                event = await self._judge(set_token, jti)
             except SetVerificationError as refusal:
                 result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
-            except Exception as failure:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
-                return _left_unjudged(result, pairs, jti, failure)
-        return result
+                continue
+            except Exception as fetch:  # noqa: BLE001 - no verdict (§34.2 P1, P3)
+                failure, category = failure or fetch, category or "key_fetch"
+                result.unjudged.extend(key for key, _ in pairs[index:])
+                break
+            if failure is not None:  # the store failed earlier: ask it nothing more
+                result.unjudged.append(jti)
+                continue
+            try:
+                result.events.append(await self._record(event))
+            except SetVerificationError as refusal:
+                result.refused.append(RefusedSet(jti, refusal.set_failure_reason))
+            except NetworkError as store:
+                failure, category = store, "replay_store"
+                result.unjudged.append(jti)
+        return _finish_poll(result, failure, category, self._client._telemetry)

@@ -1079,6 +1079,15 @@ class CreateCertificateRequest(ManagementModel):
 class CreateFederationConfigRequest(ManagementModel):
     """``CreateFederationConfigRequest`` (generated from openapi.json)."""
 
+    allow_sha1_signatures: bool | None = None
+    """SAML only: accept IdP responses signed with SHA-1 (`rsa-sha1`). Default
+
+    `false` — since 1.0.0 the SP verifier accepts only SHA-2 signatures. The
+    escape hatch for an IdP that cannot sign with SHA-2 yet; refused on a
+    non-SAML config, and audited (`federation.sha1_signatures_allowed`) when
+    set to `true`.
+    """
+
     allow_tenant_inheritance: bool | None = None
     """Whether tenants of this organization may inherit this provider. Only
 
@@ -1134,6 +1143,14 @@ class CreateFederationConfigRequest(ManagementModel):
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
+    """
+
+    idp_metadata_signing_cert_pem: str | None = None
+    """SAML only: the PEM certificate the IdP signs its metadata document with
+
+    (#530). When set, the metadata must carry one SHA-2 signature on its
+    `EntityDescriptor` root that verifies against it, or no sign-in starts.
+    Omitted: the metadata is not signature-checked.
     """
 
     idp_signing_cert_pem: str | None = None
@@ -1272,6 +1289,13 @@ class CreateNotificationRuleRequest(ManagementModel):
 
     recipient_emails: list[str]
     """Email addresses to notify."""
+
+    window_minutes: int | None = None
+    """Minutes in which one event type mails each recipient at most once: the
+
+    first event of a window is mailed, the rest are counted and the next
+    mail says how many were not sent (#551). 1 … 1440; 15 when omitted.
+    """
 
 
 class CreateOAuth2ClientRequest(ManagementModel):
@@ -2084,6 +2108,16 @@ what the widening removes is the claim that nothing else can occur.
 class FederationConfigResponse(ManagementModel):
     """Federation config response -- omits client_secret."""
 
+    allow_sha1_signatures: bool = False
+    """SAML only: whether IdP responses signed with SHA-1 are accepted (default
+
+    `false`; #531).
+
+    **Defaults to ``False`` when absent from the wire**, even though the
+    schema marks it required: a server before 1.0.0 omits it, and such a
+    response decodes as ``false`` (CONTRACT §27.15 note 6).
+    """
+
     allow_tenant_inheritance: bool
     """Whether tenants of this organization may inherit this provider."""
 
@@ -2136,6 +2170,12 @@ class FederationConfigResponse(ManagementModel):
 
     id: str
     """``id``."""
+
+    idp_metadata_signing_cert_pem: str | None = None
+    """SAML only: the certificate the IdP's metadata must be signed with
+
+    (#530); `null` when the metadata is not signature-checked.
+    """
 
     metadata_url: str | None = None
     """``metadata_url``."""
@@ -3068,6 +3108,12 @@ class NotificationRuleResponse(ManagementModel):
 
     updated_at: str
     """``updated_at``."""
+
+    window_minutes: int
+    """Minutes in which one event type mails each recipient at most once;
+
+    further events are counted and reported by the next mail (#551).
+    """
 
 
 class OAuth2ClientCreatedResponse(ManagementModel):
@@ -4853,11 +4899,11 @@ class ScimTargetAuthUnknown(OpenUnionUnknown):
     """An arm of :data:`ScimTargetAuth` whose ``type`` this SDK does not
     recognise.
 
-    It decodes, keeping every member the server sent, so a variant added
-    server-side does not fail the read it appears in. It is **never sent**:
-    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
-    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
-    ``model_dump_json`` (CONTRACT §34.2 P12.2).
+    It decodes, keeping the ``type`` and no other member (CONTRACT §34.2
+    P12.1), so a variant added server-side does not fail the read it appears
+    in. It is **never sent**: ``to_wire`` refuses a request body that
+    carries it, locally (CONTRACT §31.2). It still renders for a log line --
+    ``repr``, ``model_dump``, ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -4968,6 +5014,17 @@ class ScimTargetInput(ManagementModel):
     enabled: bool | None = None
     """`true` by default. A disabled target receives nothing."""
 
+    expected_updated_at: str | None = None
+    """The `updated_at` of the target as the client read it (P23W5-09, T-416).
+
+    **Update only; create ignores it.** When present, the replacement lands
+    only if the target still has that version, else `409` (reload and
+    retry): two administrators who opened the form at the same version
+    cannot silently overwrite each other. When absent the replacement is
+    conditional on the version the server reads during the request —
+    last-writer-wins between administrators, as before.
+    """
+
     name: str
     """1–128 bytes."""
 
@@ -5067,11 +5124,11 @@ class ScimTargetScopeUnknown(OpenUnionUnknown):
     """An arm of :data:`ScimTargetScope` whose ``type`` this SDK does not
     recognise.
 
-    It decodes, keeping every member the server sent, so a variant added
-    server-side does not fail the read it appears in. It is **never sent**:
-    ``to_wire`` refuses a request body that carries it, locally (CONTRACT
-    §31.2). It still renders for a log line -- ``repr``, ``model_dump``,
-    ``model_dump_json`` (CONTRACT §34.2 P12.2).
+    It decodes, keeping the ``type`` and no other member (CONTRACT §34.2
+    P12.1), so a variant added server-side does not fail the read it appears
+    in. It is **never sent**: ``to_wire`` refuses a request body that
+    carries it, locally (CONTRACT §31.2). It still renders for a log line --
+    ``repr``, ``model_dump``, ``model_dump_json`` (CONTRACT §34.2 P12.2).
     """
 
     type: str
@@ -6506,6 +6563,12 @@ class UpdateFederationConfigRequest(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    allow_sha1_signatures: bool | None = None
+    """SAML only: accept IdP responses signed with SHA-1. Refused on a non-SAML
+
+    config; turning it on is audited (`federation.sha1_signatures_allowed`).
+    """
+
     allow_tenant_inheritance: bool | None = None
     """Whether tenants may inherit this organization-level provider."""
 
@@ -6519,19 +6582,50 @@ class UpdateFederationConfigRequest(ManagementModel):
     """
 
     apple_key_id: str | None = None
-    """Apple Key ID. `Some(None)` clears it."""
+    """Apple Key ID. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('apple_key_id')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     apple_team_id: str | None = None
-    """Apple Team ID. `Some(None)` clears it."""
+    """Apple Team ID. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('apple_team_id')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     attribute_map: Any | None = None
     """``attribute_map``."""
 
     authorization_endpoint: str | None = None
-    """OAuth2-variant authorization endpoint. `Some(None)` clears it."""
+    """OAuth2-variant authorization endpoint. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('authorization_endpoint')`` tells a ``null``
+    the server sent from a member it did not send at all; both read as
+    ``None`` here.
+    """
 
     button_icon: str | None = None
-    """Sign-in-button icon for a generic provider. `Some(None)` clears it."""
+    """Sign-in-button icon for a generic provider. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('button_icon')`` tells a ``null`` the server
+    sent from a member it did not send at all; both read as ``None`` here.
+    """
 
     client_id: str | None = None
     """``client_id``."""
@@ -6547,22 +6641,59 @@ class UpdateFederationConfigRequest(ManagementModel):
     enabled: bool | None = None
     """``enabled``."""
 
+    idp_metadata_signing_cert_pem: str | None = None
+    """SAML only: the IdP metadata signing certificate (#530). Explicit `null`
+
+    clears it; omitted leaves it. Clearing it is audited
+    (`federation.metadata_signing_cert_cleared`), and so is replacing it
+    with a different certificate
+    (`federation.metadata_signing_cert_changed`).
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('idp_metadata_signing_cert_pem')`` tells a
+    ``null`` the server sent from a member it did not send at all; both read
+    as ``None`` here.
+    """
+
     idp_signing_cert_pem: str | None = None
     """PEM-encoded X.509 certificate for verifying SAML assertions
 
-    (CQ-B40/REQ-14 AC-5). `Some(None)` clears the stored cert.
+    (CQ-B40/REQ-14 AC-5). Explicit `null` clears the stored cert; omitted
+    leaves it.
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('idp_signing_cert_pem')`` tells a ``null``
+    the server sent from a member it did not send at all; both read as
+    ``None`` here.
     """
 
     metadata_url: str | None = None
-    """``metadata_url``."""
+    """OIDC discovery or SAML metadata URL. Explicit `null` clears it; omitted
+
+    leaves it.
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('metadata_url')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     provider: str | None = None
     """``provider``."""
 
     provider_slug: str | None = None
-    """Operator-chosen identifier for a `generic_*` kind. `Some(None)` clears
+    """Operator-chosen identifier for a `generic_*` kind. Explicit `null`
 
-    it.
+    clears it.
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('provider_slug')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
     """
 
     require_pkce: bool | None = None
@@ -6575,13 +6706,29 @@ class UpdateFederationConfigRequest(ManagementModel):
     """
 
     token_endpoint: str | None = None
-    """OAuth2-variant token endpoint. `Some(None)` clears it."""
+    """OAuth2-variant token endpoint. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('token_endpoint')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
     token_exchange: TokenExchangeTrustRequest | None = None
     """``token_exchange``."""
 
     userinfo_endpoint: str | None = None
-    """OAuth2-variant userinfo endpoint. `Some(None)` clears it."""
+    """OAuth2-variant userinfo endpoint. Explicit `null` clears it.
+
+
+    **``null`` is not absent** (§27.4 rule 5). In a request, leaving this
+    unset omits it, while setting it explicitly to ``None`` sends ``null``.
+    In a response, ``has_member('userinfo_endpoint')`` tells a ``null`` the
+    server sent from a member it did not send at all; both read as ``None``
+    here.
+    """
 
 
 class UpdateGroup(ManagementModel):
@@ -6654,6 +6801,9 @@ class UpdateNotificationRuleRequest(ManagementModel):
 
     recipient_emails: list[str] | None = None
     """``recipient_emails``."""
+
+    window_minutes: int | None = None
+    """The rule's notification window in minutes, 1 … 1440 (#551)."""
 
 
 class UpdateOAuth2ClientRequest(ManagementModel):

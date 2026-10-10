@@ -42,9 +42,18 @@ def main() -> None:
         # impersonation instead — a different operation with different risk,
         # which the server refuses unless this client holds that grant. The SDK
         # will not pick for you (§15.2 rule 1).
+        #
+        # The actor token must have been issued to THIS client (§15.2 rule 9,
+        # contract 1.60): the usual one is the gateway's own client_credentials
+        # token, so obtain it from the same client's grant. A token issued to
+        # another client, a console sign-in or a service account is refused
+        # with 400 invalid_request ("actor_token was not issued to the
+        # exchanging client"), which surfaces below unchanged.
+        actor = client.login_client_credentials(tenant_id=tenant_id)
         exchanged = client.token_exchange(
             subject_token=user_token,
             subject_token_type=ACCESS_TOKEN_TYPE,
+            actor_token=actor.access_token,
             scopes=["orders:read"],
             audience="orders-service",
             tenant_id=tenant_id,
