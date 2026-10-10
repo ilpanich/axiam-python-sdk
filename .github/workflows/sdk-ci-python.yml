@@ -214,6 +214,21 @@ jobs:
             exit 1
           fi
           echo "OK: ${GITHUB_REF_NAME} (${GITHUB_SHA}) is on origin/main."
+      # The version PyPI receives comes from pyproject.toml alone, so a missed
+      # bump would publish the previous version's number under the new tag.
+      # The tag is spelt as semver (v1.0.0-beta17); PyPI's PEP 440 spelling of
+      # it (1.0.0b17) is derived here exactly as scripts/mass-tag.sh derives it.
+      - name: Assert the tag matches pyproject.toml and __version__
+        run: |
+          set -euo pipefail
+          want="$(printf '%s' "${GITHUB_REF_NAME#v}" | sed -E 's/[-_.]?alpha[-_.]?/a/; s/[-_.]?beta[-_.]?/b/; s/[-_.]?rc[-_.]?/rc/')"
+          have="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          init="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/axiam_sdk/__init__.py)"
+          if [ "$have" != "$want" ] || [ "$init" != "$want" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} means version ${want}, but pyproject.toml says ${have} and __version__ says ${init}."
+            exit 1
+          fi
+          echo "OK: ${GITHUB_REF_NAME} matches pyproject.toml and __version__ (${want})."
 
   publish:
     name: Publish to PyPI
