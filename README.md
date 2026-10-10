@@ -15,17 +15,19 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 - **Repository:** [github.com/ilpanich/axiam-python-sdk](https://github.com/ilpanich/axiam-python-sdk)
 - **PyPI package:** `axiam-sdk`
-- **Registry:** [pypi.org/project/axiam-sdk](https://pypi.org/project/axiam-sdk/) _(reserved, not yet published)_
+- **Registry:** [pypi.org/project/axiam-sdk](https://pypi.org/project/axiam-sdk/)
 - **Version tags:** `vX.Y.Z`
+- **Stability:** stable from 1.0.0, versioned by [Semantic Versioning](https://semver.org/):
+  a breaking change to the public API waits for the next major version
 - **API docs:** [ilpanich.github.io/axiam-python-sdk](https://ilpanich.github.io/axiam-python-sdk/)
 - **License:** Apache-2.0
 - **Python:** `>=3.10` (D-11) — see [Supported Python versions](#supported-python-versions)
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.59**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
-§19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32 and §33,
-with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
+This SDK conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+§19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and
+§34 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
@@ -42,6 +44,37 @@ behaviour, and this SDK's follow-up (F-59-03) implements the ones its review nam
 failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
 transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
 a `None` write-only secret is omitted, never sent as `null` (P12.3).
+
+### Contract 1.60 — what changed here
+
+Contract 1.60 adds no section; it answers the questions the 1.59 ports raised (§34.4)
+and writes the 1.0.0 server changes into the sections they live in. In this SDK:
+
+- **§32.7 / §34.2 P1, P3, P4, P6** — a replay store that cannot answer makes
+  `verify_set` raise `NetworkError` with the store's exception as its `__cause__`;
+  in a `poll` batch the store is then asked nothing more, a later SET that fails
+  steps 1–8 is still refused, and one that passes them is unjudged. The SSF key cache
+  expires after 300 s (the contract's bound is 10 minutes), and a failed fill or a
+  failed refresh of an expired cache counts toward the once-a-minute fetch limit.
+- **§19.1** — the `ssf_unjudged` event (`SsfUnjudged`): a `poll` that returns leaving
+  SETs unjudged says so to the telemetry hook — how many, and whether a key fetch or
+  the replay store left them — with no `jti`.
+- **§34.2 P12.1** — an unknown union arm keeps its discriminator and nothing else.
+- **§31** — `ScimTargetInput.expected_updated_at`, sent exactly as given;
+  `scim_target_input` fills it with the `updated_at` it read, so an update another
+  administrator overtook is a `409` (`ConflictError`) rather than a silent overwrite.
+- **§27.15** — `window_minutes` on the notification rules, passed through and never
+  clamped; the federation configuration's `allow_sha1_signatures` (absent decodes as
+  `False`) and `idp_metadata_signing_cert_pem`; and on `federation.update_config` an
+  explicit `None` on any of the ten nullable members sends `null` and clears it, while
+  a member left unset is not sent and stays as stored.
+- **§12.1 / §21.5** — an `oidc_refresh` result carries the response's `scope`, which may
+  be narrower than the grant's; `OidcConfiguration` decodes the four revocation and
+  introspection discovery members as optional.
+- **§1.1.1 rule 7** — `introspect_token` returns `active: False` for a user whose
+  account may no longer sign in; it never raises for it.
+- **§15.2 rule 9, §8** — the actor token comes from the same client's
+  `client_credentials` grant; a broker confirm is not evidence AXIAM saw a message.
 
 §28 (MCP resource-server helpers) is SHOULD-level, additive and off by default: a
 guard built without `resource_metadata_url` is byte-for-byte what it was before §28
@@ -2328,11 +2361,18 @@ draft = client.saml.parse_sp_metadata(
 sp = client.saml.create_service_provider(draft.service_provider)
 
 # §31 / §32 -- replace updates: read, convert, change, write. The write-only secret is
-# left absent, which keeps the stored one.
+# left absent, which keeps the stored one. scim_target_input carries the updated_at it
+# read as expected_updated_at: a target written since answers 409 (ConflictError) --
+# reload and retry.
 target = client.scim_targets.get(target_id)
 body = scim_target_input(target)
 body.enabled = False
 client.scim_targets.update(target_id, body)
+
+# §27.15 -- an explicit None clears a nullable federation member; unset leaves it.
+client.federation.update_config(
+    config_id, models.UpdateFederationConfigRequest(idp_metadata_signing_cert_pem=None)
+)
 ```
 
 `SamlIdpCredential`, `DirectoryConfig`, `ScimTargetResponse` and `SsfStream` have no
@@ -2396,13 +2436,20 @@ The verification order, the reason codes (`SetVerificationError.set_failure_reas
 also `.reason` on the `AuthError`) and the seven-day replay window are the
 contract's; a window below seven days is refused at construction. A verified SET is
 recorded, so one re-offered unacknowledged reads as `replayed`: acknowledge what you
-processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET; a
-replay store that cannot answer raises too, never accepts. `poll` never keeps a `jti`
-it does not return: a failed fetch or store stops verification, and that SET and the
-ones after it come back in `result.unjudged` (cause in `result.unjudged_error`),
-unrecorded, for the transmitter to offer again. The default `MemoryReplayStore` is one
-process's, bounded in time (the window) but not in count; `AsyncSsfReceiver` also
-takes an `AsyncReplayStore`, whose `check_and_record` is a coroutine.
+processed. A JWKS fetch failure is a `NetworkError`, never a verdict on the SET. A
+replay store says it cannot answer by **raising** (never by answering `False`, which
+reads as `replayed`); `verify_set` then raises `NetworkError` with the store's
+exception as its `__cause__`, and never accepts. `poll` never keeps a `jti` it does not
+return: a failed fetch stops verification, and that SET and the ones after it come back
+in `result.unjudged`; a store failure stops the store being asked, so that SET and every
+later one that verifies come back in `result.unjudged` while a later one that fails
+verification is refused as usual. The first failure is in `result.unjudged_error`;
+unjudged SETs are unrecorded, for the transmitter to offer again, and the poll emits
+the §19 `SsfUnjudged` telemetry event. The key cache is refetched after 300 s; a fetch
+that fails blocks another for a minute, in which a SET raises `NetworkError` without a
+fetch. The default `MemoryReplayStore` is one process's, bounded in time (the window)
+but not in count; `AsyncSsfReceiver` also takes an `AsyncReplayStore`, whose
+`check_and_record` is a coroutine.
 
 ## CIBA (§33)
 
@@ -2517,7 +2564,8 @@ client = AxiamClient(base_url=..., tenant_slug="acme", telemetry_hook=sink)
 - **Path templates, not URLs**, so a metric label cannot become a cardinality bomb.
 
 One `RequestStart`/`RequestEnd` pair is emitted **per attempt**, so you can count real wire
-calls. See [`examples/telemetry_hook.py`](examples/telemetry_hook.py) for the OpenTelemetry
+calls. `SsfUnjudged` (contract 1.60) is emitted when an SSF `poll` returns leaving SETs
+unjudged — the count and the category (`key_fetch` or `replay_store`), never a `jti`. See [`examples/telemetry_hook.py`](examples/telemetry_hook.py) for the OpenTelemetry
 mapping.
 
 ### Decision memo (§17) — opt-in, off by default
