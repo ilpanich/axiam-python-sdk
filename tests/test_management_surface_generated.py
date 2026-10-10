@@ -4770,6 +4770,7 @@ def test_federation_list_configs() -> None:
             {
                 "items": [
                     {
+                        "allow_sha1_signatures": True,
                         "allow_tenant_inheritance": True,
                         "allowed_algorithms": [],
                         "allowed_issuer_tenants": [],
@@ -4818,6 +4819,7 @@ async def test_federation_list_configs_async() -> None:
             {
                 "items": [
                     {
+                        "allow_sha1_signatures": True,
                         "allow_tenant_inheritance": True,
                         "allowed_algorithms": [],
                         "allowed_issuer_tenants": [],
@@ -4863,6 +4865,7 @@ def test_federation_create_config() -> None:
             "/api/v1/federation-configs",
             201,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -4910,6 +4913,7 @@ async def test_federation_create_config_async() -> None:
             "/api/v1/federation-configs",
             201,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -4956,6 +4960,7 @@ def test_federation_get_config() -> None:
             f"/api/v1/federation-configs/{EXAMPLE_ID}",
             200,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -4996,6 +5001,7 @@ async def test_federation_get_config_async() -> None:
             f"/api/v1/federation-configs/{EXAMPLE_ID}",
             200,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -5035,6 +5041,7 @@ def test_federation_update_config() -> None:
             f"/api/v1/federation-configs/{EXAMPLE_ID}",
             200,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -5075,6 +5082,7 @@ async def test_federation_update_config_async() -> None:
             f"/api/v1/federation-configs/{EXAMPLE_ID}",
             200,
             {
+                "allow_sha1_signatures": True,
                 "allow_tenant_inheritance": True,
                 "allowed_algorithms": [],
                 "allowed_issuer_tenants": [],
@@ -5284,6 +5292,7 @@ def test_notification_rules_list() -> None:
                         "recipient_emails": [],
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
+                        "window_minutes": 1,
                     }
                 ],
                 "total": 1,
@@ -5316,6 +5325,7 @@ async def test_notification_rules_list_async() -> None:
                         "recipient_emails": [],
                         "tenant_id": "11111111-1111-4111-8111-111111111111",
                         "updated_at": "2026-08-26T00:00:00Z",
+                        "window_minutes": 1,
                     }
                 ],
                 "total": 1,
@@ -5345,6 +5355,7 @@ def test_notification_rules_create() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         client.notification_rules.create(
@@ -5373,6 +5384,7 @@ async def test_notification_rules_create_async() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         await client.notification_rules.create(
@@ -5400,6 +5412,7 @@ def test_notification_rules_get() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         client.notification_rules.get(EXAMPLE_ID)
@@ -5424,6 +5437,7 @@ async def test_notification_rules_get_async() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         await client.notification_rules.get(EXAMPLE_ID)
@@ -5447,6 +5461,7 @@ def test_notification_rules_update() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         client.notification_rules.update(EXAMPLE_ID, models.UpdateNotificationRuleRequest())
@@ -5471,6 +5486,7 @@ async def test_notification_rules_update_async() -> None:
                 "recipient_emails": [],
                 "tenant_id": "11111111-1111-4111-8111-111111111111",
                 "updated_at": "2026-08-26T00:00:00Z",
+                "window_minutes": 1,
             },
         )
         await client.notification_rules.update(EXAMPLE_ID, models.UpdateNotificationRuleRequest())
