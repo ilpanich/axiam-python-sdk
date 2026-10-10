@@ -377,6 +377,30 @@ class OidcConfiguration(BaseModel):
     meaningless to a deployment that registers no ``private_key_jwt`` client.
     """
 
+    revocation_endpoint_auth_methods_supported: list[str] | None = None
+    """RFC 8414 §2 — how the revocation endpoint authenticates a client
+    (contract 1.60, §21.5): the token endpoint's list, public clients included.
+
+    **Optional here even though ``openapi.json`` marks it required**: a server
+    before 1.0.0 omits all four of these revocation/introspection members, and
+    RFC 8414 then reads this one as ``client_secret_basic`` alone. Like
+    ``token_endpoint_auth_methods_supported`` it describes the deployment and
+    never changes the method this SDK authenticates with (§12.1 rules 3, 4).
+    """
+
+    introspection_endpoint_auth_methods_supported: list[str] | None = None
+    """RFC 8414 §2 — how the introspection endpoint authenticates a client
+    (contract 1.60, §21.5): the token endpoint's list without ``none``, since
+    introspection refuses a public client. Optional, as above."""
+
+    revocation_endpoint_auth_signing_alg_values_supported: list[str] | None = None
+    """RFC 8414 §2 — the JWS algorithms a ``private_key_jwt`` assertion may
+    use at the revocation endpoint (contract 1.60, §21.5). Optional, as above."""
+
+    introspection_endpoint_auth_signing_alg_values_supported: list[str] | None = None
+    """RFC 8414 §2 — the same, at the introspection endpoint (contract 1.60,
+    §21.5). Optional, as above."""
+
     backchannel_authentication_endpoint: str | None = None
     """CIBA Core §4 backchannel authentication endpoint (CONTRACT.md §33.1,
     contract 1.58). Optional: its absence is "this server does not support

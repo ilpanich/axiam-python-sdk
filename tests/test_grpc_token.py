@@ -76,6 +76,10 @@ class _TokenServicer(token_pb2_grpc.TokenServiceServicer):
         self.received_metadata: list[tuple[str, str]] = []
         self.last_validate_request: token_pb2.ValidateTokenRequest | None = None
         self.last_introspect_request: token_pb2.IntrospectTokenRequest | None = None
+        self.account_inactive = False
+        """When set, ``IntrospectToken`` answers as for a user token whose
+        account may no longer sign in: ``active: false``, every other field
+        empty (§1.1.1 rule 7, contract 1.60)."""
 
     def _maybe_fail_once(self, context: grpc.ServicerContext) -> None:
         if self.unauthenticated_once and not self._already_failed_once:
@@ -109,6 +113,8 @@ class _TokenServicer(token_pb2_grpc.TokenServiceServicer):
         self.received_metadata = list(context.invocation_metadata() or [])
         self._maybe_fail_once(context)
         self.last_introspect_request = request
+        if self.account_inactive:
+            return token_pb2.IntrospectTokenResponse(active=False)
         response = token_pb2.IntrospectTokenResponse(
             active=True,
             sub="subject-uuid",
@@ -297,6 +303,27 @@ def test_introspect_token_maps_every_field(test_server: _TestServer, tmp_path) -
         assert result.permissions[0].resource_scopes == ["view"]
         assert result.cnf is None
         result.verify_possession()
+    finally:
+        client.close()
+
+
+def test_introspect_token_answers_inactive_for_an_account_that_may_no_longer_act(
+    test_server: _TestServer, tmp_path
+) -> None:
+    """§1.1.1 rule 7 (contract 1.60): a user token whose account is locked,
+    deactivated or deleted introspects ``active: false`` with the other fields
+    empty -- an answer, not an error, so nothing is raised -- while
+    ``ValidateToken``, which reads no account, still answers ``valid``."""
+    ca_file = _write_ca_file(tmp_path, test_server.cert_pem)
+    client = AuthzGrpcClient(
+        test_server.target, token_fn=lambda: "tok", tenant_id="t1", custom_ca=ca_file
+    )
+    test_server.servicer.account_inactive = True
+    try:
+        result = client.introspect_token("a-locked-users-token")
+        assert result.active is False
+        assert not result.sub and not result.scope and not result.client_id
+        assert client.validate_token("a-locked-users-token").valid is True
     finally:
         client.close()
 

@@ -312,6 +312,12 @@ class AuthzGrpcClient:
         as presented"; call
         :meth:`~axiam_sdk._models.TokenIntrospection.verify_possession`
         before trusting a result whose ``cnf`` is set (rule 4).
+
+        A user token whose account may no longer sign in -- locked,
+        deactivated, anonymized, deleted -- introspects ``active: false`` from
+        the moment its status changes, and that is returned, never raised
+        (rule 7, contract 1.60). :meth:`validate_token` reads no account and
+        stays ``valid`` until ``exp``: the two are not equivalent.
         """
         if not self._token_fn():
             raise AuthError("no access token available; call login() first")

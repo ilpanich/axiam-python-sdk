@@ -296,6 +296,44 @@ async def test_async_oidc_refresh_happy_path(respx_mock: respx.MockRouter) -> No
     assert token_set.access_token.get_secret_value() == "refreshed-token"
 
 
+def test_a_refresh_response_scope_replaces_the_grant_scope(respx_mock: respx.MockRouter) -> None:
+    """§12.1 (contract 1.60): the server intersects the grant's scopes with the
+    client's registration at every refresh, so the response may carry a narrower
+    ``scope`` -- and no ID token once ``openid`` is gone. The token set carries the
+    response's ``scope``, never the original grant's."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            httpx.Response(200, json=_token_response(scope="openid profile email")),
+            httpx.Response(200, json=_token_response(scope="profile")),
+        ]
+    )
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    granted = client.oidc_refresh(refresh_token="rt-1", tenant_id=TENANT_ID)
+    narrowed = client.oidc_refresh(refresh_token="rt-2", tenant_id=TENANT_ID)
+
+    assert granted.scope == "openid profile email"
+    assert narrowed.scope == "profile"
+    assert narrowed.id_token is None and narrowed.id_claims is None
+
+
+@pytest.mark.asyncio
+async def test_async_a_refresh_response_scope_replaces_the_grant_scope(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(200, json=_token_response(scope="profile"))
+    )
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+
+    narrowed = await client.oidc_refresh(refresh_token="rt-2", tenant_id=TENANT_ID)
+    assert narrowed.scope == "profile"
+
+
 def test_oidc_refresh_id_token_skips_nonce_check(respx_mock: respx.MockRouter) -> None:
     _mock_discovery(respx_mock)
     private_key, jwk = make_ed25519_keypair_and_jwk()
