@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-10
+
 `axiam-sdk` 1.0.0 is the first stable release of the Python SDK for AXIAM. From this
 version the public API follows Semantic Versioning: a breaking change waits for the next
 major version. It ships two clients with the same surface, `AxiamClient` (sync) and
@@ -90,6 +92,18 @@ unchanged. The changes below are those since `v1.0.0-beta17`.
   operations: an `/oauth2` error body without `error_description` is still an
   `OAuthProtocolError` there. The existing §12 operations keep their mapping.
 
+- Refresh scope, the four discovery members, inactive introspection (contract 1.60)
+
+- Contract 1.60 models - expected_updated_at, window_minutes, the federation SHA-1 switch and metadata certificate, null clears
+
+- CIBA initiation, polling and ping helpers, signed form (CONTRACT §33, §21.3.1)
+
+- SSF stream management tests and the receiver helper (CONTRACT §32, §32.7)
+
+- Directory namespace semantics and generator infrastructure (CONTRACT §30)
+
+- RFC 7592 client configuration operations (CONTRACT §28.12)
+
 ### Changed
 
 - **`federation.update_config`: an explicit `None` clears** (§27.15 note 8). For the ten
@@ -117,6 +131,38 @@ unchanged. The changes below are those since `v1.0.0-beta17`.
   credential-to-URL binding, as `update` does; `ManagementMethod` dates `PATCH` to
   contract 1.54; the README counts the seven `mtls_endpoint_aliases` members.
 
+- Refuse a tag whose version pyproject.toml and __version__ do not declare
+
+- re-vendor at axiam 8df0e11 (the R1W1 tls_client_auth note, the spec digest)
+
+- README at contract 1.60; the 1.0.0 changelog
+
+- re-vendor contract 1.60, the spec and the registry (axiam 3ed6547)
+
+- actor_token from the same client's grant, AMQP minimal profile, changelog (contract 1.60)
+
+- re-vendor CONTRACT.md at contract 1.60
+
+- Contract 1.59 conformance statement and changelog
+
+- Date PATCH to contract 1.54, not 1.58 (R-41, F-P15)
+
+- scim_targets.create documents the credential's URL binding (R-29, F-P7)
+
+- Generated replacement docs follow the types; seven mTLS aliases (R-28, F-P6)
+
+- re-vendor CONTRACT.md at contract 1.59 (axiam fe369eb)
+
+- Contract 1.58 conformance statement, usage, changelog
+
+- scim_targets namespace required tests and read-modify-write (CONTRACT §31)
+
+- Saml namespace required tests and read-modify-write (CONTRACT §29)
+
+- re-vendor contract 1.58 artifacts and regenerate §27 surface
+
+- re-vendor openapi.json + management-registry.json after utoipa 6
+
 ### Fixed
 
 - **A clean install could not verify EdDSA tokens.** The package depended on plain
@@ -124,6 +170,22 @@ unchanged. The changes below are those since `v1.0.0-beta17`.
   logout-token verification and DPoP proof verification failed at runtime ("Algorithm
   not supported"). It now depends on `PyJWT[crypto]` and declares `cryptography`
   directly; SSF SET verification and CIBA request signing need it too.
+
+- A replay store that cannot answer raises NetworkError; a batch keeps judging; ssf_unjudged telemetry (contract 1.60)
+
+- A failed cold-cache JWKS fill counts toward the once-a-minute limit (contract 1.60 A3, B1 verify)
+
+- An unknown union arm keeps its discriminator and nothing else (contract 1.60 A5)
+
+- A None write-only secret is omitted, never sent as null (R-25, F-P9)
+
+- An unknown union arm renders for a log line (R-21, F-P5)
+
+- Poll never keeps a jti it does not return; async replay store (R-1, F-P2; R-41, F-P14)
+
+- A 5xx on ciba_poll is transient whatever its body (R-11, F-P1)
+
+- Require PyJWT[crypto] at runtime
 
 ### Security
 
