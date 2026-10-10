@@ -320,6 +320,17 @@ Every delivery's HMAC-SHA256 signature is verified BEFORE the handler is
 ever invoked — an unverified message never reaches your code. See
 [`examples/amqp_consumer.py`](./examples/amqp_consumer.py).
 
+**A broker confirm is not evidence that AXIAM saw a message** (§8, contract
+1.60). A publisher confirm, or the broker's `basic.ack` of a publish, means only
+that the broker accepted the message; it never means AXIAM decided the request
+or recorded the event. A server running in the **minimal profile**
+(`AXIAM__AMQP__ENABLED=false`) reads no AMQP queue at all — it does not consume
+`axiam.authz.request` or `axiam.audit.events`, whatever a broker holds — so this
+SDK does not treat a confirm as evidence of that, and neither should you.
+Against a minimal-profile server use REST or gRPC; `GET /health` reports
+`profile: minimal` and lists `amqp_authz` and `amqp_audit_ingestion` under
+`unavailable`.
+
 ### Reactors — AMQP extension actors (§22)
 
 A **reactor** is an external process that subscribes to named hook events on the AMQP bus and
@@ -1474,6 +1485,21 @@ deliberate:
 - **No default `actor_token`.** Omitting it asks for *impersonation*; the SDK
   will not quietly substitute the client's own session token and turn that into
   a delegation.
+- **An `actor_token` is the same client's `client_credentials` token** (§15.2
+  rule 9). The server answers an actor token that was not issued to the
+  exchanging client with `400 invalid_request` (`actor_token was not issued to
+  the exchanging client`); the SDK surfaces that unchanged, sends one request
+  and does not substitute a token of its own. Obtain it from the grant of the
+  client that is exchanging:
+
+  ```python
+  actor = client.login_client_credentials()
+  exchanged = client.token_exchange(
+      subject_token=user_token,
+      subject_token_type=ACCESS_TOKEN_TYPE,
+      actor_token=actor.access_token,  # this client's own token, never another's
+  )
+  ```
 - **No auto-narrowing after `invalid_scope`.** The server refuses rather than
   silently narrowing precisely so the caller finds out here.
 - **No refresh token, ever** — `ExchangedToken` has no such field, so there is

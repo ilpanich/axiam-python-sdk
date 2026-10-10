@@ -7,6 +7,7 @@ after ``invalid_scope``, no synthesised refresh token, no adoption.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from urllib.parse import parse_qsl
 
 import httpx
@@ -535,3 +536,111 @@ def test_no_helper_re_exchanges_an_externally_exchanged_token(
     assert not any(
         ISSUED_TOKEN in (cookie or "") for cookie in client._session.sync_client.cookies.values()
     )
+
+
+# ---------------------------------------------------------------------
+# §15.2 rule 9 — contract 1.60: an actor token not issued to the exchanging client
+# ---------------------------------------------------------------------
+
+ACTOR_NOT_ISSUED = "actor_token was not issued to the exchanging client"
+
+
+def _token_endpoint(own_actor_token: str) -> Callable[[httpx.Request], httpx.Response]:
+    """A token endpoint that mints the client's ``client_credentials`` token and
+    refuses the exchange whose ``actor_token`` is not that very token."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        """Dispatch on ``grant_type``."""
+        form = _form_body(request)
+        if form["grant_type"] == "client_credentials":
+            return httpx.Response(
+                200,
+                json={"access_token": own_actor_token, "token_type": "Bearer", "expires_in": 300},
+            )
+        if form.get("actor_token") == own_actor_token:
+            return _exchange_response()
+        return _oauth_error_with_description("invalid_request", ACTOR_NOT_ISSUED)
+
+    return answer
+
+
+def test_an_actor_token_not_issued_to_the_exchanging_client_surfaces_unchanged(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """§15.6, contract 1.60: a ``400 invalid_request`` (``actor_token was not
+    issued to the exchanging client``) surfaces unchanged, with exactly one
+    request and no rewriting -- the SDK does not substitute the client's own
+    ``client_credentials`` token for the actor token it was handed."""
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error_with_description("invalid_request", ACTOR_NOT_ISSUED)
+    )
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().token_exchange(
+            subject_token=SUBJECT_TOKEN,
+            subject_token_type=ACCESS_TOKEN_TYPE,
+            actor_token=ACTOR_TOKEN,
+            tenant_id=TENANT_ID,
+        )
+
+    assert excinfo.value.error == "invalid_request"
+    assert excinfo.value.error_description == ACTOR_NOT_ISSUED
+    assert route.call_count == 1, "exactly one request: not retried"
+    form = _form_body(route.calls[0].request)
+    assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
+    assert form["actor_token"] == ACTOR_TOKEN, "sent as written, not repaired or dropped"
+
+
+def test_the_documented_actor_token_is_the_same_clients_client_credentials_token(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """The pattern README and ``examples/token_exchange.py`` show: the actor
+    token comes from this client's own ``login_client_credentials``."""
+    own = "the-clients-own-client-credentials-token"
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=_token_endpoint(own))
+    client = _client()
+
+    actor = client.login_client_credentials(tenant_id=TENANT_ID)
+    exchanged = client.token_exchange(
+        subject_token=SUBJECT_TOKEN,
+        subject_token_type=ACCESS_TOKEN_TYPE,
+        actor_token=actor.access_token,
+        tenant_id=TENANT_ID,
+    )
+    assert exchanged.access_token.get_secret_value() == ISSUED_TOKEN
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        client.token_exchange(
+            subject_token=SUBJECT_TOKEN,
+            subject_token_type=ACCESS_TOKEN_TYPE,
+            actor_token=ACTOR_TOKEN,
+            tenant_id=TENANT_ID,
+        )
+    assert excinfo.value.error_description == ACTOR_NOT_ISSUED
+
+
+@pytest.mark.asyncio
+async def test_async_actor_token_not_issued_to_the_exchanging_client_surfaces_unchanged(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """The §15.6 rule-9 test under :class:`AsyncAxiamClient`."""
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error_with_description("invalid_request", ACTOR_NOT_ISSUED)
+    )
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.token_exchange(
+            subject_token=SUBJECT_TOKEN,
+            subject_token_type=ACCESS_TOKEN_TYPE,
+            actor_token=ACTOR_TOKEN,
+            tenant_id=TENANT_ID,
+        )
+    assert excinfo.value.error_description == ACTOR_NOT_ISSUED
+    assert route.call_count == 1
+    assert _form_body(route.calls[0].request)["actor_token"] == ACTOR_TOKEN
+    await client.aclose()

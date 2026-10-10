@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+#### Contract 1.60, phase 1 (CONTRACT.md §34.4 rows A3, A5, B1, §15.2 rule 9, §8)
+
+`CONTRACT.md` is re-vendored byte for byte from the contract 1.60 draft. Rows assigned to
+this SDK; no wire shape changes and no public signature changes.
+
+- **A failed cold-cache JWKS fill counts toward the once-a-minute limit** (§34.4 A3, §34.2
+  P6, §32.8 test 7). `SsfReceiver` / `AsyncSsfReceiver` counted only forced refetches, so
+  while the JWKS or discovery endpoint was down every SET made a fetch. A fill that fails
+  (transport error, non-2xx, unparseable body, discovery failure) is now counted: the next
+  SET within the minute makes no fetch and raises `NetworkError` -- no verdict, left
+  unjudged by `poll` -- and the fill is tried again a minute later. A fill that succeeds
+  is still not a refetch, so an unknown `kid` right after it is refetched once.
+- **An unknown union arm keeps its discriminator and nothing else** (§34.4 A5, §34.2
+  P12.1, R-20). `ScimTargetAuthUnknown` / `ScimTargetScopeUnknown` (`OpenUnionUnknown`)
+  no longer set `extra="allow"` with a denylist of four secret names: only the declared
+  `type` is kept, so a member the server sent that this SDK never declared is not
+  retained, rendered or serialized, whatever it is called. `model_extra` is empty.
+  **Behaviour change** for code that read other members off an unknown arm
+  (`arm.model_extra[...]`); they are no longer there.
+- **Replay store: a store that cannot answer is no verdict** (§34.4 B1, *verify*; §34.2
+  P4, §32.8 test 6). Already fallible -- a store that cannot answer raises -- so no
+  interface change and **no breaking change in this SDK**. New tests prove it for both
+  receivers: `verify_set` raises the store's own failure (never `replayed`, no reason
+  code), the `jti` is not recorded, and `poll` returns the SET in neither `events` nor
+  `refused` and does not acknowledge it. The `ReplayStore` docstring now says a store must
+  raise rather than answer `False` for "cannot answer".
+- **Token exchange `actor_token`** (§15.2 rule 9, §15.6): README, the `token_exchange`
+  docstring and `examples/token_exchange.py` obtain the actor token from the same client's
+  `login_client_credentials()`; a test pins that a `400 invalid_request` (`actor_token was
+  not issued to the exchanging client`) surfaces unchanged, in one request, unrewritten.
+- **README, AMQP (§8 minimal profile):** a broker confirm is not evidence that AXIAM saw a
+  message; a minimal-profile server reads no AMQP queue.
+
 Contract **1.59** (CONTRACT.md §34, the cross-SDK review of the Phase 23 ports: its
 clarifications P1 – P12 of §32.7, §33.4, §33.7 and §28.12 – §33, and this SDK's follow-up
 F-59-03, ilpanich/axiam#578). `CONTRACT.md` is re-vendored byte for byte from axiam
