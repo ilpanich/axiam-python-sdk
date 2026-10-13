@@ -227,6 +227,23 @@ def test_expected_updated_at_is_passed_through_unchanged_and_a_409_surfaces() ->
         assert sent(route, 0)["expected_updated_at"] == read_at
 
 
+def test_an_assigned_none_expected_updated_at_is_dropped_never_sent_as_null() -> None:
+    """§31.3 rule 4 states ``expected_updated_at`` as "omitted when unset", and the
+    contract 1.61 change to ``to_wire`` (R161-python-01) extended that to an
+    *assigned* ``None``: before it, ``body.expected_updated_at = None`` was sent as
+    ``null``. The CHANGELOG records the change on ``ScimTargetInput``; this is its test."""
+    target_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        route = mount_json(router, "PUT", f"{TARGETS}/{target_id}", 200, target_body())
+        body = target_input()
+        body.expected_updated_at = "2026-10-05T09:30:00Z"
+        body.expected_updated_at = None
+        assert "expected_updated_at" not in body.to_wire()
+        client.scim_targets.update(target_id, body)
+        assert "expected_updated_at" not in sent(route, 0), "an assigned None is never null"
+        assert b"expected_updated_at" not in route.calls[0].request.content
+
+
 # ── 4. Open decoding and pagination ──────────────────────────────────────────
 
 
