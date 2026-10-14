@@ -71,7 +71,7 @@ speed = ["uvloop>=0.19; sys_platform != 'win32'"]
 dev = [
     "grpcio-tools>=1.78,<1.85",
     "mypy",
-    "ruff>=0.16.0,<0.17.0",
+    "ruff>=0.16.0,<0.18.0",
     "interrogate",
     "build",
     "twine",
