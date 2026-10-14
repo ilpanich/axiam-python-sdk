@@ -129,6 +129,52 @@ def test_update_stream_puts_every_member_it_models() -> None:
         assert "authorization_header" not in wire, "absent keeps the stored header"
 
 
+def test_update_stream_sends_expected_updated_at_verbatim_and_keeps_empty_events_distinct() -> None:
+    """§32.8 test 1 (contract 1.61): ``expected_updated_at`` is sent exactly as
+    given and absent when unset; ``events_requested=[]`` is sent as ``[]`` and
+    an unset one is absent."""
+    stream_id = str(uuid.uuid4())
+    # Nanosecond precision and a numeric offset: the instant is compared, so the
+    # string must reach the wire untouched.
+    stamp = "2026-10-04T00:00:00.123456789+00:00"
+    with with_client() as (router, client):
+        route = mount_json(router, "PUT", f"{STREAMS}/{stream_id}", 200, stream_body())
+        with_stamp = stream_input()
+        with_stamp.expected_updated_at = stamp
+        with_stamp.events_requested = []
+        client.ssf.update_stream(stream_id, with_stamp)
+        client.ssf.update_stream(stream_id, stream_input())
+        assert sent(route, 0)["expected_updated_at"] == stamp
+        assert sent(route, 0)["events_requested"] == []
+        assert "expected_updated_at" not in sent(route, 1), "unset is absent, never null"
+        # An assigned ``None`` names no version either: the key is dropped, not nulled.
+        with_none = stream_input()
+        with_none.expected_updated_at = None
+        client.ssf.update_stream(stream_id, with_none)
+        assert "expected_updated_at" not in sent(route, 2), "an assigned None is never null"
+        assert "events_requested" not in sent(route, 1), "unset is absent, never []"
+
+
+def test_a_409_on_a_conditional_update_is_a_conflict_and_not_retried() -> None:
+    """§32.3 rule 4, §32.8 test 5: the stale-version ``409`` is surfaced as
+    ``ConflictError`` and the write is sent once."""
+    stream_id = str(uuid.uuid4())
+    with with_client() as (router, client):
+        assert client._retry_enabled
+        route = mount_json(
+            router,
+            "PUT",
+            f"{STREAMS}/{stream_id}",
+            409,
+            {"error": "conflict", "message": "stale"},
+        )
+        body = stream_input()
+        body.expected_updated_at = "2026-10-04T00:00:00Z"
+        with pytest.raises(ConflictError):
+            client.ssf.update_stream(stream_id, body)
+        assert route.call_count == 1
+
+
 # ── 2. The header is Sensitive ───────────────────────────────────────────────
 
 
@@ -278,6 +324,24 @@ def test_a_read_converts_into_the_replacement_body_without_the_header() -> None:
     assert wire["events_requested"] == [SESSION_REVOKED]
     assert wire["description"] == "the RP"
     assert wire["status"] == "enabled"
+    # Contract 1.61 (§32.2): the version the caller read rides back as it came.
+    assert wire["expected_updated_at"] == stream.updated_at == "2026-10-04T00:00:00Z"
+
+
+def test_a_read_with_no_events_requested_converts_to_an_explicit_empty_list() -> None:
+    """§32.2 (contract 1.61): a receiver's "none" goes back as ``[]``, never
+    omitted (which would widen it to every allowed event), with the read's
+    ``updated_at`` verbatim, through a real ``update_stream``."""
+    stream = models.SsfStream.model_validate(
+        stream_body(events_requested=[], events_delivered=[], updated_at="2026-10-04T08:15:30.5Z")
+    )
+    body = ssf_stream_input(stream)
+    assert body.events_requested == []
+    with with_client() as (router, client):
+        route = mount_json(router, "PUT", f"{STREAMS}/{stream.id}", 200, stream_body())
+        client.ssf.update_stream(str(stream.id), body)
+        assert sent(route)["events_requested"] == []
+        assert sent(route)["expected_updated_at"] == "2026-10-04T08:15:30.5Z"
 
 
 # ── §34.2 P12.3: a write-only secret is present or absent, never null ───────

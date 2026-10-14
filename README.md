@@ -25,7 +25,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.60**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK conforms to **contract 1.61**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and
 §34 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
@@ -44,6 +44,29 @@ behaviour, and this SDK's follow-up (F-59-03) implements the ones its review nam
 failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
 transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
 a `None` write-only secret is omitted, never sent as `null` (P12.3).
+
+### Contract 1.61 — the 1.0.1 fields (§34.5)
+
+Contract 1.61 is additive and clarifying: no route and no operation, one new optional
+member on each of three models, and a rule about what a read-modify-write sends. In this
+SDK:
+
+- **§27.11 rule 5** — `Certificate.user_id` (and `GeneratedCertificate.user_id`): a UUID
+  string, `null` and an absent member all decode, the last two as `None` ("no account
+  named"), never synthesised from `metadata`. On `CreateCertificateRequest` and
+  `SignCertificateCsrRequest` it is sent exactly as given, and the key is absent when
+  you name no account — an assigned `None` is dropped, never sent as `null`. The SDK does
+  not judge the value; the server answers `400`.
+- **§32.2 / §32.3 rule 4** — `SsfStreamInput.expected_updated_at`, sent exactly as the
+  stream's `updated_at` was read (not re-formatted) and absent when unset. A stream written
+  since — a receiver's pause or narrowing included — answers `409` (`ConflictError`),
+  which is never retried. `ssf_stream_input` fills it with the `updated_at` it read and
+  always carries `events_requested` as read, `[]` as `[]` (absent would reset the
+  receiver's narrowing to every allowed event); if you lower `events_allowed` yourself,
+  cut `events_requested` to it.
+- **§33.3 rule 16** — `CibaPendingList.total_pending` and `truncated` are not modelled:
+  the type belongs to the console's `GET /api/v1/ciba/requests` route, which no registry
+  operation returns and no SDK drives.
 
 ### Contract 1.60 — what changed here
 

@@ -51,6 +51,17 @@ _OMIT_WHEN_EMPTY = frozenset({"tenant_scope"})
 #: dropped by :meth:`ManagementModel.to_wire` rather than sent as a third state.
 _NEVER_NULL_SECRETS = frozenset({"bind_secret", "credential", "authorization_header"})
 
+#: Optional request members that are **present or absent, never ``null``**:
+#: ``user_id`` on the certificate issue and CSR-signing requests (CONTRACT §27.11
+#: rule 5, contract 1.61: "omits the key when the caller names no account (it
+#: does not send ``null``)") and ``expected_updated_at`` on ``SsfStreamInput``
+#: (§32.2: "omits the key when the caller sets none, and does not send
+#: ``null``") and ``ScimTargetInput`` (§31.3 rule 4, the same member). An
+#: explicitly assigned ``None`` means
+#: "none named" and is dropped by :meth:`ManagementModel.to_wire`. No other
+#: request model has an optional member of these names.
+_NEVER_NULL_MEMBERS = frozenset({"user_id", "expected_updated_at"})
+
 
 class ManagementModel(BaseModel):
     """Base of every generated §27 request and response model."""
@@ -82,7 +93,9 @@ class ManagementModel(BaseModel):
         ``null`` — that is the caller saying so, which is a different statement
         from leaving it out — except a write-only secret, which is present or
         absent and never ``null``: ``None`` there is omitted, and keeps the
-        stored value (see :data:`_NEVER_NULL_SECRETS`).
+        stored value (see :data:`_NEVER_NULL_SECRETS`). ``user_id`` and
+        ``expected_updated_at`` are likewise omitted when ``None``
+        (see :data:`_NEVER_NULL_MEMBERS`).
 
         The other exception is ``tenant_scope`` — see :data:`_OMIT_WHEN_EMPTY`.
 
@@ -97,7 +110,7 @@ class ManagementModel(BaseModel):
         for field in _OMIT_WHEN_EMPTY:
             if field in exposed and exposed[field] == []:
                 del exposed[field]
-        for field in _NEVER_NULL_SECRETS:
+        for field in _NEVER_NULL_SECRETS | _NEVER_NULL_MEMBERS:
             if field in exposed and exposed[field] is None:
                 del exposed[field]
         return exposed

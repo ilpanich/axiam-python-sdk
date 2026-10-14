@@ -119,6 +119,15 @@ def ssf_stream_input(stream: models.SsfStream) -> models.SsfStreamInput:
     it again or clearing it (§32.3 rule 5). The read-only members
     (``events_delivered``, ``authorization_header_set``, the transmitter state)
     have no place on the input and are not carried.
+
+    ``events_requested`` is always carried as read -- ``[]`` stays ``[]``, because
+    omitting it would reset a receiver's narrowing to every allowed event -- and
+    ``expected_updated_at`` is the ``updated_at`` that was read, verbatim (§32.2,
+    contract 1.61): the update then lands only if nobody has written the stream
+    since (the receiver's pause or narrowing included), and is otherwise ``409``
+    -- reload and retry. Unset it to fall back to the server's
+    version-at-request. An edit that lowers ``events_allowed`` must cut
+    ``events_requested`` to the new ceiling itself.
     """
     return models.SsfStreamInput(
         audience=stream.audience,
@@ -127,6 +136,7 @@ def ssf_stream_input(stream: models.SsfStream) -> models.SsfStreamInput:
         endpoint_url=stream.endpoint_url,
         events_allowed=list(stream.events_allowed),
         events_requested=list(stream.events_requested),
+        expected_updated_at=stream.updated_at,
         receiver_client_id=stream.receiver_client_id,
         status=stream.status,
         status_reason=stream.status_reason,

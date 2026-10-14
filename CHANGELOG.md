@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-13
+
+Contract 1.61 (axiam `058d8e0`, branch `claude/release-1.0.1`): additive and clarifying, no
+route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json` and
+`proto/` are vendored from that commit.
+
+### Added
+
+- **`Certificate.user_id`** (§27.11 rule 5): optional and nullable on `Certificate` and
+  `GeneratedCertificate` — a UUID, `null` and an absent member all decode, the last two as
+  `None`, never synthesised from `metadata` — and an optional request member on
+  `certificates.generate` and `certificates.sign_csr`, sent exactly as given and absent when
+  unset. An assigned `None` is dropped by `to_wire()`, never sent as `null`.
+- **`SsfStreamInput.expected_updated_at`** (§32.2, §32.3 rule 4): optional, sent exactly as
+  the stream's `updated_at` was read and absent when unset (an assigned `None` is dropped, as
+  it now is on `ScimTargetInput.expected_updated_at`). A `409` on the update is a
+  `ConflictError` and is not retried.
+
+### Changed
+
+- **`ssf_stream_input` sends `expected_updated_at`** — the read's `updated_at` — so a
+  read-modify-write of a stream written since (a receiver's pause or narrowing) answers
+  `409` instead of putting the old value back; unset it for the previous last-writer-wins.
+  It already carried `events_requested` as read; `[]` stays `[]` (§32.2: absent would reset
+  the receiver's narrowing to every allowed event).
+
+### Notes
+
+- `CibaPendingList.total_pending` and `truncated` (§33.3 rule 16) are not modelled: the type
+  belongs to a console route no operation returns and no SDK drives.
+
 ## [1.0.0] - 2026-10-10
 
 `axiam-sdk` 1.0.0 is the first stable release of the Python SDK for AXIAM. From this
