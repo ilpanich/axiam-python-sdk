@@ -5,7 +5,7 @@
 """One handle per §27 namespace, and the accessors that reach them.
 
 §27.2 makes this namespacing normative rather than stylistic: nineteen namespaces
-have a ``list`` and nineteen a ``get``, so flattening 190 operations onto the
+have a ``list`` and nineteen a ``get``, so flattening 202 operations onto the
 client would need a disambiguating prefix invented once per operation -- and
 would bury the eight §1 methods most callers actually want under twenty times
 as many they do not.
@@ -22,6 +22,7 @@ from axiam_sdk.management.ops.directory import AsyncDirectoryApi, DirectoryApi
 from axiam_sdk.management.ops.email_config import AsyncEmailConfigApi, EmailConfigApi
 from axiam_sdk.management.ops.federation import AsyncFederationApi, FederationApi
 from axiam_sdk.management.ops.groups import AsyncGroupsApi, GroupsApi
+from axiam_sdk.management.ops.network import AsyncNetworkApi, NetworkApi
 from axiam_sdk.management.ops.notification_rules import (
     AsyncNotificationRulesApi,
     NotificationRulesApi,
@@ -95,6 +96,8 @@ __all__ = [
     "SsfApi",
     "AsyncScimTargetsApi",
     "ScimTargetsApi",
+    "AsyncNetworkApi",
+    "NetworkApi",
     "AsyncSettingsApi",
     "SettingsApi",
     "AsyncScimTokensApi",
@@ -278,6 +281,21 @@ class ManagementApi:
         downstream.
         """
         return ScimTargetsApi(self._client)
+
+    @property
+    def network(self) -> NetworkApi:
+        """A tenant's network segments and the RADIUS reply profile each owns
+        (RADIUS D4): a segment is a node of the reserved /network subtree of
+        the resource tree (kind, VLAN, Filter-Id envelope, placement rank),
+        and its profile is the typed `axiam-radius-reply/1` record a
+        decision renders. Every write is conditional on the `version` the
+        caller read and passes the server's write gate. The tenant's
+        Session-Timeout cap is one more row of it (get_policy,
+        replace_policy): lowering it is always allowed, raising it is
+        allowed and audited. The decision route FreeRADIUS calls is not in
+        this registry.
+        """
+        return NetworkApi(self._client)
 
     @property
     def settings(self) -> SettingsApi:
@@ -506,6 +524,21 @@ class ManagementNamespaces:
         return self.management.scim_targets
 
     @property
+    def network(self) -> NetworkApi:
+        """A tenant's network segments and the RADIUS reply profile each owns
+        (RADIUS D4): a segment is a node of the reserved /network subtree of
+        the resource tree (kind, VLAN, Filter-Id envelope, placement rank),
+        and its profile is the typed `axiam-radius-reply/1` record a
+        decision renders. Every write is conditional on the `version` the
+        caller read and passes the server's write gate. The tenant's
+        Session-Timeout cap is one more row of it (get_policy,
+        replace_policy): lowering it is always allowed, raising it is
+        allowed and audited. The decision route FreeRADIUS calls is not in
+        this registry.
+        """
+        return self.management.network
+
+    @property
     def settings(self) -> SettingsApi:
         """Effective settings, and the organization/tenant layers they resolve
         from.
@@ -713,6 +746,21 @@ class AsyncManagementApi:
         downstream.
         """
         return AsyncScimTargetsApi(self._client)
+
+    @property
+    def network(self) -> AsyncNetworkApi:
+        """A tenant's network segments and the RADIUS reply profile each owns
+        (RADIUS D4): a segment is a node of the reserved /network subtree of
+        the resource tree (kind, VLAN, Filter-Id envelope, placement rank),
+        and its profile is the typed `axiam-radius-reply/1` record a
+        decision renders. Every write is conditional on the `version` the
+        caller read and passes the server's write gate. The tenant's
+        Session-Timeout cap is one more row of it (get_policy,
+        replace_policy): lowering it is always allowed, raising it is
+        allowed and audited. The decision route FreeRADIUS calls is not in
+        this registry.
+        """
+        return AsyncNetworkApi(self._client)
 
     @property
     def settings(self) -> AsyncSettingsApi:
@@ -939,6 +987,21 @@ class AsyncManagementNamespaces:
         downstream.
         """
         return self.management.scim_targets
+
+    @property
+    def network(self) -> AsyncNetworkApi:
+        """A tenant's network segments and the RADIUS reply profile each owns
+        (RADIUS D4): a segment is a node of the reserved /network subtree of
+        the resource tree (kind, VLAN, Filter-Id envelope, placement rank),
+        and its profile is the typed `axiam-radius-reply/1` record a
+        decision renders. Every write is conditional on the `version` the
+        caller read and passes the server's write gate. The tenant's
+        Session-Timeout cap is one more row of it (get_policy,
+        replace_policy): lowering it is always allowed, raising it is
+        allowed and audited. The decision route FreeRADIUS calls is not in
+        this registry.
+        """
+        return self.management.network
 
     @property
     def settings(self) -> AsyncSettingsApi:

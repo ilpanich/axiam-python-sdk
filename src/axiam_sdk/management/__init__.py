@@ -1,6 +1,6 @@
 """The CONTRACT §27 management API.
 
-190 operations across 28 namespaces, reached as ``client.<namespace>.<operation>``
+202 operations across 29 namespaces, reached as ``client.<namespace>.<operation>``
 (and equivalently ``client.management.<namespace>.<operation>``). The namespace
 handles and the models they carry are generated from ``management-registry.json``
 and ``openapi.json`` by ``scripts/gen_management.py``; everything else in this
@@ -32,6 +32,7 @@ from axiam_sdk.management.conversions import (
     saml_service_provider_input,
     scim_target_input,
     set_directory_config,
+    ssf_stream_edit,
     ssf_stream_input,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "saml_service_provider_input",
     "scim_target_input",
     "set_directory_config",
+    "ssf_stream_edit",
     "ssf_stream_input",
 ]

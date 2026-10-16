@@ -58,12 +58,30 @@ class ConflictError(AuthzError):
     Never retried (§27.4 rule 8): a 409 is the server telling the truth, not a
     transient fault, and a retry produces the identical answer one round-trip
     later.
+
+    :attr:`reason_code` says *which* conflict (CONTRACT §36.3 rule 2 and §36.4,
+    contract 1.62): the ``network`` operations name it in the body's
+    ``reason_code`` member. Branch on it, never on the message, which is for a
+    person and which this SDK never parses.
     """
 
-    def __init__(self, operation: str, message: str) -> None:
-        """Build the error for ``operation`` (e.g. ``"roles.create"``)."""
+    def __init__(self, operation: str, message: str, reason_code: str | None = None) -> None:
+        """Build the error for ``operation`` (e.g. ``"roles.create"``).
+
+        ``reason_code`` is the body's ``reason_code`` member, verbatim, or
+        ``None`` when the server sent none (a server before contract 1.62, or an
+        operation whose ``409`` has no sub-code).
+        """
         super().__init__(message)
         self.operation = operation
+        self.reason_code = reason_code
+        """The ``409``'s ``reason_code`` (``stale_version``, ``strands_profile``,
+        ``has_children``, ``site_gone``, ``duplicate_name``, ``duplicate_vlan``,
+        ``duplicate_rank``, ``profile_exists``, ``other``), or ``None``.
+
+        The vocabulary is **open** (§27.13): a value this SDK has never seen is
+        surfaced as the server sent it, and is a conflict whose message is for a
+        human."""
 
 
 class ValidationError(NetworkError):

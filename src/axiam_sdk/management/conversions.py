@@ -14,12 +14,17 @@ for it, is a rule of each section, not a fact of the schema.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from axiam_sdk.management import models
+from axiam_sdk.management._errors import local_refusal
 
 __all__ = [
     "saml_service_provider_input",
     "scim_target_input",
     "set_directory_config",
+    "ssf_stream_edit",
     "ssf_stream_input",
 ]
 
@@ -126,8 +131,22 @@ def ssf_stream_input(stream: models.SsfStream) -> models.SsfStreamInput:
     contract 1.61): the update then lands only if nobody has written the stream
     since (the receiver's pause or narrowing included), and is otherwise ``409``
     -- reload and retry. Unset it to fall back to the server's
-    version-at-request. An edit that lowers ``events_allowed`` must cut
-    ``events_requested`` to the new ceiling itself.
+    version-at-request.
+
+    **The caller's duty (CONTRACT §32.2, contract 1.62).** This converter cannot
+    know that you will lower ``events_allowed``, so the cut is yours: an edit that
+    lowers the ceiling must cut ``events_requested`` to the new ``events_allowed``
+    before the update is sent, or the server refuses it ``400`` (a list outside
+    ``events_allowed``). Do **not** drop ``events_requested`` to get out of the
+    cut: *absent* **resets** the stream to every event of ``events_allowed``,
+    widening a narrowing the receiver made, so AXIAM then sends the receiver more
+    events about your tenant's users than it asked for. The three meanings of
+    ``events_requested`` -- absent resets, ``[]`` is none, a list is stored as given
+    and refused outside ``events_allowed`` -- are stated at
+    :meth:`~axiam_sdk.management.ops.ssf.SsfApi.update_stream`. A stream written
+    since the read answers ``409`` (:class:`~axiam_sdk.management.ConflictError`),
+    which is never retried: read the stream again. To have the SDK do the cut for
+    you, use :func:`ssf_stream_edit`.
     """
     return models.SsfStreamInput(
         audience=stream.audience,
@@ -142,3 +161,50 @@ def ssf_stream_input(stream: models.SsfStream) -> models.SsfStreamInput:
         status_reason=stream.status_reason,
         subject_format=stream.subject_format,
     )
+
+
+def ssf_stream_edit(
+    stream: models.SsfStream, changes: Mapping[str, Any] | None = None
+) -> models.SsfStreamInput:
+    """The **change-taking** read-modify-write form for ``ssf.update_stream``
+    (CONTRACT §32.2, contract 1.62): ``(stream, changes) -> body``.
+
+    ``stream`` is what ``ssf.get_stream`` returned and ``changes`` maps
+    :class:`~axiam_sdk.management.models.SsfStreamInput` member names to their new
+    values. The result is :func:`ssf_stream_input` of the read with the changes
+    applied, and it:
+
+    * sends ``events_requested`` **as read** -- ``[]`` stays ``[]``, never omitted,
+      because absent would reset a receiver's narrowing to every event of
+      ``events_allowed``;
+    * sends ``expected_updated_at`` as read -- the response's **own string**, not a
+      re-rendered instant -- so an update that another write (the receiver's pause
+      or narrowing included) overtook answers ``409``
+      (:class:`~axiam_sdk.management.ConflictError`, never retried) rather than
+      putting the old value back;
+    * **cuts** ``events_requested`` to the new ``events_allowed`` when ``changes``
+      lowers the ceiling: the entries of the read ``events_requested`` that are in
+      the new ceiling, in their order.
+
+    An ``events_requested`` or an ``expected_updated_at`` named in ``changes`` is
+    sent as given (the server judges it; an ``expected_updated_at`` of ``None``
+    drops the condition and is never sent as ``null``). ``authorization_header``
+    and ``clear_authorization_header`` are as in :func:`ssf_stream_input`: left
+    unset, so the stored header is kept unless ``changes`` names one.
+
+    Raises:
+        ValidationError: locally, with no request, when ``changes`` names a member
+            ``SsfStreamInput`` does not have, or a value it rejects.
+    """
+    body = ssf_stream_input(stream)
+    names = type(body).model_fields
+    given = dict(changes or {})
+    for name in given:
+        if name not in names:
+            raise local_refusal("ssf.update_stream", name, "is not a member of SsfStreamInput")
+    if "events_allowed" in given and "events_requested" not in given:
+        ceiling = set(given["events_allowed"] or ())
+        given["events_requested"] = [e for e in stream.events_requested if e in ceiling]
+    edited = body.model_dump(exclude_unset=True)
+    edited.update(given)
+    return models.SsfStreamInput.model_validate(edited)

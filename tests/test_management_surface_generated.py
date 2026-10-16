@@ -7333,6 +7333,618 @@ async def test_scim_targets_reconcile_async() -> None:
         await client.scim_targets.reconcile(EXAMPLE_ID)
 
 
+def test_network_list_segments() -> None:
+    """``network.list_segments`` -- GET /api/v1/network/segments."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/segments",
+            200,
+            {
+                "items": [
+                    {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "created_by": "11111111-1111-4111-8111-111111111111",
+                        "enabled": True,
+                        "filter_ids": [],
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "kind": "access",
+                        "name": "example",
+                        "path": "example",
+                        "site_key": "example",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "updated_by": "11111111-1111-4111-8111-111111111111",
+                        "version": 1,
+                        "vlan_id": 1,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.network.list_segments(None, PageRequest(limit=50))
+        client.network.list_segments_all(None, PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_network_list_segments_async() -> None:
+    """``network.list_segments`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/segments",
+            200,
+            {
+                "items": [
+                    {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "created_by": "11111111-1111-4111-8111-111111111111",
+                        "enabled": True,
+                        "filter_ids": [],
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "kind": "access",
+                        "name": "example",
+                        "path": "example",
+                        "site_key": "example",
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "updated_by": "11111111-1111-4111-8111-111111111111",
+                        "version": 1,
+                        "vlan_id": 1,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.network.list_segments(None, PageRequest(limit=50))
+        await client.network.list_segments_all(None, PageRequest(limit=50))
+
+
+def test_network_create_segment() -> None:
+    """``network.create_segment`` -- POST /api/v1/network/segments."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/network/segments",
+            201,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        client.network.create_segment(
+            models.CreateNetworkSegmentRequest(
+                kind="access", name="example", site_key="example", vlan_id=1
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_network_create_segment_async() -> None:
+    """``network.create_segment`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/network/segments",
+            201,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        await client.network.create_segment(
+            models.CreateNetworkSegmentRequest(
+                kind="access", name="example", site_key="example", vlan_id=1
+            )
+        )
+
+
+def test_network_get_segment() -> None:
+    """``network.get_segment`` -- GET /api/v1/network/segments/{id}."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/network/segments/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        client.network.get_segment(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_network_get_segment_async() -> None:
+    """``network.get_segment`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/network/segments/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        await client.network.get_segment(EXAMPLE_ID)
+
+
+def test_network_replace_segment() -> None:
+    """``network.replace_segment`` -- PUT /api/v1/network/segments/{id}."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/network/segments/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        client.network.replace_segment(
+            EXAMPLE_ID,
+            models.ReplaceNetworkSegmentRequest(enabled=True, filter_ids=[], version=1, vlan_id=1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_network_replace_segment_async() -> None:
+    """``network.replace_segment`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/network/segments/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "enabled": True,
+                "filter_ids": [],
+                "id": "11111111-1111-4111-8111-111111111111",
+                "kind": "access",
+                "name": "example",
+                "path": "example",
+                "site_key": "example",
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+                "vlan_id": 1,
+            },
+        )
+        await client.network.replace_segment(
+            EXAMPLE_ID,
+            models.ReplaceNetworkSegmentRequest(enabled=True, filter_ids=[], version=1, vlan_id=1),
+        )
+
+
+def test_network_delete_segment() -> None:
+    """``network.delete_segment`` -- DELETE /api/v1/network/segments/{id}."""
+    with with_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/network/segments/{EXAMPLE_ID}", 204, None)
+        client.network.delete_segment(EXAMPLE_ID, 7)
+
+
+@pytest.mark.asyncio
+async def test_network_delete_segment_async() -> None:
+    """``network.delete_segment`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/network/segments/{EXAMPLE_ID}", 204, None)
+        await client.network.delete_segment(EXAMPLE_ID, 7)
+
+
+def test_network_list_profiles() -> None:
+    """``network.list_profiles`` -- GET /api/v1/network/profiles."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/profiles",
+            200,
+            {
+                "items": [
+                    {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "created_by": "11111111-1111-4111-8111-111111111111",
+                        "dictionary": "example",
+                        "segment_id": "11111111-1111-4111-8111-111111111111",
+                        "session_timeout_clamped": True,
+                        "session_timeout_secs": 1,
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "termination_action": "default",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "updated_by": "11111111-1111-4111-8111-111111111111",
+                        "version": 1,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        client.network.list_profiles(PageRequest(limit=50))
+        client.network.list_profiles_all(PageRequest(limit=50))
+
+
+@pytest.mark.asyncio
+async def test_network_list_profiles_async() -> None:
+    """``network.list_profiles`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/profiles",
+            200,
+            {
+                "items": [
+                    {
+                        "created_at": "2026-08-26T00:00:00Z",
+                        "created_by": "11111111-1111-4111-8111-111111111111",
+                        "dictionary": "example",
+                        "segment_id": "11111111-1111-4111-8111-111111111111",
+                        "session_timeout_clamped": True,
+                        "session_timeout_secs": 1,
+                        "tenant_id": "11111111-1111-4111-8111-111111111111",
+                        "termination_action": "default",
+                        "updated_at": "2026-08-26T00:00:00Z",
+                        "updated_by": "11111111-1111-4111-8111-111111111111",
+                        "version": 1,
+                    }
+                ],
+                "total": 1,
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+        await client.network.list_profiles(PageRequest(limit=50))
+        await client.network.list_profiles_all(PageRequest(limit=50))
+
+
+def test_network_create_profile() -> None:
+    """``network.create_profile`` -- POST /api/v1/network/profiles."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/network/profiles",
+            201,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        client.network.create_profile(
+            models.CreateNetworkReplyProfileRequest(
+                profile=models.NetworkReplyProfileInput(session_timeout_secs=1),
+                segment_id="11111111-1111-4111-8111-111111111111",
+                segment_version=1,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_network_create_profile_async() -> None:
+    """``network.create_profile`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "POST",
+            "/api/v1/network/profiles",
+            201,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        await client.network.create_profile(
+            models.CreateNetworkReplyProfileRequest(
+                profile=models.NetworkReplyProfileInput(session_timeout_secs=1),
+                segment_id="11111111-1111-4111-8111-111111111111",
+                segment_version=1,
+            )
+        )
+
+
+def test_network_get_profile() -> None:
+    """``network.get_profile`` -- GET /api/v1/network/profiles/{segment_id}."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/network/profiles/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        client.network.get_profile(EXAMPLE_ID)
+
+
+@pytest.mark.asyncio
+async def test_network_get_profile_async() -> None:
+    """``network.get_profile`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            f"/api/v1/network/profiles/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        await client.network.get_profile(EXAMPLE_ID)
+
+
+def test_network_replace_profile() -> None:
+    """``network.replace_profile`` -- PUT
+    /api/v1/network/profiles/{segment_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/network/profiles/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        client.network.replace_profile(
+            EXAMPLE_ID,
+            models.ReplaceNetworkReplyProfileRequest(
+                profile=models.NetworkReplyProfileInput(session_timeout_secs=1),
+                segment_version=1,
+                version=1,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_network_replace_profile_async() -> None:
+    """``network.replace_profile`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            f"/api/v1/network/profiles/{EXAMPLE_ID}",
+            200,
+            {
+                "created_at": "2026-08-26T00:00:00Z",
+                "created_by": "11111111-1111-4111-8111-111111111111",
+                "dictionary": "example",
+                "segment_id": "11111111-1111-4111-8111-111111111111",
+                "session_timeout_clamped": True,
+                "session_timeout_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "termination_action": "default",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "updated_by": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        await client.network.replace_profile(
+            EXAMPLE_ID,
+            models.ReplaceNetworkReplyProfileRequest(
+                profile=models.NetworkReplyProfileInput(session_timeout_secs=1),
+                segment_version=1,
+                version=1,
+            ),
+        )
+
+
+def test_network_delete_profile() -> None:
+    """``network.delete_profile`` -- DELETE
+    /api/v1/network/profiles/{segment_id}.
+    """
+    with with_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/network/profiles/{EXAMPLE_ID}", 204, None)
+        client.network.delete_profile(EXAMPLE_ID, 7)
+
+
+@pytest.mark.asyncio
+async def test_network_delete_profile_async() -> None:
+    """``network.delete_profile`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(router, "DELETE", f"/api/v1/network/profiles/{EXAMPLE_ID}", 204, None)
+        await client.network.delete_profile(EXAMPLE_ID, 7)
+
+
+def test_network_get_policy() -> None:
+    """``network.get_policy`` -- GET /api/v1/network/policy."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/policy",
+            200,
+            {
+                "session_timeout_max_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        client.network.get_policy()
+
+
+@pytest.mark.asyncio
+async def test_network_get_policy_async() -> None:
+    """``network.get_policy`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "GET",
+            "/api/v1/network/policy",
+            200,
+            {
+                "session_timeout_max_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        await client.network.get_policy()
+
+
+def test_network_replace_policy() -> None:
+    """``network.replace_policy`` -- PUT /api/v1/network/policy."""
+    with with_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            "/api/v1/network/policy",
+            200,
+            {
+                "session_timeout_max_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        client.network.replace_policy(
+            models.ReplaceNetworkPolicyRequest(session_timeout_max_secs=1, version=1)
+        )
+
+
+@pytest.mark.asyncio
+async def test_network_replace_policy_async() -> None:
+    """``network.replace_policy`` through the async handle."""
+    async with with_async_client() as (router, client):
+        mount_json(
+            router,
+            "PUT",
+            "/api/v1/network/policy",
+            200,
+            {
+                "session_timeout_max_secs": 1,
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "version": 1,
+            },
+        )
+        await client.network.replace_policy(
+            models.ReplaceNetworkPolicyRequest(session_timeout_max_secs=1, version=1)
+        )
+
+
 def test_settings_get_org() -> None:
     """``settings.get_org`` -- GET /api/v1/organizations/{org_id}/settings."""
     with with_client() as (router, client):
@@ -8764,6 +9376,18 @@ EXERCISED = [
     "groups.remove_member",
     "groups.remove_service_account",
     "groups.update",
+    "network.create_profile",
+    "network.create_segment",
+    "network.delete_profile",
+    "network.delete_segment",
+    "network.get_policy",
+    "network.get_profile",
+    "network.get_segment",
+    "network.list_profiles",
+    "network.list_segments",
+    "network.replace_policy",
+    "network.replace_profile",
+    "network.replace_segment",
     "notification_rules.create",
     "notification_rules.delete",
     "notification_rules.get",
@@ -8907,10 +9531,10 @@ EXERCISED = [
 
 
 def test_generated_surface_covers_the_registry() -> None:
-    """§27.9: a partial regeneration must fail here, not ship 183 of 190.
+    """§27.9: a partial regeneration must fail here, not ship 195 of 202.
 
     Asserting the whole set rather than the count catches a regeneration
     that dropped one operation and gained another.
     """
     assert EXERCISED == expected_surface()
-    assert len(EXERCISED) == 190
+    assert len(EXERCISED) == 202
