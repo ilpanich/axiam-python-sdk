@@ -1510,8 +1510,24 @@ stating:
 `device_code` is a `SecretStr`; `user_code` deliberately is not — it exists to
 be read aloud, and wrapping it would defeat the one thing it is for.
 
-`device_authorize` sends no `client_secret` and does not refuse a client built
-without one: a device that cannot show a browser cannot keep a secret either.
+**Client authentication (contract 1.62, §14.1).** Both endpoints authenticate the
+client the way it is registered. A **public** client — the usual device, which cannot
+keep a secret — is built without a secret: `device_authorize` and every poll send
+`client_id` and no credential, and the SDK never refuses to call either for want of one.
+A client built with a `client_secret` sends it at `device_authorize` **and** at every
+poll, in the form body (`client_secret`) — also when it is registered
+`client_secret_basic`: this SDK never sends `Authorization: Basic` to an `/oauth2/*`
+route (§12.1 rule 3). A client built with a §6.1 client certificate presents it on both
+requests. The poll sends `client_id` every time. A `401` `{"error": "invalid_client"}` —
+an unknown client, a failed or missing credential, a credential sent by a public client,
+a client that no longer holds the grant — is an `OAuthProtocolError` with
+`error == "invalid_client"`: terminal, sent once, never refreshed. A deployment upgraded
+to 1.1.0 finds a confidential client that sends no credential refused at its devices'
+next request.
+This SDK has no `private_key_jwt` client assertion and generates no DPoP proofs
+(§21.7.3: it verifies them), so it cannot drive a device client registered for either;
+it surfaces the server's `invalid_client` as above.
+
 The async `device_login` **awaits** an async callback before polling, so a
 device that needs to await a paint still satisfies §14.3 rule 2.
 

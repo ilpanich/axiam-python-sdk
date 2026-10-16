@@ -728,9 +728,13 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         """``POST /oauth2/device_authorization`` (CONTRACT.md §14.1) — start
         the device grant and obtain the code pair.
 
-        **Unauthenticated by design**: a device that cannot show a browser also
-        cannot hold a client secret, so this never sends ``client_secret`` and
-        never refuses a client built without one.
+        **The client authenticates as it is registered** (§14.1, contract 1.62):
+        a configured ``client_secret`` is sent as the ``client_secret`` form
+        member (never ``Authorization: Basic``), a §6.1 certificate is presented
+        on the connection, and a **public** client sends ``client_id`` and no
+        credential and is never refused for want of a secret. A ``401``
+        ``invalid_client`` is an :class:`~axiam_sdk.OAuthProtocolError`: terminal,
+        sent once, never refreshed.
 
         Async twin of :meth:`axiam_sdk.AxiamClient.device_authorize`; §14.4
         requires the same three names on both clients.
@@ -759,6 +763,12 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         The five RFC 8628 §3.5 answers surface as ``OAuthProtocolError``,
         ``authorization_pending`` and ``slow_down`` included, so a hand-rolled
         loop sees exactly what :meth:`device_login` sees.
+
+        ``client_id`` rides on every poll and the configured credential is sent
+        as at :meth:`device_authorize` (§14.1, contract 1.62). A ``401``
+        ``invalid_client`` is terminal and not retried (§14.2 rules 5 and 8);
+        this SDK generates no DPoP proofs (§21.7.3), so it cannot drive a client
+        registered for DPoP-bound tokens.
         """
         config = configuration or await self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
