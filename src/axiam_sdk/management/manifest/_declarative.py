@@ -24,6 +24,7 @@ from axiam_sdk.management.manifest._spec import (
     GrantSpec,
     GroupSpec,
     ManagementManifest,
+    NetworkSpec,
     PermissionSpec,
     ResourceSpec,
     RoleSpec,
@@ -129,6 +130,7 @@ def define_manifest(
     groups: Sequence[GroupSpec] = (),
     users: Sequence[UserSpec] = (),
     service_accounts: Sequence[ServiceAccountSpec] = (),
+    network: NetworkSpec | None = None,
 ) -> ManagementManifest:
     """Declare a manifest and check it immediately.
 
@@ -167,6 +169,7 @@ def define_manifest(
         groups=tuple(groups),
         users=tuple(users),
         service_accounts=tuple(service_accounts),
+        network=network,
     )
     validate(manifest)
     return manifest
