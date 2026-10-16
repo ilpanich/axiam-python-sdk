@@ -956,9 +956,23 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         host other than this session's own gets no credential at all — the
         bearer token, like ``X-Tenant-ID``/``X-Axiam-Tenant``, MUST NOT
         reach a host other than the configured base URL.
+
+        **Never on ``/oauth2/*``** (CONTRACT.md §6.1 rule 11, §12.1 rule 3,
+        §14.6; contract 1.62 as of ``d25413506``, C162-05). A request to the
+        token, device-authorization, introspection, revocation, PAR or CIBA
+        endpoints authenticates its *own* client in the form body, as an
+        assertion or on the connection, and none of them reads an
+        ``Authorization`` header, so an adopted token sent there is a
+        credential leaked to an endpoint that has no use for it. The one
+        thing that is not excluded -- a credential the caller hands to a
+        single call (the RFC 7591 / RFC 7592 registration tokens of §28.12)
+        -- never routes through here: those calls ride the session-free
+        transport and set their own header.
         """
         token = self._session.bearer_token
         if token is None:
+            return
+        if request.url.path.startswith("/oauth2/"):
             return
         req_host = request.url.host
         if req_host and req_host != self._session._base_host:

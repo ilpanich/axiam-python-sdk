@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-10-16
 
-Contract 1.62 (axiam `d76c5a80b`, the plan branch `claude/release-1.1.0`), which carries
+Contract 1.62 (axiam `d25413506`, the plan branch `claude/release-1.1.0`), which carries
 contract 1.61 with it: **1.0.1 was never tagged**, so the 1.61 entries below ship in this
 release and this section is the one change log of both. `CONTRACT.md`, `openapi.json`,
 `management-registry.json` and `proto/` are vendored byte for byte from that commit
@@ -92,6 +92,16 @@ are listed under *Breaking changes* below for code that matches exhaustively.
   `events_requested`** (absent resets, `[]` is none, a list is stored as given and refused
   outside `events_allowed`) and the defaults of the omitted members (item h).
 - The prose counts follow the registry: 202 operations, 29 namespaces, 26 paginated.
+- **Contract 1.62 corrections re-vendored (axiam `d25413506`) and no session bearer on
+  `/oauth2/*`** (§6.1 rule 11, §12.1 rule 3, §14.6; review finding C162-05): `CONTRACT.md`,
+  `openapi.json` (version 1.1.0, digest `sha256:cf0fc71c...59a7`) and `management-registry.json`
+  are byte for byte from `d25413506` (`proto/` unchanged). An adopted credential
+  (`authenticate_device()`, a client-credentials adoption) is no longer sent as
+  `Authorization: Bearer` to any `/oauth2/*` request -- `device_authorize`, `device_poll`, the
+  token requests, `introspect`, `revoke` -- on the sync and the async client; the endpoints read
+  none, and the client authenticates itself in the form body. Every other REST request still
+  carries it, and a `registration_access_token` handed to one registration call is unchanged.
+  Tests: `tests/test_no_session_bearer_on_oauth2.py`.
 
 ### Notes (contract 1.62)
 

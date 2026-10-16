@@ -34,6 +34,13 @@ local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
 
+CONTRACT.md's Conformance Statement for §36 (network segments, reply profiles and the
+RADIUS decision, a §27 namespace, ported from the merge commit that carries the routes):
+
+> This SDK conforms to CONTRACT.md §1–§13, §14, §15, §17, §19, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36.
+
+Manifest pruning: not offered in any namespace (§27.10; pruning is a MAY, §27.6 rule 4).
+
 §12.7, §14, §15, §20, §22, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §32.7
 and §33 are named rather than folded into the range because they landed after this
 SDK already claimed §1–§13: widening the range silently would turn a statement that
@@ -2189,7 +2196,9 @@ device.can("telemetry:publish", f"device/{device_name}")  # adopted, like a logi
   `axiam_access` before `Authorization`, so a cookie left from an earlier
   `login()` on the same client would otherwise silently win. Every request
   made after `authenticate_device()` carries `Authorization: Bearer <token>`
-  plus an explicit empty `Cookie` header.
+  plus an explicit empty `Cookie` header -- except a request to `/oauth2/*`, which
+  never carries it (CONTRACT §6.1 rule 11, §12.1 rule 3, §14.6): those endpoints
+  authenticate the client in the form body and read no `Authorization` header.
 - **There is no refresh token** (D-6 of the dogfooding remediation plan). A
   later `401` on this credential is `AuthError`, with no refresh attempt —
   call `authenticate_device()` again, which costs one TLS handshake.
