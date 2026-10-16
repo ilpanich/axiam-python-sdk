@@ -7,13 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-10-13
+## [1.1.0] - 2026-10-16
 
-Contract 1.61 (axiam `058d8e0`, branch `claude/release-1.0.1`): additive and clarifying, no
-route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json` and
-`proto/` are vendored from that commit.
+Contract 1.62 (axiam `d76c5a80b`, the plan branch `claude/release-1.1.0`), which carries
+contract 1.61 with it: **1.0.1 was never tagged**, so the 1.61 entries below ship in this
+release and this section is the one change log of both. `CONTRACT.md`, `openapi.json`,
+`management-registry.json` and `proto/` are vendored byte for byte from that commit
+(`proto/` is unchanged, so the gRPC stubs are too).
 
-### Added
+**Source-breaking changes in this SDK: none.** Contract 1.61's record is wire-additive and
+source-breaking in the Rust, Java, Kotlin and PHP SDKs; contract 1.62's request `user_id`
+loses its UUID type in Rust, Go, Java, Kotlin and C#. Neither applies here: this SDK's
+request `user_id` has been a plain `str | None` since it was added. Two type-level widenings
+are listed under *Breaking changes* below for code that matches exhaustively.
+
+### Breaking changes
+
+- **`PlannedAction.target` gains `network-policy`, `network-segment` and `network-profile`**
+  (type-level only). A `match` on the `Target` literal that is exhaustive (with
+  `assert_never`, or a type checker enforcing it) adds the three cases; no existing member
+  moved or was removed. *Migration:* handle the new members or add a default arm.
+- **A client built with a `client_secret` now sends it at `device_authorize` and at every
+  poll** (contract 1.62, §14.1, replacing 1.60's "MUST NOT send `client_secret` on it"). A
+  confidential client that holds the device grant and sends no credential is refused by a
+  1.1.0 server with `401 invalid_client`, so this is the behaviour the upgrade needs, not one
+  to opt out of. A client built with no secret (a public client) is unchanged.
+
+### Added (contract 1.62)
+
+- **The `network` management namespace** (§36, §34.6 item l): `client.network` and
+  `client.management.network`, on both clients — twelve generated operations
+  (`list_segments`, `create_segment`, `get_segment`, `replace_segment`, `delete_segment`,
+  `list_profiles`, `create_profile`, `get_profile`, `replace_profile`, `delete_profile`,
+  `get_policy`, `replace_policy`) and their models (`NetworkSegmentResponse`,
+  `NetworkReplyProfile`, `NetworkReplyProfileInput`, `NetworkPolicyResponse`, the create and
+  replace requests, and the open enums `NetworkSegmentKind`, `RadiusServiceType`,
+  `RadiusTerminationAction`). **202 operations across 29 namespaces.** The decision route
+  `POST /api/v1/network/decide` is excluded by name and has no method (§27.0, §36.11).
+  `delete_segment` and `delete_profile` take the `version` as an `int`; the generator now
+  types an integer query parameter as `int` and sends its decimal text.
+- **`ConflictError.reason_code`** (§36.3 rule 2, §36.4): the `409` body's `reason_code`
+  member, verbatim (the vocabulary is open), `None` when the server sent none. It is never
+  read from the message.
+- **`network` in the manifest** (§27.6.2, §34.6 items n, u, v, w): `ManagementManifest(network=
+  NetworkSpec(policy=, segments=, profiles=))` with `NetworkSegmentSpec`, `NetworkProfileSpec`,
+  `NetworkPolicySpec` and the `UNSET` sentinel for an unstated member. Natural keys: a
+  segment by site + kind + name (`kind` is the wire spelling `access` | `quarantine`), a
+  profile by its segment, the policy a singleton. Order: policy, segments, profiles, after
+  everything else. `plan` issues `GET`s only (`get_policy`, `list_segments`, `list_profiles`,
+  walked to exhaustion) and judges every stated member on the value as read — a stated
+  `session_timeout_secs` above the cap is an `Update` whose `apply` the server refuses with
+  `403`, reported as given with `apply` stopped and nothing retried or lowered; `filter_ids`
+  compares as a set and is sent in the stated order; a repeated Filter-Id, a repeated natural
+  key and a profile naming no segment are refused before any request. The replacement body is
+  built from the read (unstated members carried, a stated `None` left out, the profile's
+  dictionary carried), the profile's `segment_version` is the version of this `apply`'s own
+  segment write, and a `409` is that action's failure with `StepOutcome.reason_code` and
+  `ManifestFailure.reason_code`. `define_manifest` accepts `network=`. A manifest that states
+  only `network` no longer reads the six tenant-shape listings.
+- **`management.ssf_stream_edit(stream, changes)`** (§32.2, item e): the change-taking
+  read-modify-write form for `ssf.update_stream`. It applies `changes` (a mapping of
+  `SsfStreamInput` member names) to the read, sends `events_requested` and
+  `expected_updated_at` as read (the server's own string; `[]` stays `[]`), and cuts
+  `events_requested` to a lowered `events_allowed`. An `events_requested` named in `changes`
+  is sent as given; an `expected_updated_at` of `None` drops the condition; an unknown member
+  name is refused locally with no request. §32.8 test 7.
+- **Tests**: `tests/management/test_network.py` (§36.8), `tests/management/test_network_manifest.py`
+  (§27.9 "Manifest, `network`"), `tests/test_device_grant_client_auth.py` (§14.6),
+  `tests/test_contract_162.py` (§27.11 rule 5) and §32.8 test 7 in `tests/management/test_ssf.py`.
+
+### Changed (contract 1.62)
+
+- **The device grant authenticates its client** (§14.1 rule 2, §14.2 rules 5 and 8, §14.6;
+  §34.6 items m and t): `client_secret` in the form body at both endpoints — for a
+  `client_secret_basic` registration too, since no `Authorization: Basic` is ever sent to an
+  `/oauth2/*` route (§12.1 rule 3) —, the §6.1 certificate presented on both, no credential
+  for a public client, `client_id` on every poll. A `401 invalid_client` from either is an
+  `OAuthProtocolError`, sent once, never refreshed, terminal inside `device_login`. This SDK
+  has no `private_key_jwt` assertion and generates no DPoP proof (§21.7.3), so those two forms
+  are not applicable; the server's `invalid_client` is surfaced for a client that needs them.
+- **`ssf_stream_input`'s documentation names the caller's duty** (§32.2): it cannot know that
+  the caller will lower `events_allowed`, so the cut of `events_requested` is the caller's —
+  or use `ssf_stream_edit`. **`update_stream`'s documentation states the three meanings of
+  `events_requested`** (absent resets, `[]` is none, a list is stored as given and refused
+  outside `events_allowed`) and the defaults of the omitted members (item h).
+- The prose counts follow the registry: 202 operations, 29 namespaces, 26 paginated.
+
+### Notes (contract 1.62)
+
+- **Already held, now asserted** (items f, g, i): an assigned `None` on `user_id` and
+  `expected_updated_at` is dropped by `to_wire()` and never sent as `null`; `SsfStream.updated_at`
+  is the server's own string and every helper sends it; the request `user_id` is a plain
+  string, so a malformed value reaches the server and its `400` surfaces as `ValidationError`.
+- **No pruning**: the manifest layer prunes nothing in any namespace, so §27.6.2 item 6 does
+  not apply and nothing is ever deleted by a manifest.
+- The contract's `CibaPendingList` item (d) is "SDK work: no"; not modelled, as before.
+
+### Added (contract 1.61)
 
 - **`Certificate.user_id`** (§27.11 rule 5): optional and nullable on `Certificate` and
   `GeneratedCertificate` — a UUID, `null` and an absent member all decode, the last two as
@@ -25,7 +115,7 @@ route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json
   it now is on `ScimTargetInput.expected_updated_at`). A `409` on the update is a
   `ConflictError` and is not retried.
 
-### Changed
+### Changed (contract 1.61)
 
 - **`ssf_stream_input` sends `expected_updated_at`** — the read's `updated_at` — so a
   read-modify-write of a stream written since (a receiver's pause or narrowing) answers
@@ -33,7 +123,7 @@ route and no operation. `CONTRACT.md`, `openapi.json`, `management-registry.json
   It already carried `events_requested` as read; `[]` stays `[]` (§32.2: absent would reset
   the receiver's narrowing to every allowed event).
 
-### Notes
+### Notes (contract 1.61)
 
 - `CibaPendingList.total_pending` and `truncated` (§33.3 rule 16) are not modelled: the type
   belongs to a console route no operation returns and no SDK drives.

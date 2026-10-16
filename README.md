@@ -18,16 +18,18 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 - **Registry:** [pypi.org/project/axiam-sdk](https://pypi.org/project/axiam-sdk/)
 - **Version tags:** `vX.Y.Z`
 - **Stability:** stable from 1.0.0, versioned by [Semantic Versioning](https://semver.org/):
-  a breaking change to the public API waits for the next major version
+  a contract record may **add a member or widen a type** in a minor release, and a
+  **removal** (or any other breaking change to the public API) waits for the next major
+  version, 2.0.0
 - **API docs:** [ilpanich.github.io/axiam-python-sdk](https://ilpanich.github.io/axiam-python-sdk/)
 - **License:** Apache-2.0
 - **Python:** `>=3.10` (D-11) — see [Supported Python versions](#supported-python-versions)
 
 ## Contract conformance
 
-This SDK conforms to **contract 1.61**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
-§19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33 and
-§34 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
+This SDK (**1.1.0**) conforms to **contract 1.62**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+§19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
+§36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
@@ -44,6 +46,62 @@ behaviour, and this SDK's follow-up (F-59-03) implements the ones its review nam
 failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
 transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
 a `None` write-only secret is omitted, never sent as `null` (P12.3).
+
+### Contract 1.62 — the 1.1.0 release (§34.6)
+
+Contract 1.62 adds one management namespace, `network`, and changes how a device client
+authenticates; the rest is two request-member rules and a read-modify-write form. In this
+SDK, which releases it as **1.1.0** (1.0.1 was never tagged, so the 1.61 fields below ship
+in the same release):
+
+- **§36 — `client.network`** (and `client.management.network`, on both clients): twelve
+  generated operations, `list_segments`, `create_segment`, `get_segment`,
+  `replace_segment`, `delete_segment`, `list_profiles`, `create_profile`, `get_profile`,
+  `replace_profile`, `delete_profile`, `get_policy` and `replace_policy` — **202
+  operations across 29 namespaces**. Every write is conditional on the `version` you read
+  and sent exactly (`delete_segment(id, version)` and `delete_profile(id, version)` take it
+  as an `int`; a profile write also carries `segment_version`), is **never retried**, and a
+  `409` is a `ConflictError` whose **`reason_code`** (`stale_version`, `strands_profile`,
+  `has_children`, `site_gone`, `duplicate_name`, `duplicate_vlan`, `duplicate_rank`,
+  `profile_exists`, `other`, or a value this SDK has not seen, verbatim) says which — branch
+  on it, never on the message. A reply profile is read as its **effective** profile
+  (`session_timeout_secs` is `min(stored, cap)`, `session_timeout_clamped` says so), and a
+  clamped profile cannot be written back to restore its stored timeout: raise the cap first.
+  The decision route `POST /api/v1/network/decide` is FreeRADIUS's, not an SDK's, and has no
+  method here.
+- **§27.6.2 — `network` in the manifest.** `ManagementManifest(network=NetworkSpec(policy=,
+  segments=, profiles=))`. A segment is keyed by **site + kind + name** with `kind` the wire
+  spelling, `"access"` or `"quarantine"` (this SDK has no other spelling); a profile by its
+  segment; the policy is a singleton. `plan` reads `get_policy`, `list_segments` and
+  `list_profiles` and judges **every stated member on the value as read** — a profile's
+  *effective* timeout included, so a stated `session_timeout_secs` above the cap is an
+  `Update` whose `apply` the server refuses with `403` (reported as given; `apply` stops,
+  nothing is lowered or retried). `filter_ids` is compared **as a set** (a reorder is
+  `NoChange`; a repeated Filter-Id in one segment is refused at `plan` with no request) and
+  sent in the order you state. An unstated member is carried from the read; a member stated
+  `None` is left out of the replacement body (`UNSET` is the unstated value). Order: policy,
+  segments, profiles. A profile's `segment_version` is the `version` of this `apply`'s own
+  segment write. A `409` fails that action — `StepOutcome.reason_code` /
+  `ManifestFailure.reason_code` — and re-running `apply` is the recovery. **No pruning**: this
+  SDK prunes nothing in any namespace, so no segment or profile is ever deleted by a manifest.
+- **§14 — the device grant authenticates its client.** A client built with a
+  `client_secret` sends it as the `client_secret` form member at `device_authorize` **and**
+  at every poll (never `Authorization: Basic`, whichever way it is registered); a client with
+  a §6.1 certificate presents it on both; a **public** client sends no credential and is not
+  refused; the poll sends `client_id`; a `401 invalid_client` is an `OAuthProtocolError`,
+  terminal and never refreshed. See [Device authorization grant](#device-authorization-grant-14).
+- **§32.2 — `management.ssf_stream_edit(stream, changes)`**, the change-taking
+  read-modify-write form: it sends `events_requested` and `expected_updated_at` as read (the
+  server's own string; `[]` stays `[]`) and cuts `events_requested` to a lowered
+  `events_allowed`. `ssf_stream_input` stays, and its documentation names the caller's duty;
+  `update_stream`'s documentation states the three meanings of `events_requested` — absent
+  **resets** to every allowed event, `[]` is none, a list is stored as given and refused
+  outside `events_allowed`.
+- **§27.11 rule 5 — held already.** An assigned `None` on `user_id`
+  (`certificates.generate`, `sign_csr`) or `expected_updated_at` (`ssf.update_stream`,
+  `scim_targets.update`) is "none": the key is omitted, `null` is never sent. The request
+  `user_id` is a plain `str | None`, so a malformed value reaches the server and its `400`
+  is raised as `ValidationError`.
 
 ### Contract 1.61 — the 1.0.1 fields (§34.5)
 
@@ -114,7 +172,8 @@ names. Nothing in these sections is carved out.
 | §29 SAML service providers | `client.saml` — eleven generated operations with the call-site notes, `ParseSamlSpMetadata.from_url` / `.from_xml`, `management.saml_service_provider_input` |
 | §30 directory | `client.directory` — six generated operations; `bind_secret` a `SecretStr`; an explicit `None` on `update` sends `null` for `group_base_dn` / `group_filter`, while a `None` secret is omitted (kept), never `null`; `management.set_directory_config` |
 | §31 outbound SCIM targets | `client.scim_targets` — six generated operations; `credential` a `SecretStr`; `management.scim_target_input` |
-| §32 SSF streams | `client.ssf` — five generated operations; `authorization_header` a `SecretStr`; `management.ssf_stream_input` |
+| §32 SSF streams | `client.ssf` — five generated operations; `authorization_header` a `SecretStr`; `management.ssf_stream_input` and, from contract 1.62, the change-taking `management.ssf_stream_edit` |
+| §36 network segments, reply profiles and the cap | `client.network` — twelve generated operations; `ConflictError.reason_code`; the decision route is not SDK work |
 | §32.7 SSF receiver helper | `axiam_sdk.ssf.SsfReceiver` / `AsyncSsfReceiver` — `verify_set`, `poll` — see [SSF receiver](#ssf-receiver-327) |
 | §33 CIBA | `ciba_initiate`, `ciba_poll`, `ciba_await`, `ciba_handle_ping` — see [CIBA](#ciba-33) |
 | §33.2 signed request | `CibaRequestSigner` (PS256, ES256, EdDSA; the caller's key and algorithm, no defaults) |
@@ -137,9 +196,10 @@ plan's C-3 task. Shipped:
 | §27.6.1 — `resources[].metadata` | Shipped: `ResourceSpec(metadata=...)` |
 | §27.6.1 — the resource-scoped, non-inheriting role binding | Shipped: `ScopedRoleBinding(role=, resource=, inherit=False)`, anywhere a `RoleBinding` is accepted (`GroupSpec.roles`, `UserSpec.roles`, `ServiceAccountSpec.roles`) |
 | §27.6.1 — `service_accounts` in the manifest | Shipped: `ServiceAccountSpec`, `ManagementManifest(service_accounts=...)`, `axiam_service_account` |
+| §27.6.2 — `network` in the manifest | Shipped (contract 1.62): `NetworkSpec`, `NetworkSegmentSpec`, `NetworkProfileSpec`, `NetworkPolicySpec`, `ManagementManifest(network=...)` |
 | §27.6 `webhooks` | **Declined.** The contract names it and leaves it unspecified; no consumer has asked for it |
 
-§27 is the management API — 190 administrative operations across 28 namespaces,
+§27 is the management API — 202 administrative operations across 29 namespaces,
 generated from the vendored [`management-registry.json`](./management-registry.json)
 and re-checked against it in CI. See [Management API (§27)](#management-api-27).
 
@@ -1735,7 +1795,7 @@ See [`examples/logout.py`](./examples/logout.py).
 
 ## Management API (§27)
 
-190 administrative operations across 28 namespaces, reached as
+202 administrative operations across 29 namespaces, reached as
 `client.<namespace>.<operation>` on both clients. Acquiring a handle performs no
 I/O, so there is nothing to cache and nothing to close:
 
@@ -1767,7 +1827,7 @@ The same surface exists on `AsyncAxiamClient` with `await`.
 
 | Rule | What it means here |
 |------|--------------------|
-| §27.2 | Namespaced, not flat. Nineteen namespaces have a `list` and nineteen a `get`; flattening 190 operations onto the client would bury the eight §1 methods most callers want. |
+| §27.2 | Namespaced, not flat. Nineteen namespaces have a `list` and nineteen a `get`; flattening 202 operations onto the client would bury the eight §1 methods most callers want. |
 | §27.4 rule 1 | No session, no wire call — `login()` first, or an `AuthError` before anything is sent. |
 | §27.4 rule 3 | `{org_id}` and `{tenant_id}` default from the client. `.in_org(...)` / `.for_tenant(...)` override them and return a *new* handle. |
 | §27.4 rule 4 | `Page.total` is the whole set. `list_all()` walks it, and stops on an empty page even if `total` disagrees. Bare-array reads such as `scopes.list` are lists, not pages. `PageRequest.search` filters **server-side**, before `offset`/`limit`, and `list_all()` carries the term across the whole walk. |
@@ -1944,6 +2004,46 @@ if secret is not None:
   `inherit` reaches the wire only as `False`; a *stated* `inherit=True` is
   accepted and planned exactly like an omitted one, and is never sent
   either.
+- **`network`** (contract 1.62, §27.6.2) is reconciled as the last section — policy, then
+  segments, then profiles — by natural key (segment: site + kind + name, with the wire
+  spelling `access` or `quarantine`; profile: its segment; policy: a singleton). `plan`
+  judges every stated member on the value as the read returns it, so a stated
+  `session_timeout_secs` above the tenant cap is an `Update` that `apply` sends once and the
+  server refuses with `403`; `filter_ids` compares as a set. See
+  [Contract 1.62](#contract-162--the-110-release-346) for the whole list.
+
+  ```python
+  from axiam_sdk.management.manifest import (
+      ManagementManifest,
+      NetworkPolicySpec,
+      NetworkProfileSpec,
+      NetworkSegmentSpec,
+      NetworkSpec,
+  )
+
+  site = ManagementManifest(
+      network=NetworkSpec(
+          policy=NetworkPolicySpec(session_timeout_max_secs=7200),
+          segments=(
+              NetworkSegmentSpec(
+                  key="staff",
+                  site="default",
+                  kind="access",
+                  name="staff",
+                  vlan_id=20,
+                  rank=1,
+                  filter_ids=("staff-in",),
+              ),
+          ),
+          profiles=(
+              NetworkProfileSpec(segment="staff", session_timeout_secs=3600, filter_id="staff-in"),
+          ),
+      )
+  )
+  report = client.manifest.apply(site)  # human caller: a service-account token meets 401
+  if (failure := report.failure()) is not None:
+      print(failure.reason_code, failure.message)  # branch on reason_code, never on the message
+  ```
 - **`service_accounts` is reconciled by `name`**, which the server does not
   enforce uniqueness on: `plan()` fails, before any write, when a stated
   name matches more than one existing account. A `Create`'s one-time
