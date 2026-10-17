@@ -1565,22 +1565,36 @@ class _OidcMixin:
     def _device_authorize_form(self, *, scope: str | None) -> dict[str, str]:
         """Build the ``POST /oauth2/device_authorization`` form body (§14.1).
 
-        **No ``client_secret``**, ever: a device that cannot show a browser
-        also cannot hold one, so §14.1 makes this operation unauthenticated
-        and forbids refusing a client constructed without a secret.
+        Contract 1.62 (§14.1 rule 2, §34.6 items m and t): a client configured
+        with a ``client_secret`` sends it **in the form body**, exactly as at
+        ``/oauth2/token`` -- for a ``client_secret_basic`` registration as well,
+        because no ``Authorization: Basic`` header is ever sent (§12.1 rule 3).
+        A client configured with none -- the usual device, a **public** client --
+        sends ``client_id`` and no credential, and is not refused (rule 1). A
+        client certificate (§6.1) is the credential of an mTLS client and rides
+        on the connection, so nothing is added to the body for it. The SDK never
+        invents a credential and never borrows one from another configuration.
         """
         form = {"client_id": self._require_oidc_client_id()}
         if scope is not None:
             form["scope"] = scope
+        self._append_client_secret(form)
         return form
 
     def _device_poll_form(self, *, device_code: SecretStr | str) -> dict[str, str]:
-        """Build the device-code ``POST /oauth2/token`` form body (§14.1)."""
-        return {
+        """Build the device-code ``POST /oauth2/token`` form body (§14.1).
+
+        ``client_id`` rides on **every** poll (rule 3: a poll without one is
+        ``400 invalid_request``), and the credential the client is configured with
+        is sent here exactly as at :meth:`_device_authorize_form` (rule 2).
+        """
+        form = {
             "grant_type": DEVICE_CODE_GRANT_TYPE,
             "device_code": _expose_secret(device_code),
             "client_id": self._require_oidc_client_id(),
         }
+        self._append_client_secret(form)
+        return form
 
     def _device_authorization_url(
         self, configuration: OidcConfiguration, tenant_id: str | None

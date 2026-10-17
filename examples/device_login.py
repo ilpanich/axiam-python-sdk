@@ -23,8 +23,11 @@ def main() -> None:
     client_id = os.environ.get("AXIAM_OIDC_CLIENT_ID", "my-device")
 
     # No client secret: a device that cannot show a browser cannot keep one
-    # either, and §14.1 makes `device_authorize` unauthenticated for that
-    # reason.
+    # either, and §14.1 makes both device endpoints unauthenticated for a
+    # *public* client. A client registered as confidential passes
+    # `client_secret=...` here instead, and the SDK sends it in the form body at
+    # `device_authorize` and at every poll (contract 1.62) -- never as
+    # `Authorization: Basic`.
     client = AxiamClient(base_url=base_url, tenant_slug="acme", client_id=client_id)
 
     def show(authorization: DeviceAuthorization) -> None:

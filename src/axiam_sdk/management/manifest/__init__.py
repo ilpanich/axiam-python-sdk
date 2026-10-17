@@ -40,9 +40,14 @@ from axiam_sdk.management.manifest._plan import (
     StepOutcome,
 )
 from axiam_sdk.management.manifest._spec import (
+    UNSET,
     GrantSpec,
     GroupSpec,
     ManagementManifest,
+    NetworkPolicySpec,
+    NetworkProfileSpec,
+    NetworkSegmentSpec,
+    NetworkSpec,
     PermissionSpec,
     ResourceSpec,
     RoleBinding,
@@ -54,6 +59,7 @@ from axiam_sdk.management.manifest._spec import (
 )
 
 __all__ = [
+    "UNSET",
     "AppliedStep",
     "ApplyReport",
     "AsyncManifestApi",
@@ -63,6 +69,10 @@ __all__ = [
     "ManagementPlan",
     "ManifestApi",
     "ManifestFailure",
+    "NetworkPolicySpec",
+    "NetworkProfileSpec",
+    "NetworkSegmentSpec",
+    "NetworkSpec",
     "PermissionSpec",
     "PlannedAction",
     "ResourceSpec",

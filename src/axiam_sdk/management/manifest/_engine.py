@@ -17,6 +17,7 @@ from pydantic import SecretStr
 
 from axiam_sdk._errors import NetworkError
 from axiam_sdk.management import models
+from axiam_sdk.management._errors import ConflictError
 from axiam_sdk.management._page import PageRequest
 from axiam_sdk.management.manifest._plan import (
     AppliedStep,
@@ -32,7 +33,11 @@ from axiam_sdk.management.manifest._plan import (
     validate,
 )
 from axiam_sdk.management.manifest._spec import (
+    UNSET,
     ManagementManifest,
+    NetworkProfileSpec,
+    NetworkSegmentSpec,
+    NetworkSpec,
     ResourceSpec,
     RoleBinding,
     ScopedRoleBinding,
@@ -76,6 +81,10 @@ def _failed_outcome(err: Exception) -> StepOutcome:
             restore_succeeded=err.restore_succeeded,
             restore_error=err.restore_error,
         )
+    if isinstance(err, ConflictError):
+        # §27.6.2 item 5: a 409 is that action's failure, and its sub-code is data on
+        # the outcome -- a caller branches on it, never on the message.
+        return StepOutcome("failed", str(err), reason_code=err.reason_code)
     return StepOutcome("failed", str(err))
 
 
@@ -108,6 +117,15 @@ class Resolved:
     service_accounts: dict[str, str] = field(default_factory=dict)
     """Service account key to service account id (CONTRACT §27.6.1
     addition 3, contract 1.51)."""
+
+    network_segments: dict[str, str] = field(default_factory=dict)
+    """Network segment key to segment id (CONTRACT §27.6.2, contract 1.62)."""
+
+    network_segment_versions: dict[str, int] = field(default_factory=dict)
+    """Network segment key to the segment's **latest known** ``version``: the one ``plan``
+    read, replaced by the ``version`` of the response of this ``apply``'s own segment
+    write (§27.6.2 item 4), because that write moved it and a profile that follows must
+    carry the new one as its ``segment_version``."""
 
 
 @dataclass
@@ -157,6 +175,16 @@ class Snapshot:
 
     group_members: dict[str, list[str]] = field(default_factory=dict)
     """Member user ids, keyed by group id."""
+
+    network_policy: models.NetworkPolicyResponse | None = None
+    """The tenant's cap as read, when the manifest states one (§27.6.2 item 3)."""
+
+    network_segments: list[models.NetworkSegmentResponse] = field(default_factory=list)
+    """Every segment of the tenant, walked to exhaustion, when the manifest states any."""
+
+    network_profiles: list[models.NetworkReplyProfile] = field(default_factory=list)
+    """Every reply profile of the tenant -- the **effective** ones -- walked to exhaustion,
+    when the manifest states any."""
 
 
 @dataclass(frozen=True)
@@ -673,6 +701,225 @@ def _compute(
                     Step("add-group-member", user.key, {"group": group_key, "user": user.key}),
                 )
 
+    if manifest.network is not None:
+        _plan_network(push, manifest.network, snapshot, resolved)
+
+    return out
+
+
+def _stated(value: Any) -> bool:
+    """Whether a network spec member was stated at all (``None`` is a statement)."""
+    return value is not UNSET
+
+
+def _plan_network(
+    push: Any,
+    network: NetworkSpec,
+    snapshot: Snapshot,
+    resolved: Resolved,
+) -> None:
+    """The ``network`` section of :func:`_compute` (CONTRACT §27.6.2, contract 1.62).
+
+    **Order**: the policy, then the segments, then the profiles -- a profile after its
+    segment, and the profiles in the segments' order so that ``plan`` is stable (rule 8).
+
+    **Judged on the read** (maintainer, 2026-10-16): every *stated* member is compared with
+    the value as the read returns it -- for a profile, the *effective* (clamped) one -- and
+    no hidden or stored value is. A stated ``session_timeout_secs`` above the tenant's cap
+    therefore differs from the read and is an ``Update`` whose ``apply`` the server refuses
+    with ``403``; ``filter_ids`` is compared as a **set**.
+
+    **The body of an ``Update`` is built from the read**: what the manifest states replaces
+    the read's, what it does not state is carried from the read, and a member stated as
+    ``None`` is left out. The versions are the read's; a segment's is replaced at ``apply``
+    time by the ``version`` of that write's response (:class:`Resolved`).
+    """
+    policy = network.policy
+    if policy is not None:
+        read_policy = snapshot.network_policy
+        summary = f"network policy session_timeout_max_secs {policy.session_timeout_max_secs}"
+        if read_policy is not None and (
+            read_policy.session_timeout_max_secs == policy.session_timeout_max_secs
+        ):
+            push(
+                "no-change",
+                "network-policy",
+                "network.policy",
+                summary,
+                Step("noop", "network.policy"),
+            )
+        else:
+            push(
+                "update",
+                "network-policy",
+                "network.policy",
+                summary,
+                Step(
+                    "replace-network-policy",
+                    "network.policy",
+                    {
+                        "session_timeout_max_secs": policy.session_timeout_max_secs,
+                        # The first write of a tenant that has never written one is `0`.
+                        "version": read_policy.version if read_policy is not None else 0,
+                    },
+                ),
+            )
+
+    specs: dict[str, NetworkSegmentSpec] = {s.key: s for s in network.segments}
+    for segment in network.segments:
+        existing = next(
+            (
+                s
+                for s in snapshot.network_segments
+                if (s.site_key, s.kind, s.name) == (segment.site, segment.kind, segment.name)
+            ),
+            None,
+        )
+        summary = f"network segment {segment.kind}/{segment.site}/{segment.name}"
+        if existing is None:
+            create: dict[str, Any] = {
+                "kind": segment.kind,
+                "site_key": segment.site,
+                "name": segment.name,
+                "vlan_id": segment.vlan_id,
+            }
+            if _stated(segment.rank) and segment.rank is not None:
+                create["rank"] = segment.rank
+            if _stated(segment.filter_ids):
+                create["filter_ids"] = list(segment.filter_ids)  # type: ignore[arg-type]
+            if _stated(segment.enabled):
+                create["enabled"] = segment.enabled
+            push(
+                "create",
+                "network-segment",
+                segment.key,
+                summary,
+                Step("create-network-segment", segment.key, create),
+            )
+            continue
+
+        resolved.network_segments[segment.key] = existing.id
+        resolved.network_segment_versions[segment.key] = existing.version
+        differs = (
+            segment.vlan_id != existing.vlan_id
+            or (_stated(segment.rank) and segment.rank != existing.rank)
+            or (
+                _stated(segment.filter_ids) and set(segment.filter_ids) != set(existing.filter_ids)  # type: ignore[arg-type]
+            )
+            or (_stated(segment.enabled) and segment.enabled != existing.enabled)
+        )
+        if not differs:
+            push("no-change", "network-segment", segment.key, summary, Step("noop", segment.key))
+            continue
+        replace: dict[str, Any] = {
+            "version": existing.version,
+            "vlan_id": segment.vlan_id,
+            # Stated: in the order the manifest states. Unstated: the read's own order.
+            "filter_ids": (
+                list(segment.filter_ids)  # type: ignore[arg-type]
+                if _stated(segment.filter_ids)
+                else list(existing.filter_ids)
+            ),
+            "enabled": segment.enabled if _stated(segment.enabled) else existing.enabled,
+        }
+        rank = segment.rank if _stated(segment.rank) else existing.rank
+        if rank is not None:
+            replace["rank"] = rank
+        push(
+            "update",
+            "network-segment",
+            segment.key,
+            summary,
+            Step("replace-network-segment", segment.key, replace),
+        )
+
+    order = {s.key: i for i, s in enumerate(network.segments)}
+    for profile in sorted(network.profiles, key=lambda p: order[p.segment]):
+        segment = specs[profile.segment]
+        segment_id = resolved.network_segments.get(profile.segment)
+        existing_profile = (
+            next((p for p in snapshot.network_profiles if p.segment_id == segment_id), None)
+            if segment_id is not None
+            else None
+        )
+        summary = f"network profile of segment {segment.kind}/{segment.site}/{segment.name}"
+        if existing_profile is None:
+            push(
+                "create",
+                "network-profile",
+                profile.segment,
+                summary,
+                Step(
+                    "create-network-profile",
+                    profile.segment,
+                    {"profile": _profile_input(profile, None)},
+                ),
+            )
+            continue
+        differs = (
+            profile.session_timeout_secs != existing_profile.session_timeout_secs
+            or (
+                _stated(profile.termination_action)
+                and profile.termination_action != existing_profile.termination_action
+            )
+            or (
+                _stated(profile.idle_timeout_secs)
+                and profile.idle_timeout_secs != existing_profile.idle_timeout_secs
+            )
+            or (_stated(profile.filter_id) and profile.filter_id != existing_profile.filter_id)
+            or (
+                _stated(profile.service_type)
+                and profile.service_type != existing_profile.service_type
+            )
+        )
+        if not differs:
+            push(
+                "no-change",
+                "network-profile",
+                profile.segment,
+                summary,
+                Step("noop", profile.segment),
+            )
+            continue
+        push(
+            "update",
+            "network-profile",
+            profile.segment,
+            summary,
+            Step(
+                "replace-network-profile",
+                profile.segment,
+                {
+                    "version": existing_profile.version,
+                    "profile": _profile_input(profile, existing_profile),
+                },
+            ),
+        )
+
+
+def _profile_input(
+    profile: NetworkProfileSpec, read: models.NetworkReplyProfile | None
+) -> dict[str, Any]:
+    """The ``NetworkReplyProfileInput`` members of a profile write.
+
+    A ``Create`` (``read is None``) sends the timeout and the optional members that were
+    stated and are not ``None``. An ``Update`` is a full replacement built from the read
+    (§27.6.2 item 4): the stated member replaces the read's, an unstated one is **carried**
+    from the read -- the dictionary included, so a replacement never silently moves a
+    profile to another dictionary version -- and a member stated ``None``, or read as
+    ``None``, is **left out**, which is how a replacement clears it. The carried
+    ``session_timeout_secs`` is the read's *effective* value, but the timeout is always
+    stated, so a clamped profile whose manifest states its timeout above the cap is sent
+    as stated and refused by the server.
+    """
+    out: dict[str, Any] = {"session_timeout_secs": profile.session_timeout_secs}
+    if read is not None:
+        out["dictionary"] = read.dictionary
+    for name in ("termination_action", "idle_timeout_secs", "filter_id", "service_type"):
+        stated = getattr(profile, name)
+        value = stated if _stated(stated) else (getattr(read, name) if read is not None else None)
+        if value is not None:
+            out[name] = value
     return out
 
 
@@ -725,6 +972,25 @@ def _no_ambiguous_service_accounts(manifest: ManagementManifest, snapshot: Snaps
         )
 
 
+def _has_core_specs(manifest: ManagementManifest) -> bool:
+    """Whether the manifest states anything but the ``network`` section.
+
+    The tenant-shape reads (resources, permissions, roles, groups, users, service
+    accounts) are made for any manifest that states a spec of those kinds, exactly as
+    before contract 1.62. A manifest that states **only** ``network`` reads only the
+    network (§27.6.2 item 3: ``get_policy``, ``list_segments``, ``list_profiles``) --
+    six irrelevant listings would be six requests the plan does not use.
+    """
+    return bool(
+        manifest.resources
+        or manifest.permissions
+        or manifest.roles
+        or manifest.groups
+        or manifest.users
+        or manifest.service_accounts
+    )
+
+
 def _wanted_scope_resources(manifest: ManagementManifest, snapshot: Snapshot) -> list[str]:
     """Resource ids worth a scope read: only the ones the manifest could match.
 
@@ -749,7 +1015,7 @@ def _wanted_group_ids(manifest: ManagementManifest, snapshot: Snapshot) -> list[
 
 def _status_of(step: Step) -> str:
     """``created``/``updated``/``unchanged``, from the step's own kind."""
-    if step.kind.startswith("update") or step.kind == "rebind-role":
+    if step.kind.startswith(("update", "replace")) or step.kind == "rebind-role":
         return "updated"
     return "created"
 
@@ -815,7 +1081,12 @@ class ManifestApi:
         self._client = client
 
     def plan(self, manifest: ManagementManifest) -> ManagementPlan:
-        """What reconciling ``manifest`` would do. **Issues no writes.**"""
+        """What reconciling ``manifest`` would do. **Issues no writes**: only reads.
+
+        A ``network`` section (§27.6.2) reads ``get_policy``, ``list_segments`` and
+        ``list_profiles``, each walked to exhaustion, and compares every stated member
+        with the value as the read returns it (a profile's *effective*, clamped one).
+        """
         validate(manifest)
         snapshot = self._read(manifest)
         _no_ambiguous_service_accounts(manifest, snapshot)
@@ -840,14 +1111,16 @@ class ManifestApi:
     def _read(self, manifest: ManagementManifest) -> Snapshot:
         """Read the tenant state a plan is computed against."""
         c = self._client
-        snapshot = Snapshot(
-            resources=c.resources.list_all(PLAN_PAGE),
-            permissions=c.permissions.list_all(PLAN_PAGE),
-            roles=c.roles.list_all(PLAN_PAGE),
-            groups=c.groups.list_all(PLAN_PAGE),
-            users=c.users.list_all(PLAN_PAGE),
-            service_accounts=c.service_accounts.list_all(PLAN_PAGE),
-        )
+        snapshot = Snapshot()
+        if _has_core_specs(manifest):
+            snapshot = Snapshot(
+                resources=c.resources.list_all(PLAN_PAGE),
+                permissions=c.permissions.list_all(PLAN_PAGE),
+                roles=c.roles.list_all(PLAN_PAGE),
+                groups=c.groups.list_all(PLAN_PAGE),
+                users=c.users.list_all(PLAN_PAGE),
+                service_accounts=c.service_accounts.list_all(PLAN_PAGE),
+            )
         for resource_id in _wanted_scope_resources(manifest, snapshot):
             snapshot.scopes[resource_id] = c.scopes.list(resource_id)
         for role_id in _wanted_role_ids(manifest, snapshot):
@@ -861,6 +1134,16 @@ class ManifestApi:
             snapshot.group_members[group_id] = [
                 u.id for u in c.groups.list_members_all(group_id, PLAN_PAGE)
             ]
+        network = manifest.network
+        if network is not None:
+            # §27.6.2 item 3: GETs only, each list walked to exhaustion; nothing is read
+            # for a part of the section the manifest does not state.
+            if network.policy is not None:
+                snapshot.network_policy = c.network.get_policy()
+            if network.segments:
+                snapshot.network_segments = c.network.list_segments_all(None, PLAN_PAGE)
+            if network.profiles:
+                snapshot.network_profiles = c.network.list_profiles_all(PLAN_PAGE)
         return snapshot
 
     def _execute(self, steps: list[tuple[PlannedAction, Step]], resolved: Resolved) -> ApplyReport:
@@ -1005,6 +1288,38 @@ class ManifestApi:
         elif step.kind == "add-group-member":
             c.groups.add_member(
                 r.groups[p["group"]], models.AddMemberRequest(user_id=r.users[p["user"]])
+            )
+        elif step.kind == "replace-network-policy":
+            c.network.replace_policy(
+                models.ReplaceNetworkPolicyRequest(
+                    session_timeout_max_secs=p["session_timeout_max_secs"], version=p["version"]
+                )
+            )
+        elif step.kind == "create-network-segment":
+            segment = c.network.create_segment(models.CreateNetworkSegmentRequest(**p))
+            r.network_segments[step.key] = segment.id
+            r.network_segment_versions[step.key] = segment.version
+        elif step.kind == "replace-network-segment":
+            replaced = c.network.replace_segment(
+                r.network_segments[step.key], models.ReplaceNetworkSegmentRequest(**p)
+            )
+            r.network_segment_versions[step.key] = replaced.version
+        elif step.kind == "create-network-profile":
+            c.network.create_profile(
+                models.CreateNetworkReplyProfileRequest(
+                    profile=models.NetworkReplyProfileInput(**p["profile"]),
+                    segment_id=r.network_segments[step.key],
+                    segment_version=r.network_segment_versions[step.key],
+                )
+            )
+        elif step.kind == "replace-network-profile":
+            c.network.replace_profile(
+                r.network_segments[step.key],
+                models.ReplaceNetworkReplyProfileRequest(
+                    profile=models.NetworkReplyProfileInput(**p["profile"]),
+                    segment_version=r.network_segment_versions[step.key],
+                    version=p["version"],
+                ),
             )
         else:  # pragma: no cover - every kind _compute emits is handled above.
             raise AssertionError(f"unknown manifest step {step.kind!r}")
@@ -1179,14 +1494,16 @@ class AsyncManifestApi:
     async def _read(self, manifest: ManagementManifest) -> Snapshot:
         """Read the tenant state a plan is computed against."""
         c = self._client
-        snapshot = Snapshot(
-            resources=await c.resources.list_all(PLAN_PAGE),
-            permissions=await c.permissions.list_all(PLAN_PAGE),
-            roles=await c.roles.list_all(PLAN_PAGE),
-            groups=await c.groups.list_all(PLAN_PAGE),
-            users=await c.users.list_all(PLAN_PAGE),
-            service_accounts=await c.service_accounts.list_all(PLAN_PAGE),
-        )
+        snapshot = Snapshot()
+        if _has_core_specs(manifest):
+            snapshot = Snapshot(
+                resources=await c.resources.list_all(PLAN_PAGE),
+                permissions=await c.permissions.list_all(PLAN_PAGE),
+                roles=await c.roles.list_all(PLAN_PAGE),
+                groups=await c.groups.list_all(PLAN_PAGE),
+                users=await c.users.list_all(PLAN_PAGE),
+                service_accounts=await c.service_accounts.list_all(PLAN_PAGE),
+            )
         for resource_id in _wanted_scope_resources(manifest, snapshot):
             snapshot.scopes[resource_id] = await c.scopes.list(resource_id)
         for role_id in _wanted_role_ids(manifest, snapshot):
@@ -1202,6 +1519,14 @@ class AsyncManifestApi:
             snapshot.group_members[group_id] = [
                 u.id for u in await c.groups.list_members_all(group_id, PLAN_PAGE)
             ]
+        network = manifest.network
+        if network is not None:
+            if network.policy is not None:
+                snapshot.network_policy = await c.network.get_policy()
+            if network.segments:
+                snapshot.network_segments = await c.network.list_segments_all(None, PLAN_PAGE)
+            if network.profiles:
+                snapshot.network_profiles = await c.network.list_profiles_all(PLAN_PAGE)
         return snapshot
 
     async def _execute(
@@ -1350,6 +1675,38 @@ class AsyncManifestApi:
         elif step.kind == "add-group-member":
             await c.groups.add_member(
                 r.groups[p["group"]], models.AddMemberRequest(user_id=r.users[p["user"]])
+            )
+        elif step.kind == "replace-network-policy":
+            await c.network.replace_policy(
+                models.ReplaceNetworkPolicyRequest(
+                    session_timeout_max_secs=p["session_timeout_max_secs"], version=p["version"]
+                )
+            )
+        elif step.kind == "create-network-segment":
+            segment = await c.network.create_segment(models.CreateNetworkSegmentRequest(**p))
+            r.network_segments[step.key] = segment.id
+            r.network_segment_versions[step.key] = segment.version
+        elif step.kind == "replace-network-segment":
+            replaced = await c.network.replace_segment(
+                r.network_segments[step.key], models.ReplaceNetworkSegmentRequest(**p)
+            )
+            r.network_segment_versions[step.key] = replaced.version
+        elif step.kind == "create-network-profile":
+            await c.network.create_profile(
+                models.CreateNetworkReplyProfileRequest(
+                    profile=models.NetworkReplyProfileInput(**p["profile"]),
+                    segment_id=r.network_segments[step.key],
+                    segment_version=r.network_segment_versions[step.key],
+                )
+            )
+        elif step.kind == "replace-network-profile":
+            await c.network.replace_profile(
+                r.network_segments[step.key],
+                models.ReplaceNetworkReplyProfileRequest(
+                    profile=models.NetworkReplyProfileInput(**p["profile"]),
+                    segment_version=r.network_segment_versions[step.key],
+                    version=p["version"],
+                ),
             )
         else:  # pragma: no cover - every kind _compute emits is handled above.
             raise AssertionError(f"unknown manifest step {step.kind!r}")

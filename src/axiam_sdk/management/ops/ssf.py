@@ -216,7 +216,22 @@ class SsfApi:
         ``clear_authorization_header=True``, else ``400`` (§32.3 rule 5). An
         update overtaken by the receiver's own write is ``409``: read the
         stream again (:func:`~axiam_sdk.management.ssf_stream_input` turns
-        the read into this body).
+        the read into this body;
+        :func:`~axiam_sdk.management.ssf_stream_changes` applies your
+        changes to it).
+
+        **The three meanings of ``events_requested`` on an update** (§32.2,
+        contract 1.62): *absent* **resets** the stream to every event of
+        ``events_allowed`` (as on create), widening a narrowing the receiver
+        made; ``[]`` is stored as the receiver's "none" -- it does not
+        widen, and the stream carries nothing; a list of event types is
+        stored as given and refused (``400``) if any is outside
+        ``events_allowed``. The omitted members take their defaults on an
+        update: ``description``, ``endpoint_url`` and ``status_reason``
+        null; ``subject_format`` ``iss_sub``; ``status`` ``enabled``;
+        ``clear_authorization_header`` false. A raw API client that leaves
+        ``events_requested`` out of the ``PUT`` resets the stream in the
+        same way.
 
         **This is a replacement, not a patch** (§27.4 rule 5). The body's
         type says which members are required; an optional member you leave
@@ -322,7 +337,22 @@ class AsyncSsfApi:
         ``clear_authorization_header=True``, else ``400`` (§32.3 rule 5). An
         update overtaken by the receiver's own write is ``409``: read the
         stream again (:func:`~axiam_sdk.management.ssf_stream_input` turns
-        the read into this body).
+        the read into this body;
+        :func:`~axiam_sdk.management.ssf_stream_changes` applies your
+        changes to it).
+
+        **The three meanings of ``events_requested`` on an update** (§32.2,
+        contract 1.62): *absent* **resets** the stream to every event of
+        ``events_allowed`` (as on create), widening a narrowing the receiver
+        made; ``[]`` is stored as the receiver's "none" -- it does not
+        widen, and the stream carries nothing; a list of event types is
+        stored as given and refused (``400``) if any is outside
+        ``events_allowed``. The omitted members take their defaults on an
+        update: ``description``, ``endpoint_url`` and ``status_reason``
+        null; ``subject_format`` ``iss_sub``; ``status`` ``enabled``;
+        ``clear_authorization_header`` false. A raw API client that leaves
+        ``events_requested`` out of the ``PUT`` resets the stream in the
+        same way.
 
         **This is a replacement, not a patch** (§27.4 rule 5). The body's
         type says which members are required; an optional member you leave

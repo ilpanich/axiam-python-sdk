@@ -9,7 +9,9 @@ from pydantic import SecretStr
 
 from axiam_sdk._errors import NetworkError
 from axiam_sdk.management.manifest._spec import (
+    UNSET,
     ManagementManifest,
+    NetworkSpec,
     RoleBinding,
     RoleSpec,
     ScopedRoleBinding,
@@ -40,6 +42,9 @@ Target = Literal[
     "group-member",
     "service-account",
     "service-account-role",
+    "network-policy",
+    "network-segment",
+    "network-profile",
 ]
 """Which part of the manifest an action came from."""
 
@@ -70,7 +75,9 @@ class ManagementPlan:
 
     Ordering is derived, not incidental: resources (parents before children),
     then scopes, permissions, roles, role grants, groups, group bindings, users,
-    and finally the user bindings that need all of the above to exist. Two plans
+    the user bindings that need all of the above to exist, and -- from contract
+    1.62 (§27.6.2) -- the ``network`` section: its policy, then its segments, then
+    its profiles. Two plans
     over unchanged state are equal, in the same order (§27.6 rule 8) — a plan
     that reorders between runs cannot be diffed, and diffing it is most of the
     reason it exists.
@@ -131,6 +138,14 @@ class StepOutcome:
     ``False``. ``None`` whenever ``restore_succeeded`` is ``None`` or
     ``True``."""
 
+    reason_code: str | None = None
+    """The ``409``'s ``reason_code`` (CONTRACT §36.4, §27.6.2 item 5), on a ``failed``
+    step whose write was refused with a ``409``: ``stale_version``, ``strands_profile``,
+    ``has_children``, ``site_gone``, ``duplicate_name``, ``duplicate_vlan``,
+    ``duplicate_rank``, ``profile_exists``, ``other`` -- or a value this SDK has never
+    seen, verbatim (the vocabulary is open). ``None`` for every other step and for a
+    ``409`` that named none. Branch on it, never on :attr:`message`."""
+
 
 @dataclass(frozen=True)
 class AppliedStep:
@@ -153,6 +168,9 @@ class ManifestFailure:
     message: str
     """The error the server or transport gave."""
 
+    reason_code: str | None = None
+    """The ``409`` sub-code of a conflict (:attr:`StepOutcome.reason_code`), if any."""
+
 
 @dataclass(frozen=True)
 class ApplyReport:
@@ -174,7 +192,9 @@ class ApplyReport:
         """The failing step, if the apply stopped early."""
         for step in self.steps:
             if step.outcome.status == "failed":
-                return ManifestFailure(step.action, step.outcome.message or "")
+                return ManifestFailure(
+                    step.action, step.outcome.message or "", step.outcome.reason_code
+                )
         return None
 
     def is_complete(self) -> bool:
@@ -267,6 +287,9 @@ def validate(manifest: ManagementManifest) -> None:
             problems,
         )
 
+    if manifest.network is not None:
+        _validate_network(manifest.network, problems)
+
     try:
         topological_order(manifest)
     except NetworkError as err:
@@ -276,6 +299,54 @@ def validate(manifest: ManagementManifest) -> None:
         raise NetworkError(
             f"manifest is not reconcilable ({len(problems)} problem(s)): " + "; ".join(problems)
         )
+
+
+def _validate_network(network: NetworkSpec, problems: list[str]) -> None:
+    """The client-side refusals of CONTRACT §27.6.2 item 1, each made before any request.
+
+    * a segment ``key`` declared twice, and **a natural key named twice** -- two segments
+      with one site, kind and name cannot be reconciled with one server row;
+    * a profile whose ``segment`` names no segment spec of this manifest (the manifest
+      does not reach for a segment it does not declare), and two profiles for one segment;
+    * **a segment that lists one Filter-Id twice**: ``filter_ids`` is compared as a set,
+      and a set has no repeated member (maintainer, 2026-10-16).
+
+    The policy is a singleton, so a manifest cannot carry two by construction.
+    """
+    _duplicates("network segment", [s.key for s in network.segments], problems)
+    natural: set[tuple[str, str, str]] = set()
+    for segment in network.segments:
+        identity = (segment.site, segment.kind, segment.name)
+        if identity in natural:
+            problems.append(
+                f"network segment {segment.key!r} repeats the natural key site "
+                f"{segment.site!r} + kind {segment.kind!r} + name {segment.name!r}, which "
+                f"another segment of this manifest already states"
+            )
+        natural.add(identity)
+        if segment.filter_ids is not UNSET:
+            seen: set[str] = set()
+            for name in segment.filter_ids:
+                if name in seen:
+                    problems.append(
+                        f"network segment {segment.key!r} lists filter_id {name!r} more than "
+                        f"once; filter_ids is a set (CONTRACT §27.6.2)"
+                    )
+                seen.add(name)
+    segment_keys = {s.key for s in network.segments}
+    profiled: set[str] = set()
+    for profile in network.profiles:
+        if profile.segment not in segment_keys:
+            problems.append(
+                f"network profile names segment {profile.segment!r}, which no network "
+                f"segment of this manifest declares"
+            )
+        if profile.segment in profiled:
+            problems.append(
+                f"network segment {profile.segment!r} has more than one profile in this "
+                f"manifest; a profile is keyed by its segment"
+            )
+        profiled.add(profile.segment)
 
 
 def _duplicates(kind: str, keys: list[str], problems: list[str]) -> None:

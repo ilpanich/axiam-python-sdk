@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the CONTRACT §27 management surface for the Python SDK.
 
-Reads ``management-registry.json`` (the 190 operations across 28 namespaces,
+Reads ``management-registry.json`` (the 202 operations across 29 namespaces,
 maintained in ``ilpanich/axiam`` and vendored here) plus ``openapi.json`` for the
 schemas those operations carry, and writes:
 
@@ -10,7 +10,7 @@ schemas those operations carry, and writes:
   namespace, in a sync and an async form;
 - ``src/axiam_sdk/management/ops/__init__.py`` — the accessors the clients mix in;
 - ``tests/test_management_surface_generated.py`` — one conformance case per
-  operation, plus the §27.9 assertion that all 190 are reached.
+  operation, plus the §27.9 assertion that all 202 are reached.
 
 Run with ``--check`` to verify the committed output is current; that is what CI
 runs, so a registry change that is not regenerated fails the build rather than
@@ -197,7 +197,61 @@ CALL_SITE_NOTES: dict[str, str] = {
         "is stored: then it must carry ``authorization_header`` again or "
         "``clear_authorization_header=True``, else ``400`` (§32.3 rule 5). An update "
         "overtaken by the receiver's own write is ``409``: read the stream again "
-        "(:func:`~axiam_sdk.management.ssf_stream_input` turns the read into this body)."
+        "(:func:`~axiam_sdk.management.ssf_stream_input` turns the read into this body; "
+        ":func:`~axiam_sdk.management.ssf_stream_changes` applies your changes to it).\n\n"
+        "**The three meanings of ``events_requested`` on an update** (§32.2, contract "
+        "1.62): *absent* **resets** the stream to every event of ``events_allowed`` (as on "
+        "create), widening a narrowing the receiver made; ``[]`` is stored as the "
+        'receiver\'s "none" -- it does not widen, and the stream carries nothing; a list '
+        "of event types is stored as given and refused (``400``) if any is outside "
+        "``events_allowed``. The omitted members take their defaults on an update: "
+        "``description``, ``endpoint_url`` and ``status_reason`` null; ``subject_format`` "
+        "``iss_sub``; ``status`` ``enabled``; ``clear_authorization_header`` false. A raw "
+        "API client that leaves ``events_requested`` out of the ``PUT`` resets the stream "
+        "in the same way."
+    ),
+    **{
+        f"network.{name}": (
+            "**Conditional on the version you read** (§36.3 rule 2): the version is sent "
+            "exactly as given, and a stale one is ``409`` (:class:`~axiam_sdk.management."
+            "ConflictError`, whose ``reason_code`` says which conflict -- branch on it, "
+            "never on the message). Never retried (§36.7), and the SDK offers no helper "
+            "that re-reads and tries again: a ``409`` means another administrator wrote, "
+            "and the administrator decides (§36.9). A ``403`` carries the missing "
+            "permission in ``action`` and the node in ``resource_id``."
+        )
+        for name in ("replace_segment", "delete_segment", "delete_profile", "replace_policy")
+    },
+    "network.create_segment": (
+        "A ``409`` is a :class:`~axiam_sdk.management.ConflictError` whose ``reason_code`` "
+        "says which (``duplicate_name``, ``duplicate_vlan``, ``duplicate_rank``, "
+        "``site_gone``); branch on it, never on the message. Never retried (§36.7). A "
+        "``403`` carries the missing permission in ``action`` and the node in "
+        "``resource_id``."
+    ),
+    "network.create_profile": (
+        "**Conditional on the segment version you read** (§36.3 rule 2): "
+        "``segment_version`` is sent exactly as given, and a segment written since is "
+        "``409`` (:class:`~axiam_sdk.management.ConflictError`, ``reason_code`` "
+        "``stale_version``; ``profile_exists`` when the segment already has a profile). "
+        "Never retried (§36.7), and the SDK offers no helper that re-reads and tries "
+        "again (§36.9). A ``403`` carries the missing permission in ``action`` and the "
+        "node in ``resource_id``."
+    ),
+    "network.replace_profile": (
+        "**Conditional on both versions you read** (§36.3 rule 2): ``version`` is the "
+        "profile's and ``segment_version`` the owning segment's, each sent exactly as "
+        "given; a stale one is ``409`` (:class:`~axiam_sdk.management.ConflictError`, "
+        "``reason_code`` ``stale_version``), never retried (§36.7, §36.9). **A clamped "
+        "profile cannot be written back to restore its stored timeout** (§36.3 rule 6): "
+        "a read returns the effective ``session_timeout_secs`` (``min(stored, cap)``, "
+        "``session_timeout_clamped`` says so), the write gate refuses a value above the "
+        "current cap, so a read-modify-write stores the clamped value from then on. Raise "
+        "the cap first, with the profile left alone, to restore it at read."
+    ),
+    "network.list_segments": (
+        "``site`` narrows the list to one site key; ``page.search`` is matched before "
+        "paging against a segment's name, site key and id (§36.1)."
     ),
     "scim_targets.create": (
         "``credential`` is required here (§31.3 rule 2). It is write-only: no response "
@@ -1147,6 +1201,18 @@ def projection_map() -> dict[str, list[dict[str, Any]]]:
     return out
 
 
+def is_integer_param(q: dict[str, Any]) -> bool:
+    """Whether a registry query parameter is an integer.
+
+    The registry spells a type ``"integer"`` or, for an optional one, a list such as
+    ``["integer", "null"]``. The only non-paging integer query parameter at contract
+    1.62 is the ``version`` of ``network.delete_segment`` / ``delete_profile``
+    (CONTRACT §36.3 rule 2), which a caller holds as the integer the server returned.
+    """
+    kind = q["type"]
+    return kind == "integer" or (isinstance(kind, list) and "integer" in kind)
+
+
 def filter_name(namespace: str, opname: str, optional: list[Any]) -> str | None:
     """The filter dataclass name for an operation with more than two filters."""
     return f"{pascal(namespace)}{pascal(opname)}Filter" if len(optional) > 2 else None
@@ -1206,7 +1272,7 @@ def operation_signature(
             args.append((safe(p["name"]), "str", ""))
     required_q, optional_q = split_query(op)
     for q in required_q:
-        args.append((safe(q["name"]), "str", ""))
+        args.append((safe(q["name"]), "int" if is_integer_param(q) else "str", ""))
     if op["request_body"] == "schema":
         args.append(("body", f"models.{pascal(op['request_schema'])}", ""))
     elif op["request_body"] == "untyped":
@@ -1216,7 +1282,9 @@ def operation_signature(
         args.append(("filter", f"{fname} | None", "None"))
     else:
         for q in optional_q:
-            args.append((safe(q["name"]), "str | None", "None"))
+            args.append(
+                (safe(q["name"]), "int | None" if is_integer_param(q) else "str | None", "None")
+            )
     if op["paginated"]:
         args.append(("page", "PageRequest | None", "None"))
     return args
@@ -1253,9 +1321,13 @@ def emit_call_builder(namespace: str, opname: str, op: dict[str, Any]) -> list[s
     if op["paginated"]:
         query.append("**page_query(page)")
     for q in required_q:
-        query.append(f'"{q["name"]}": {safe(q["name"])}')
+        # An integer is sent exactly as given, as its decimal text (§36.3 rule 2).
+        src = f"str({safe(q['name'])})" if is_integer_param(q) else safe(q["name"])
+        query.append(f'"{q["name"]}": {src}')
     for q in optional_q:
         src = f"(filter.{safe(q['name'])} if filter else None)" if fname else safe(q["name"])
+        if is_integer_param(q):
+            src = f"None if {src} is None else str({src})"
         query.append(f'"{q["name"]}": {src}')
 
     if op["request_body"] == "schema":
@@ -1564,7 +1636,7 @@ def emit_namespace(namespace: str, nsdef: dict[str, Any]) -> str:
 INDEX_DOC = '''"""One handle per §27 namespace, and the accessors that reach them.
 
 §27.2 makes this namespacing normative rather than stylistic: nineteen namespaces
-have a ``list`` and nineteen a ``get``, so flattening 190 operations onto the
+have a ``list`` and nineteen a ``get``, so flattening 202 operations onto the
 client would need a disambiguating prefix invented once per operation -- and
 would bury the eight §1 methods most callers actually want under twenty times
 as many they do not.
@@ -1841,7 +1913,7 @@ def call_arguments(
             args.append('"example"')
             route = route.replace(f"{{{name}}}", "example")
     required_q, optional_q = split_query(op)
-    args.extend('"example"' for _ in required_q)
+    args.extend("7" if is_integer_param(q) else '"example"' for q in required_q)
     if f"{namespace}.{opname}" in PRECHECK_TEST_BODIES:
         args.append(PRECHECK_TEST_BODIES[f"{namespace}.{opname}"])
     elif op["request_body"] == "schema":
@@ -1952,7 +2024,7 @@ def emit_test() -> str:
     out.append("def test_generated_surface_covers_the_registry() -> None:")
     out.extend(
         docstring(
-            "§27.9: a partial regeneration must fail here, not ship 183 of 190.\n\nAsserting "
+            "§27.9: a partial regeneration must fail here, not ship 195 of 202.\n\nAsserting "
             "the whole set rather than the count catches a regeneration that dropped one "
             "operation and gained another.",
             "    ",

@@ -1049,7 +1049,10 @@ class CreateCaCertificateRequest(ManagementModel):
 
     A **common name**, not a distinguished name. A single `CN=` prefix is
     accepted and stripped; anything else containing `=` — `O=Acme, CN=ACME
-    Corp Root CA` — is refused with `400`.
+    Corp Root CA` — is refused with `400`, as is a name of more than 64
+    characters (RFC 5280 `ub-common-name`) or one holding a control
+    character, a tab or line break, an invisible or bidirectional formatting
+    character, or two spaces in a row.
     """
 
     validity_days: int
@@ -1082,7 +1085,15 @@ class CreateCertificateRequest(ManagementModel):
     """``metadata``."""
 
     subject: str
-    """``subject``."""
+    """The certificate's common name, e.g. `device-001`: a bare name or one
+
+    `CN=` component, at most 64 characters (RFC 5280 `ub-common-name`),
+    printable — a control character, tab or line break, an invisible or
+    bidirectional formatting character, or two spaces in a row is refused
+    with `400`. A name that is to be written into another system's
+    configuration (a FreeRADIUS table, an ACL) should match
+    `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
+    """
 
     subject_alt_names: list[SubjectAltName] | None = None
     """The names a `Server` certificate is issued for, as `[{"dns":
@@ -1275,6 +1286,68 @@ class CreateIntermediateCaRequest(ManagementModel):
 
     validity_days: int
     """Validity duration in days, capped to the parent's own expiry."""
+
+
+class CreateNetworkReplyProfileRequest(ManagementModel):
+    """The body of `POST /api/v1/network/profiles`."""
+
+    profile: NetworkReplyProfileInput
+    """The profile: a typed record of the `axiam-radius-reply/1` dictionary.
+
+    The VLAN is never a field; it is the segment's.
+    """
+
+    segment_id: str
+    """The segment the profile belongs to (at most one profile per segment)."""
+
+    segment_version: int
+    """The segment's `version` as the caller read it: the envelope the profile
+
+    was written against. A segment written since is `409`.
+    """
+
+
+class CreateNetworkSegmentRequest(ManagementModel):
+    """The body of `POST /api/v1/network/segments`."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"access", "quarantine"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
+    enabled: bool | None = None
+    """Whether the segment starts as a placement candidate. Defaults to `true`."""
+
+    filter_ids: list[str] | None = None
+    """The `Filter-Id` names the segment's profile may choose from: its
+
+    envelope. At most 32, each matching the pattern above.
+    """
+
+    kind: NetworkSegmentKind
+    """`access` or `quarantine`. Decides the branch the segment lives under."""
+
+    name: str
+    """The segment's name, same pattern, unique within the site."""
+
+    rank: int | None = None
+    """The placement rank (unique within the site): required for `access`,
+
+    absent for `quarantine`.
+    """
+
+    site_key: str
+    """The site key (`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`). A single-site tenant
+
+    uses `default`.
+    """
+
+    vlan_id: int
+    """The VLAN (1 to 4094), unique within the site."""
 
 
 class CreateNotificationRuleRequest(ManagementModel):
@@ -2408,6 +2481,11 @@ class GeneratedCaCertificate(ManagementModel):
 
     there is one to return.
 
+    An unencrypted PKCS#8 `PRIVATE KEY` block. An Ed25519 key is RFC 8410
+    version 1 (`version` INTEGER 0, the 32-byte seed and no embedded public
+    key), which OpenSSL 3.0 reads; an RSA-4096 key is the usual PKCS#8
+    `RSAPrivateKey`.
+
     Absent under `vault_pki` custody, where the key was generated inside
     Vault and no API exports it. The field is omitted rather than sent as
     `null` so a client that has always read it keeps working unchanged for
@@ -2514,6 +2592,12 @@ class GeneratedCertificate(ManagementModel):
     private_key_pem: SecretStr
     """PEM-encoded private key — returned only on generation.
 
+
+    An unencrypted PKCS#8 `PRIVATE KEY` block. An Ed25519 key AXIAM
+    generated is RFC 8410 version 1 (`version` INTEGER 0, the 32-byte seed
+    and no embedded public key), which OpenSSL 3.0 reads; the longer RFC
+    5958 v2 form it does not. An RSA-4096 key is the usual PKCS#8
+    `RSAPrivateKey`.
 
     **Secret.** Redacted from every string, log and JSON rendering; call
     ``.get_secret_value()`` to read it.
@@ -3064,6 +3148,221 @@ taking down every record on the page over one field of one of them. The
 listed members stay in the annotation because they are what a reader needs;
 what the widening removes is the claim that nothing else can occur.
 """
+
+
+class NetworkPolicyResponse(ManagementModel):
+    """The tenant's network policy, as the management API returns it."""
+
+    session_timeout_max_secs: int
+    """`network.session_timeout_max_secs`: the most a reply profile's
+
+    `Session-Timeout` may be, in seconds (300 to 86 400; 3600 until the
+    tenant writes one). A stored profile above it is clamped at read.
+    """
+
+    tenant_id: str
+    """The owning tenant."""
+
+    updated_at: str | None = None
+    """Last write time; absent while it is the default."""
+
+    updated_by: str | None = None
+    """The administrator who last wrote it; absent while it is the default."""
+
+    version: int
+    """The version the next `PUT` must name; `0` until the tenant first writes."""
+
+
+class NetworkReplyProfile(ManagementModel):
+    """A segment's reply profile as read: **the effective one**, with the
+    `Session-Timeout` already clamped to the tenant's current cap (design
+    note §3.4) and `Idle-Timeout` kept within it.
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "service_type": frozenset({"framed_user"}),
+        "termination_action": frozenset({"default", "radius_request"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
+    created_at: str
+    """Creation time."""
+
+    created_by: str
+    """The administrator who created it."""
+
+    dictionary: str
+    """The dictionary version the profile was validated against."""
+
+    filter_id: str | None = None
+    """`Filter-Id`, one of the segment's declared names."""
+
+    idle_timeout_secs: int | None = None
+    """`Idle-Timeout`, seconds, never above the effective `Session-Timeout`."""
+
+    segment_id: str
+    """The owning segment, which is also this profile's id: one profile per
+
+    segment, at most.
+    """
+
+    service_type: RadiusServiceType | None = None
+    """``service_type``."""
+
+    session_timeout_clamped: bool
+    """Whether the stored value was above the cap and has been lowered."""
+
+    session_timeout_secs: int
+    """`Session-Timeout`, seconds: the stored value lowered to the tenant's
+
+    current cap. This is the value a reply carries.
+    """
+
+    tenant_id: str
+    """The owning tenant."""
+
+    termination_action: RadiusTerminationAction
+    """`Termination-Action`."""
+
+    updated_at: str
+    """Last write time."""
+
+    updated_by: str
+    """The administrator who last wrote it."""
+
+    version: int
+    """The version the next replace or delete must name. Starts at 1."""
+
+
+class NetworkReplyProfileInput(ManagementModel):
+    """What a writer supplies for a profile. Closed: an unknown key is a
+    refusal naming it, never ignored (design note §3.4).
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "service_type": frozenset({"framed_user"}),
+        "termination_action": frozenset({"default", "radius_request"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
+    dictionary: str | None = None
+    """The dictionary version the profile is written against; defaults to
+
+    [`REPLY_DICTIONARY_V1`]. An unknown version is refused.
+    """
+
+    filter_id: str | None = None
+    """`Filter-Id`: one of the owning segment's declared `filter_ids`."""
+
+    idle_timeout_secs: int | None = None
+    """`Idle-Timeout`, seconds: [`IDLE_TIMEOUT_FLOOR_SECS`] up to
+
+    `session_timeout_secs`.
+    """
+
+    service_type: RadiusServiceType | None = None
+    """``service_type``."""
+
+    session_timeout_secs: int
+    """`Session-Timeout`, seconds: [`SESSION_TIMEOUT_FLOOR_SECS`] up to the
+
+    tenant cap. Never zero.
+    """
+
+    termination_action: RadiusTerminationAction | None = None
+    """`Termination-Action`; defaults to `RADIUS-Request`."""
+
+
+NetworkSegmentKind = Literal["access", "quarantine"] | str
+"""What a segment is for.
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+class NetworkSegmentResponse(ManagementModel):
+    """A network segment, as the management API returns it."""
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "kind": frozenset({"access", "quarantine"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
+    created_at: str
+    """Creation time."""
+
+    created_by: str
+    """The administrator who created it."""
+
+    enabled: bool
+    """Whether the segment is a placement candidate."""
+
+    filter_ids: list[str]
+    """The `Filter-Id` names the segment's profile may choose from."""
+
+    id: str
+    """The segment id; also the id of its resource node, which `check_access`
+
+    is asked about, and of its reply profile.
+    """
+
+    kind: NetworkSegmentKind
+    """`access` (under `/network/zones`) or `quarantine` (under
+
+    `/network/quarantine`); fixed for the segment's life.
+    """
+
+    name: str
+    """The segment's name, unique within its site."""
+
+    path: str
+    """The segment's place in the reserved subtree,
+
+    `/network/{zones|quarantine}/<site_key>/<name>`.
+    """
+
+    rank: int | None = None
+    """The placement rank among a site's `access` segments (lowest wins);
+
+    absent for a quarantine segment.
+    """
+
+    site_key: str
+    """The site key."""
+
+    tenant_id: str
+    """The owning tenant."""
+
+    updated_at: str
+    """Last write time."""
+
+    updated_by: str
+    """The administrator who last wrote it."""
+
+    version: int
+    """The version the next replace or delete must name."""
+
+    vlan_id: int
+    """The VLAN the tunnel attributes carry (1 to 4094), unique per site."""
 
 
 NotificationEventType = (
@@ -4135,6 +4434,35 @@ built once at import rather than per call.
 """
 
 
+RadiusServiceType = Literal["framed_user"] | str
+"""`Service-Type` (RFC 2865 §5.6). Option B accepts only `framed_user`; the
+
+administrative values are refused with a 400.
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
+RadiusTerminationAction = Literal["default", "radius_request"] | str
+"""`Termination-Action` (RFC 2865 §5.29).
+
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
+
+
 class ReactorEventDescriptor(ManagementModel):
     """One hookable event, as the registry describes it."""
 
@@ -4299,6 +4627,68 @@ class RegistrationTokenResponse(ManagementModel):
     — the registration a token produced is recorded in the audit log, not
     here.
     """
+
+
+class ReplaceNetworkPolicyRequest(ManagementModel):
+    """The body of `PUT /api/v1/network/policy`: a **replacement** of the
+    policy.
+    """
+
+    session_timeout_max_secs: int
+    """The new cap on a reply profile's `Session-Timeout`, in seconds: 300 to
+
+    86 400. Lowering it below an existing profile's value is fine (reads
+    clamp); raising it is allowed and audited as a raise.
+    """
+
+    version: int
+    """The policy's `version` as the caller read it (`0` for a tenant that has
+
+    never written one). A stale one is `409`.
+    """
+
+
+class ReplaceNetworkReplyProfileRequest(ManagementModel):
+    """The body of `PUT /api/v1/network/profiles/{segment_id}`."""
+
+    profile: NetworkReplyProfileInput
+    """The profile."""
+
+    segment_version: int
+    """The segment's `version` as the caller read it, as for
+
+    [`CreateReplyProfileRequest::segment_version`].
+    """
+
+    version: int
+    """The profile's `version` as the caller read it. A stale one is `409`."""
+
+
+class ReplaceNetworkSegmentRequest(ManagementModel):
+    """The body of `PUT /api/v1/network/segments/{id}`: a **replacement** of
+    the envelope. The kind and the place in the tree do not change.
+    """
+
+    enabled: bool
+    """Whether the segment is a placement candidate."""
+
+    filter_ids: list[str]
+    """The `Filter-Id` names the segment's profile may choose from. Removing
+
+    the one the profile uses is `409`, naming the profile.
+    """
+
+    rank: int | None = None
+    """The placement rank: required for an `access` segment, absent for a
+
+    `quarantine` one.
+    """
+
+    version: int
+    """The segment's `version` as the caller read it. A stale one is `409`."""
+
+    vlan_id: int
+    """The VLAN (1 to 4094)."""
 
 
 class ResolvedPermissionGrant(ManagementModel):
@@ -5779,7 +6169,11 @@ class SignCertificateCsrRequest(ManagementModel):
     No `subject` and no `key_algorithm`: both are read out of the CSR, which
     is the only place they can be stated without the row and the certificate
     being able to disagree. No key is returned, so there is no key field
-    anywhere on this exchange.
+    anywhere on this exchange. The CSR's common name meets the rules of
+    `subject` on `POST /api/v1/certificates` (printable, at most 64
+    characters) and is refused, not rewritten, when it does not. So does the
+    value of every other attribute of the CSR's subject, and a subject with
+    more than one common name is refused.
     """
 
     _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
@@ -6976,7 +7370,12 @@ class UpdateOAuth2ClientRequest(ManagementModel):
     """``require_par``."""
 
     scopes: list[str] | None = None
-    """``scopes``."""
+    """Replace the client's scopes. On a `managed_by: dcr | cimd` client a
+
+    scope the request adds that is outside the tenant's effective
+    `dcr_allowed_scopes` is refused with `422` (#636); an
+    administrator-managed client is not bounded.
+    """
 
     self_signed_tls_client_auth_thumbprints: list[str] | None = None
     """``self_signed_tls_client_auth_thumbprints``."""
@@ -7496,6 +7895,8 @@ for _model in (
     CreateFederationConfigRequest,
     CreateGroupRequest,
     CreateIntermediateCaRequest,
+    CreateNetworkReplyProfileRequest,
+    CreateNetworkSegmentRequest,
     CreateNotificationRuleRequest,
     CreateOAuth2ClientRequest,
     CreatePermissionRequest,
@@ -7545,6 +7946,10 @@ for _model in (
     MfaPolicy,
     MigrateCustodyResponse,
     MtlsTrustAnchorResponse,
+    NetworkPolicyResponse,
+    NetworkReplyProfile,
+    NetworkReplyProfileInput,
+    NetworkSegmentResponse,
     NotificationPolicy,
     NotificationRuleResponse,
     OAuth2ClientCreatedResponse,
@@ -7572,6 +7977,9 @@ for _model in (
     ReactorResponse,
     ReadyResponse,
     RegistrationTokenResponse,
+    ReplaceNetworkPolicyRequest,
+    ReplaceNetworkReplyProfileRequest,
+    ReplaceNetworkSegmentRequest,
     ResolvedPermissionGrant,
     Resource,
     RetryPolicy,

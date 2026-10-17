@@ -23,9 +23,10 @@ from axiam_sdk.management import (
     PageRequest,
     ValidationError,
     models,
+    ssf_stream_edit,
     ssf_stream_input,
 )
-from axiam_sdk.ssf import SESSION_REVOKED
+from axiam_sdk.ssf import ACCOUNT_DISABLED, ACCOUNT_ENABLED, SESSION_REVOKED
 from tests.management_support import BASE_URL, TENANT_ID, mount_json, with_client
 
 STREAMS = f"/api/v1/tenants/{TENANT_ID}/ssf/streams"
@@ -342,6 +343,121 @@ def test_a_read_with_no_events_requested_converts_to_an_explicit_empty_list() ->
         client.ssf.update_stream(str(stream.id), body)
         assert sent(route)["events_requested"] == []
         assert sent(route)["expected_updated_at"] == "2026-10-04T08:15:30.5Z"
+
+
+# ── 7. The change-taking form (contract 1.62) ────────────────────────────────
+
+#: A timestamp in the spelling a server may use: a numeric offset and nine
+#: fraction digits. A helper that re-rendered the parsed instant would change it.
+SERVER_STAMP = "2026-10-04T08:15:30.123456789+00:00"
+
+
+def three_event_stream(**extra: Any) -> models.SsfStream:
+    """A read with a ceiling of three event types and two requested."""
+    return models.SsfStream.model_validate(
+        stream_body(
+            events_allowed=[SESSION_REVOKED, ACCOUNT_DISABLED, ACCOUNT_ENABLED],
+            events_requested=[ACCOUNT_ENABLED, SESSION_REVOKED],
+            events_delivered=[ACCOUNT_ENABLED, SESSION_REVOKED],
+            updated_at=SERVER_STAMP,
+            **extra,
+        )
+    )
+
+
+def test_lowering_the_ceiling_cuts_events_requested_to_the_new_one() -> None:
+    """§32.8 test 7: only what is in the new ceiling survives, in the read's order."""
+    stream = three_event_stream()
+    body = ssf_stream_edit(stream, {"events_allowed": [SESSION_REVOKED]})
+    assert body.events_allowed == [SESSION_REVOKED]
+    assert body.events_requested == [SESSION_REVOKED]
+    # A ceiling that keeps both keeps both, in the read's order, not the ceiling's.
+    both = ssf_stream_edit(stream, {"events_allowed": [SESSION_REVOKED, ACCOUNT_ENABLED]})
+    assert both.events_requested == [ACCOUNT_ENABLED, SESSION_REVOKED]
+    # The read was not touched.
+    assert stream.events_requested == [ACCOUNT_ENABLED, SESSION_REVOKED]
+    # A ceiling that drops every requested event leaves "none", sent as [] and not omitted.
+    none = ssf_stream_edit(stream, {"events_allowed": [ACCOUNT_DISABLED]})
+    assert none.events_requested == []
+    assert none.to_wire()["events_requested"] == []
+
+
+def test_a_change_that_leaves_events_alone_sends_them_as_read_with_the_servers_own_string() -> None:
+    """``events_requested`` as read, ``[]`` as ``[]``, ``expected_updated_at`` byte for byte."""
+    stream = three_event_stream()
+    wire = ssf_stream_edit(stream, {"description": "renamed"}).to_wire()
+    assert wire["events_requested"] == [ACCOUNT_ENABLED, SESSION_REVOKED]
+    assert wire["events_allowed"] == [SESSION_REVOKED, ACCOUNT_DISABLED, ACCOUNT_ENABLED]
+    assert wire["description"] == "renamed"
+    assert wire["expected_updated_at"] == SERVER_STAMP
+    assert "authorization_header" not in wire and "clear_authorization_header" not in wire
+    emptied = models.SsfStream.model_validate(
+        stream_body(events_requested=[], events_delivered=[], updated_at=SERVER_STAMP)
+    )
+    assert ssf_stream_edit(emptied, {}).to_wire()["events_requested"] == []
+    assert ssf_stream_edit(emptied).to_wire()["expected_updated_at"] == SERVER_STAMP
+
+
+def test_an_assigned_none_for_expected_updated_at_leaves_the_key_out() -> None:
+    """§27.11 rule 5: ``null`` is "none"; it is never sent."""
+    wire = ssf_stream_edit(three_event_stream(), {"expected_updated_at": None}).to_wire()
+    assert "expected_updated_at" not in wire
+
+
+def test_events_requested_named_in_the_changes_is_sent_as_given() -> None:
+    """The server judges it: not cut, not filtered."""
+    stream = three_event_stream()
+    body = ssf_stream_edit(
+        stream, {"events_allowed": [SESSION_REVOKED], "events_requested": [ACCOUNT_DISABLED]}
+    )
+    assert body.events_requested == [ACCOUNT_DISABLED]
+
+
+def test_a_change_to_a_member_the_input_does_not_have_is_refused_locally() -> None:
+    """No request is sent for a name that is not a ``SsfStreamInput`` member."""
+    with pytest.raises(ValidationError):
+        ssf_stream_edit(three_event_stream(), {"events_alowed": []})
+
+
+def test_the_edit_goes_through_update_stream_and_a_409_is_a_conflict() -> None:
+    """The body reaches the wire as built; a stream written since is not retried."""
+    stream = three_event_stream()
+    with with_client() as (router, client):
+        route = mount_json(router, "PUT", f"{STREAMS}/{stream.id}", 200, stream_body())
+        client.ssf.update_stream(
+            str(stream.id), ssf_stream_edit(stream, {"events_allowed": [SESSION_REVOKED]})
+        )
+        assert sent(route)["events_requested"] == [SESSION_REVOKED]
+        assert sent(route)["expected_updated_at"] == SERVER_STAMP
+    with with_client() as (router, client):
+        conflict = mount_json(
+            router, "PUT", f"{STREAMS}/{stream.id}", 409, {"error": "conflict", "message": "x"}
+        )
+        with pytest.raises(ConflictError):
+            client.ssf.update_stream(str(stream.id), ssf_stream_edit(stream, {}))
+        assert conflict.call_count == 1
+
+
+def test_update_stream_documents_the_three_meanings_of_events_requested() -> None:
+    """§32.8 test 7, the documentation check (§32.2, item h): the text a caller sees at the call."""
+    from axiam_sdk.management.ops.ssf import AsyncSsfApi, SsfApi
+
+    for handle in (SsfApi, AsyncSsfApi):
+        doc = " ".join((handle.update_stream.__doc__ or "").split())
+        assert "absent" in doc and "resets" in doc and "events_allowed" in doc, handle
+        assert "``[]`` is stored as the receiver's" in doc, handle
+        assert "refused (``400``)" in doc, handle
+        assert "default" in doc, handle
+    plain = " ".join((ssf_stream_input.__doc__ or "").split())
+    assert "caller's duty" in plain and "``409``" in plain
+    assert "ssf_stream_edit" in plain
+
+
+def test_a_typed_updated_at_is_the_servers_own_string() -> None:
+    """§32.2 (g): ``updated_at`` is a ``str`` here, so the converter sends the server's spelling."""
+    stream = three_event_stream()
+    assert isinstance(stream.updated_at, str) and stream.updated_at == SERVER_STAMP
+    assert ssf_stream_input(stream).to_wire()["expected_updated_at"] == SERVER_STAMP
 
 
 # ── §34.2 P12.3: a write-only secret is present or absent, never null ───────

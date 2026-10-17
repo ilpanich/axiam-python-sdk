@@ -12,15 +12,21 @@ repository, and diff.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final, Literal
 
 from pydantic import SecretStr
 
 __all__ = [
+    "UNSET",
     "GrantSpec",
     "GroupSpec",
     "ManagementManifest",
+    "NetworkPolicySpec",
+    "NetworkProfileSpec",
+    "NetworkSegmentSpec",
+    "NetworkSpec",
     "PermissionSpec",
     "ResourceSpec",
     "RoleBinding",
@@ -249,6 +255,136 @@ class ServiceAccountSpec:
     account is not a manifest field in 1.51."""
 
 
+class _Unset(enum.Enum):
+    """The type of :data:`UNSET`. An enum so that ``x is UNSET`` narrows for a type
+    checker and the single member survives copying and pickling."""
+
+    UNSET = "unset"
+
+    def __repr__(self) -> str:
+        """``UNSET``, so a spec's ``repr`` reads as what the author wrote."""
+        return "UNSET"
+
+
+UNSET: Final = _Unset.UNSET
+"""A manifest member the author did **not state** (CONTRACT §27.6 rule 3, §27.6.2).
+
+Distinct from ``None``: an unstated member is silent -- ``plan`` never reports drift in
+it and an ``Update`` carries the server's value across -- while a member stated as
+``None`` is "none", which an ``Update`` leaves **out** of the replacement body and so
+clears (§27.6.2 item 4). Only the members of the ``network`` specs whose wire member is
+optional can be stated ``None``.
+"""
+
+Unset = Literal[_Unset.UNSET]
+"""The annotation for :data:`UNSET`."""
+
+
+@dataclass(frozen=True)
+class NetworkSegmentSpec:
+    """A network segment (CONTRACT §27.6.2 item 1, contract 1.62).
+
+    **The natural key is** ``site`` **+** ``kind`` **+** ``name``, where ``kind`` is
+    the **wire** spelling -- ``"access"`` or ``"quarantine"``, the value
+    ``create_segment`` writes and every read returns. This SDK keeps no mapping to or
+    from any other spelling: the path segment ``zones`` of the resource tree is a
+    server-side detail no manifest names. ``site``, ``kind`` and ``name`` are the key and
+    so are never drift (a segment's kind and place do not change, §36.3 rule 4); every
+    other member is a field, reconciled by rule 3.
+    """
+
+    key: str
+    """Manifest-local identifier, referred to by :attr:`NetworkProfileSpec.segment`."""
+
+    site: str
+    """The site key (the wire ``site_key``); a single-site tenant uses ``"default"``."""
+
+    kind: str
+    """``"access"`` or ``"quarantine"`` -- the wire spelling, and no other."""
+
+    name: str
+    """The segment's name within its site."""
+
+    vlan_id: int
+    """The VLAN (1 to 4094, unique within the site; the server checks it)."""
+
+    rank: int | None | Unset = UNSET
+    """The placement rank among the site's ``access`` segments. Unstated: carried from the
+    read on an ``Update`` and omitted on a ``Create``. Stated ``None``: left out of the
+    body, which is how a replacement clears it."""
+
+    filter_ids: tuple[str, ...] | Unset = UNSET
+    """The segment's envelope: the Filter-Id names its profile may choose from. **Compared
+    as a set** -- the same names in another order are ``NoChange`` -- and **sent in the
+    order stated** when the SDK writes the segment. A list that repeats a name is refused
+    by ``plan`` with no request. Unstated: carried from the read, in the read's order."""
+
+    enabled: bool | Unset = UNSET
+    """Whether the segment is a placement candidate. Unstated: the read's value (the
+    server's default, ``true``, on a ``Create``)."""
+
+
+@dataclass(frozen=True)
+class NetworkProfileSpec:
+    """A segment's reply profile (CONTRACT §27.6.2 item 1).
+
+    **The natural key is its segment**: a profile has no name or id of its own and is
+    addressed by the segment's id. Drift is judged on the **effective** profile the read
+    returns, so ``session_timeout_secs`` is compared with the value clamped to the tenant's
+    cap (§36.3 rule 6): a stated value above the cap differs from the read, ``plan`` shows
+    an ``Update``, and ``apply`` stops at the ``403`` the server answers.
+    """
+
+    segment: str
+    """The ``key`` of a :class:`NetworkSegmentSpec` of the same manifest."""
+
+    session_timeout_secs: int
+    """``Session-Timeout`` in seconds (300 up to the tenant's cap; the server checks it)."""
+
+    termination_action: str | None | Unset = UNSET
+    """``"default"`` or ``"radius_request"``. Unstated: carried (server default on create)."""
+
+    idle_timeout_secs: int | None | Unset = UNSET
+    """``Idle-Timeout`` in seconds. Stated ``None``: left out of the body."""
+
+    filter_id: str | None | Unset = UNSET
+    """One of the segment's ``filter_ids``. Stated ``None``: left out of the body."""
+
+    service_type: str | None | Unset = UNSET
+    """``"framed_user"`` is the only value. Stated ``None``: left out of the body."""
+
+
+@dataclass(frozen=True)
+class NetworkPolicySpec:
+    """The tenant's Session-Timeout cap: **a singleton** (CONTRACT §27.6.2 item 1)."""
+
+    session_timeout_max_secs: int
+    """The cap in seconds (300 to 86 400; the server checks it)."""
+
+
+@dataclass(frozen=True)
+class NetworkSpec:
+    """The ``network`` section of a manifest (CONTRACT §27.6.2, contract 1.62).
+
+    Human-only: an ``apply`` whose manifest has a ``network`` section needs a human caller,
+    and a service-account token meets ``401`` at the first network action. Reconciled in
+    the order **policy, segments, profiles**, appended after everything else, so a
+    manifest without this section plans exactly as it did before contract 1.62.
+
+    **There is no pruning in this SDK**, for any namespace (§27.6 rule 4): a segment or a
+    profile the manifest does not state is left as it is, and the policy has no delete.
+    """
+
+    policy: NetworkPolicySpec | None = None
+    """The cap, if the manifest states one (at most one, by construction)."""
+
+    segments: tuple[NetworkSegmentSpec, ...] = field(default_factory=tuple)
+    """Segments, reconciled in this order."""
+
+    profiles: tuple[NetworkProfileSpec, ...] = field(default_factory=tuple)
+    """Profiles, reconciled in the order of the segments they name."""
+
+
 @dataclass(frozen=True)
 class ManagementManifest:
     """The shape a tenant should have.
@@ -263,6 +399,11 @@ class ManagementManifest:
     a service account's identity is stable apart from its secret, so the
     secret is minted once, at ``Create``, exactly like an imperative call.
     ``webhooks`` stays unspecified in 1.51; this SDK does not implement it.
+
+    From contract 1.62 a manifest may also state a ``network`` section
+    (:class:`NetworkSpec`, CONTRACT §27.6.2): the tenant's Session-Timeout cap, its
+    network segments and their RADIUS reply profiles, reconciled in that order after
+    everything else and by the natural keys the contract gives.
     """
 
     resources: tuple[ResourceSpec, ...] = field(default_factory=tuple)
@@ -283,3 +424,8 @@ class ManagementManifest:
     service_accounts: tuple[ServiceAccountSpec, ...] = field(default_factory=tuple)
     """Service accounts and their role bindings (CONTRACT §27.6.1 addition 3,
     contract 1.51)."""
+
+    network: NetworkSpec | None = None
+    """The tenant's network policy, segments and reply profiles (CONTRACT §27.6.2,
+    contract 1.62). ``None`` states nothing about the network, and ``plan`` issues no
+    network read."""
