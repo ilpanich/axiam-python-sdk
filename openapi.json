@@ -10,7 +10,7 @@
       "name": "Apache-2.0"
     },
     "version": "1.1.0",
-    "x-axiam-spec-digest": "sha256:cf0fc71c2061576b077afd48d9903f9f4ef26d66e9edbebe5e3020be89fc59a7"
+    "x-axiam-spec-digest": "sha256:7c3a5091d9d515b1aa3e157e74d342faf64a2c88e735f3c873b66951b3fac8a1"
   },
   "paths": {
     "/.well-known/oauth-authorization-server": {
@@ -955,10 +955,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Deletion cancelled"
+            "description": "Deletion cancelled; the account is active again"
           },
           "400": {
             "description": "Token invalid or expired"
+          },
+          "403": {
+            "description": "The token was already used, or the grace window has ended"
+          },
+          "404": {
+            "description": "No deletion request carries this token"
+          },
+          "409": {
+            "description": "The erasure has already started (the purge sweep claimed the request, or completed it): the deletion can no longer be cancelled, and nothing was changed"
           }
         }
       }
@@ -6111,6 +6120,9 @@
           "404": {
             "description": "OAuth2 client not found"
           },
+          "409": {
+            "description": "The client was written by another request after this one read it; the patch was validated against the row it read, so nothing is written. Read the client again and retry."
+          },
           "422": {
             "description": "The client is managed_by dcr or cimd and the request adds a scope outside the tenant's effective dcr_allowed_scopes; the message names each scope, and the client is unchanged. An administrator-managed client is not bounded."
           }
@@ -7187,7 +7199,7 @@
             "description": "Settings are internally inconsistent, enable OPAQUE on a server holding no OPAQUE keys, or turn ssf_enabled on while the deployment holds more than one tenant and serves no per-tenant issuers (D-55)"
           },
           "409": {
-            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory)"
+            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory); or a tenant's directory or opaque_mode changed after this request read them, so nothing was written — reload and retry"
           }
         },
         "security": [
@@ -11468,7 +11480,7 @@
             "description": "Override violates org baseline, enables OPAQUE on a server holding no OPAQUE keys, or turns ssf_enabled on while the deployment's tenants share one issuer (D-55)"
           },
           "409": {
-            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory)"
+            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory); or a tenant's directory or opaque_mode changed after this request read them, so nothing was written — reload and retry"
           }
         },
         "security": [
@@ -11575,7 +11587,7 @@
             "description": "Another tenant's configuration"
           },
           "409": {
-            "description": "An enabled directory under opaque_mode `required`"
+            "description": "An enabled directory under opaque_mode `required`; or the tenant's opaque_mode or directory changed after this request read them, so nothing was written — reload and retry"
           },
           "503": {
             "description": "The deployment has no directory encryption key"
@@ -11669,7 +11681,7 @@
             "description": "The tenant has no directory configuration"
           },
           "409": {
-            "description": "An enabled directory under opaque_mode `required`"
+            "description": "An enabled directory under opaque_mode `required`; or the tenant's opaque_mode or directory changed after this request read them, so nothing was written — reload and retry"
           },
           "503": {
             "description": "The deployment has no directory encryption key"
@@ -12822,7 +12834,7 @@
             "description": "An override is less restrictive than the org baseline, or enables OPAQUE on a server holding no OPAQUE keys"
           },
           "409": {
-            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory)"
+            "description": "opaque_mode `required` would coexist with an enabled directory (LDAP / Active Directory); or a tenant's directory or opaque_mode changed after this request read them, so nothing was written — reload and retry"
           }
         },
         "security": [

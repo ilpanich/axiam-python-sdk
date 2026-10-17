@@ -102,6 +102,12 @@ are listed under *Breaking changes* below for code that matches exhaustively.
   none, and the client authenticates itself in the form body. Every other REST request still
   carries it, and a `registration_access_token` handed to one registration call is unchanged.
   Tests: `tests/test_no_session_bearer_on_oauth2.py`.
+- **`openapi.json` and `management-registry.json` re-vendored from axiam `e8722b668`** (release PR
+  #716, the atomicity-race fixes): the spec documents the `409` responses (and `403`/`404` on the
+  account-deletion cancel) the server gained; digest
+  `sha256:7c3a5091d9d515b1aa3e157e74d342faf64a2c88e735f3c873b66951b3fac8a1`. `CONTRACT.md` and
+  `proto/` are unchanged, the generated management surface is unchanged
+  (`scripts/gen_management.py --check` is clean) and no source changed.
 
 ### Notes (contract 1.62)
 
