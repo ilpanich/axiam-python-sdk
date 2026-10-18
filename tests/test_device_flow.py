@@ -138,7 +138,9 @@ def test_device_authorize_is_unauthenticated_and_form_encoded(
     authorization = _client().device_authorize(scope="openid profile", tenant_id=TENANT_ID)
 
     form = _form_body(route.calls[0].request)
-    assert "client_secret" not in form, "§14.1: device_authorize MUST NOT send client_secret"
+    assert "client_secret" not in form, (
+        "§14.1 rule 1 (contract 1.62): a public client sends no credential at device_authorize"
+    )
     assert form["scope"] == "openid profile"
     assert "tenant_id" not in form, "§12.1 note 2: tenant_id is never a body field"
     assert route.calls[0].request.url.params["tenant_id"] == TENANT_ID

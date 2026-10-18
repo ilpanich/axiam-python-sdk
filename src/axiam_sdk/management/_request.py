@@ -1,11 +1,11 @@
 """The one request path every §27 management operation goes through.
 
 §27.8 is explicit that the generated layer MUST sit on the SDK's existing
-request path and MUST NOT build its own. That is what this module is: 190
+request path and MUST NOT build its own. That is what this module is: 202
 generated operations all funnel into :func:`send_management` (or its async
 twin), so they inherit §3 (CSRF), §4 (the cookie jar), §5 (``X-Tenant-ID``),
 §6 (TLS), §9 (the single-flight refresh guard), §16 (retry) and §19 (telemetry)
-by construction rather than by 190 opportunities to forget one.
+by construction rather than by 202 opportunities to forget one.
 """
 
 from __future__ import annotations
@@ -207,7 +207,11 @@ def _raise_for_status(call: ManagementCall, response: httpx.Response) -> None:
             f"{call.operation}: not found (or not visible to this tenant){detail}",
         )
     if status == httpx.codes.CONFLICT:
-        raise ConflictError(call.operation, f"{call.operation}: conflict{detail}")
+        raise ConflictError(
+            call.operation,
+            f"{call.operation}: conflict{detail}",
+            _reason_code(_body(response)),
+        )
     if status in (httpx.codes.BAD_REQUEST, httpx.codes.UNPROCESSABLE_ENTITY):
         raise ValidationError(
             call.operation,
@@ -216,6 +220,16 @@ def _raise_for_status(call: ManagementCall, response: httpx.Response) -> None:
             parse_field_errors(_body(response)),
         )
     raise error_from_http_status(status, f"{call.operation}{detail}", response=response)
+
+
+def _reason_code(body: Any) -> str | None:
+    """The ``reason_code`` of a ``409`` body (§36.4), verbatim, or ``None`` when
+    the body has none or it is not a string. Never derived from ``message``."""
+    if isinstance(body, dict):
+        code = body.get("reason_code")
+        if isinstance(code, str) and code:
+            return code
+    return None
 
 
 def _body(response: httpx.Response) -> Any:

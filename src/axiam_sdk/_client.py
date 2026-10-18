@@ -956,9 +956,23 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         host other than this session's own gets no credential at all — the
         bearer token, like ``X-Tenant-ID``/``X-Axiam-Tenant``, MUST NOT
         reach a host other than the configured base URL.
+
+        **Never on ``/oauth2/*``** (CONTRACT.md §6.1 rule 11, §12.1 rule 3,
+        §14.6; contract 1.62 as of ``d25413506``, C162-05). A request to the
+        token, device-authorization, introspection, revocation, PAR or CIBA
+        endpoints authenticates its *own* client in the form body, as an
+        assertion or on the connection, and none of them reads an
+        ``Authorization`` header, so an adopted token sent there is a
+        credential leaked to an endpoint that has no use for it. The one
+        thing that is not excluded -- a credential the caller hands to a
+        single call (the RFC 7591 / RFC 7592 registration tokens of §28.12)
+        -- never routes through here: those calls ride the session-free
+        transport and set their own header.
         """
         token = self._session.bearer_token
         if token is None:
+            return
+        if request.url.path.startswith("/oauth2/"):
             return
         req_host = request.url.host
         if req_host and req_host != self._session._base_host:
@@ -1862,13 +1876,23 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         """``POST /oauth2/device_authorization`` (CONTRACT.md §14.1) — start
         the device grant and obtain the code pair.
 
-        **Unauthenticated by design.** A device that cannot show a browser
-        also cannot hold a client secret, so this never sends
-        ``client_secret`` and never refuses a client built without one.
+        **The client authenticates as it is registered** (§14.1, contract
+        1.62). A client built with a ``client_secret`` sends it as the
+        ``client_secret`` form member -- never as ``Authorization: Basic``,
+        whichever of ``client_secret_post`` and ``client_secret_basic`` it is
+        registered for -- and a client built with a §6.1 certificate presents it
+        on the connection. A **public** client (the usual device, which cannot
+        keep a secret) is built with neither: it sends ``client_id`` and no
+        credential, the server refuses a public client that sends one, and the
+        SDK never refuses to call this for want of a secret.
 
         Raises:
             AuthError: when the discovery document advertises no
                 ``device_authorization_endpoint``.
+            OAuthProtocolError: ``error == "invalid_client"`` on a ``401``: an
+                unknown client, a failed or missing credential, a credential sent
+                by a public client, or a client that does not hold the grant's
+                registration. Terminal, sent once, never refreshed (§14.2 rule 5).
         """
         config = configuration or self.oidc_discover()
         form = self._device_authorize_form(scope=scope)
@@ -1896,6 +1920,19 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         surface as ``OAuthProtocolError`` — ``authorization_pending`` and
         ``slow_down`` included — so a hand-rolled loop sees exactly what
         :meth:`device_login` sees. Most callers want :meth:`device_login`.
+
+        The poll names its client (``client_id``, on every poll) and
+        authenticates it exactly as :meth:`device_authorize` does (§14.1,
+        contract 1.62): the configured ``client_secret`` in the form body, never
+        ``Authorization: Basic``; a public client sends none. A ``401``
+        ``{"error": "invalid_client"}`` -- a failed or missing credential, a
+        client that no longer holds the grant, or a client registered for
+        sender-constrained tokens whose proof or certificate is missing -- is an
+        :class:`~axiam_sdk.OAuthProtocolError` with ``error == "invalid_client"``:
+        terminal, not retried, and not sent through the §9 refresh guard (§14.2
+        rules 5 and 8). **This SDK generates no DPoP proofs** (§21.7.3: it
+        verifies them, it holds no key of its own), so it cannot drive a client
+        registered for DPoP-bound tokens; it surfaces that refusal as above.
         """
         config = configuration or self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
