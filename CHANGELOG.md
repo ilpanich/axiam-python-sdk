@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.1] - 2026-10-20
 
-Contract 1.63 (axiam `a6cd10eba`, the plan branch `claude/release-1.1.1`): `CONTRACT.md`,
+Contract 1.63 (axiam `d919ba0cc`, the plan branch `claude/release-1.1.1`): `CONTRACT.md`,
 `openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
 unchanged). A **patch** release: **no source-breaking change** -- the 1.63 spec makes
 `DeviceAuthorizationRequest.client_id` optional, but this SDK models no such request type
 (`device_authorize` takes the client from its configuration), so nothing here changes
-type. The spec digest is now `6fe38c07...`.
+type. The spec digest is now `443c9d39...` (`info.version` 1.1.1).
 
 ### Fixed
 
@@ -38,8 +38,9 @@ type. The spec digest is now `6fe38c07...`.
 ### Notes
 
 - Contract 1.63's optional AMQP audit-producer refusal of the reserved `tenants.` / `gdpr.`
-  actions (§8) does not apply: this SDK has an AMQP consumer and reactor runtime but no
-  audit producer, so there is nothing to refuse before publishing.
+  actions (§8) does not apply: this SDK ships no helper that builds or signs an `AuditEventMessage`
+  (it has an AMQP consumer and a reactor runtime), so there is nothing to refuse before
+  publishing.
 - This SDK generates no DPoP proofs, so the 1.63 key-lifetime / `invalid_grant` rule for
   proof generators (§21.7.4) has nothing to bind here.
 
