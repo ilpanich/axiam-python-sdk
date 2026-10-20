@@ -407,7 +407,7 @@ class _Session:
             # endpoint authenticates its own client and ignores both, so a session
             # cookie sent there is a credential leaked to a route with no use for it.
             # The jar merged its cookies into the request when it was built.
-            del request.headers["Cookie"]  # httpx Headers.__delitem__ ignores a missing key
+            request.headers.pop("Cookie", None)
             request.headers.pop("X-CSRF-Token", None)
             req_host = request.url.host
             if not req_host or req_host == self._base_host:
