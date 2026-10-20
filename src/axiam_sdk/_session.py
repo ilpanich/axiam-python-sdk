@@ -401,6 +401,18 @@ class _Session:
         tenant identifier and CSRF token are never leaked cross-origin. A
         relative/host-less request (the normal case, merged against
         ``base_url``) is treated as same-origin and decorated as before."""
+        if request.url.path.startswith("/oauth2/"):
+            # CONTRACT.md §6.1 rule 11, §12.1 rule 3, §14.6 (contract 1.63): no
+            # ``axiam_*`` session cookie and no ``X-CSRF-Token`` on ``/oauth2/*``. The
+            # endpoint authenticates its own client and ignores both, so a session
+            # cookie sent there is a credential leaked to a route with no use for it.
+            # The jar merged its cookies into the request when it was built.
+            del request.headers["Cookie"]  # httpx Headers.__delitem__ ignores a missing key
+            request.headers.pop("X-CSRF-Token", None)
+            req_host = request.url.host
+            if not req_host or req_host == self._base_host:
+                request.headers["X-Tenant-ID"] = self.tenant_slug
+            return
         req_host = request.url.host
         if req_host and req_host != self._base_host:
             return

@@ -27,7 +27,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.0**) conforms to **contract 1.62**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.1.1**) conforms to **contract 1.63**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
