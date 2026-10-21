@@ -21,6 +21,7 @@ import pytest
 import respx
 
 from axiam_sdk import NetworkError
+from axiam_sdk.management import ValidationError
 from axiam_sdk.management.manifest import (
     UNSET,
     ManagementManifest,
@@ -845,6 +846,78 @@ def test_a_repeated_natural_key_and_a_dangling_profile_are_refused_with_zero_wir
                 client.manifest.plan(bad)
             with pytest.raises(NetworkError, match=text):
                 client.manifest.apply(bad)
+        assert router.calls.call_count == before
+
+
+@pytest.mark.parametrize("member", ["termination_action", "service_type"])
+def test_an_unknown_open_enum_on_an_unstated_member_is_refused_at_plan_with_no_write(
+    member: str,
+) -> None:
+    """C162-07 (§27.6.2 item 4): an ``Update`` would re-send what the SDK cannot name."""
+    fake = FakeNetwork()
+    seg = fake.add_segment()
+    fake.add_profile(seg, session_timeout_secs=600, **{member: "future"})
+    other = {"filter_id": "staff-in"} if member == "termination_action" else {}
+    if member == "termination_action":
+        seg["filter_ids"] = ["staff-in"]
+    spec = manifest(
+        segments=(segment_spec(rank=1, filter_ids=("staff-in",)),),
+        profiles=(
+            NetworkProfileSpec(
+                segment="staff",
+                session_timeout_secs=900,
+                **({"service_type": "framed_user"} if member == "termination_action" else {}),
+                **({"termination_action": "default"} if member == "service_type" else {}),
+                **other,
+            ),
+        ),
+    )
+    with with_client() as (router, client):
+        fake.mount(router)
+        for call in (client.manifest.plan, client.manifest.apply):
+            with pytest.raises(ValidationError, match=rf"{member}.*'future'"):
+                call(spec)
+    assert fake.writes() == []
+
+
+def test_a_stated_member_resolves_an_unknown_one_and_nothing_to_change_is_no_change() -> None:
+    """The stated value replaces the unknown one; a ``NoChange`` is never refused for it."""
+    fake = FakeNetwork()
+    seg = fake.add_segment()
+    fake.add_profile(seg, session_timeout_secs=600, termination_action="future")
+    stated = manifest(
+        segments=(segment_spec(rank=1),),
+        profiles=(
+            NetworkProfileSpec(
+                segment="staff", session_timeout_secs=900, termination_action="default"
+            ),
+        ),
+    )
+    unchanged = manifest(
+        segments=(segment_spec(rank=1),),
+        profiles=(NetworkProfileSpec(segment="staff", session_timeout_secs=600),),
+    )
+    with with_client() as (router, client):
+        fake.mount(router)
+        assert client.manifest.plan(unchanged).is_converged()
+        client.manifest.apply(stated)
+    body = next(b for m, p, b in fake.requests if m == "PUT")
+    assert body["profile"]["termination_action"] == "default"
+
+
+def test_a_stated_none_termination_action_is_refused_with_zero_wire_calls() -> None:
+    """C162-08: the member has a server default, so a manifest cannot say none."""
+    spec = manifest(
+        segments=(segment_spec(),),
+        profiles=(
+            NetworkProfileSpec(segment="staff", session_timeout_secs=900, termination_action=None),
+        ),
+    )
+    with with_client() as (router, client):
+        before = router.calls.call_count
+        for call in (client.manifest.plan, client.manifest.apply):
+            with pytest.raises(NetworkError, match="termination_action as None"):
+                call(spec)
         assert router.calls.call_count == before
 
 

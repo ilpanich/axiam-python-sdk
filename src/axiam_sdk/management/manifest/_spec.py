@@ -342,7 +342,9 @@ class NetworkProfileSpec:
     """``Session-Timeout`` in seconds (300 up to the tenant's cap; the server checks it)."""
 
     termination_action: str | None | Unset = UNSET
-    """``"default"`` or ``"radius_request"``. Unstated: carried (server default on create)."""
+    """``"default"`` or ``"radius_request"``. Unstated: carried (server default on create).
+    Stated ``None``: refused at ``plan`` -- the member has a server default, so a manifest
+    has no "none" for it (CONTRACT §27.6.2 item 4)."""
 
     idle_timeout_secs: int | None | Unset = UNSET
     """``Idle-Timeout`` in seconds. Stated ``None``: left out of the body."""

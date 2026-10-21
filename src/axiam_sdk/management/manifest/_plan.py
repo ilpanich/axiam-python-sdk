@@ -306,6 +306,8 @@ def _validate_network(network: NetworkSpec, problems: list[str]) -> None:
 
     * a segment ``key`` declared twice, and **a natural key named twice** -- two segments
       with one site, kind and name cannot be reconciled with one server row;
+    * **a profile that states ``termination_action`` as ``None``**: the member has a server
+      default, so "none" could never converge (maintainer, 2026-10-16);
     * a profile whose ``segment`` names no segment spec of this manifest (the manifest
       does not reach for a segment it does not declare), and two profiles for one segment;
     * **a segment that lists one Filter-Id twice**: ``filter_ids`` is compared as a set,
@@ -347,6 +349,12 @@ def _validate_network(network: NetworkSpec, problems: list[str]) -> None:
                 f"manifest; a profile is keyed by its segment"
             )
         profiled.add(profile.segment)
+        if profile.termination_action is None:
+            problems.append(
+                f"network profile of segment {profile.segment!r} states termination_action "
+                f"as None; the server always stores a value for it, so a manifest cannot "
+                f"say none (CONTRACT §27.6.2 item 4)"
+            )
 
 
 def _duplicates(kind: str, keys: list[str], problems: list[str]) -> None:

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-20
+
+Contract 1.63 (axiam `d919ba0cc`, the plan branch `claude/release-1.1.1`): `CONTRACT.md`,
+`openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
+unchanged). A **patch** release: **no source-breaking change** -- the 1.63 spec makes
+`DeviceAuthorizationRequest.client_id` optional, but this SDK models no such request type
+(`device_authorize` takes the client from its configuration), so nothing here changes
+type. The spec digest is now `443c9d39...` (`info.version` 1.1.1).
+
+### Fixed
+
+- **A profile read with an open-enum value this SDK does not know is no longer re-sent by
+  an `Update`** (C162-07; CONTRACT §27.6.2 item 4). When a manifest changes another member
+  of a network profile and does not state the member the read returned as unknown
+  (`termination_action` or `service_type`), `plan` and `apply` raise a `ValidationError`
+  naming the member and the value, before any write. A manifest that states the member
+  resolves it; a `Create` and a `NoChange` are never refused for it.
+- **A stated `termination_action: None` is refused at `plan`** (C162-08), with zero wire
+  calls: the member has a server default, so a manifest has no "none" for it and the
+  profile could never converge (§27.6 rule 6).
+- **An explicit PAT wins over an adopted credential on `/uma2/*`** (#100): the
+  `uma_*` protection calls now authenticate as the PAT the caller passed, not as the device
+  credential `authenticate_device()` adopted.
+- **No session cookie and no `X-CSRF-Token` on `/oauth2/*`** (#100; CONTRACT §6.1 rule 11,
+  §12.1 rule 3, §14.6, contract 1.63): a client holding a login session no longer sends its
+  `axiam_*` cookies or CSRF header to the device-authorization, token, introspection,
+  revocation, PAR or CIBA endpoints. Behavioural only; `X-Tenant-ID` is still sent.
+
+### Notes
+
+- Contract 1.63's optional AMQP audit-producer refusal of the reserved `tenants.` / `gdpr.`
+  actions (§8) does not apply: this SDK ships no helper that builds or signs an `AuditEventMessage`
+  (it has an AMQP consumer and a reactor runtime), so there is nothing to refuse before
+  publishing.
+- This SDK generates no DPoP proofs, so the 1.63 key-lifetime / `invalid_grant` rule for
+  proof generators (§21.7.4) has nothing to bind here.
+
 ## [1.1.0] - 2026-10-16
 
 Contract 1.62 (axiam `d25413506`, the plan branch `claude/release-1.1.0`), which carries

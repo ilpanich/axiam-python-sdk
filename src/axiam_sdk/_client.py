@@ -957,6 +957,12 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         bearer token, like ``X-Tenant-ID``/``X-Axiam-Tenant``, MUST NOT
         reach a host other than the configured base URL.
 
+        **A credential the caller passed to this one call wins** (CONTRACT.md §6.1
+        rule 11, contract 1.62; C162 follow-up #100): a request that already carries an
+        ``Authorization`` header -- a UMA protection call's PAT, §20 -- keeps it; the
+        adopted token fills only an empty slot. The ``Cookie`` override below applies
+        either way, so the request still authenticates as the PAT alone.
+
         **Never on ``/oauth2/*``** (CONTRACT.md §6.1 rule 11, §12.1 rule 3,
         §14.6; contract 1.62 as of ``d25413506``, C162-05). A request to the
         token, device-authorization, introspection, revocation, PAR or CIBA
@@ -977,7 +983,8 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         req_host = request.url.host
         if req_host and req_host != self._session._base_host:
             return
-        request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+        if "authorization" not in request.headers:
+            request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
         request.headers["Cookie"] = ""
 
     def _rest_send_sync(self, request: httpx.Request) -> httpx.Response:

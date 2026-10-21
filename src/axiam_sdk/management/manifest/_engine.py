@@ -17,7 +17,7 @@ from pydantic import SecretStr
 
 from axiam_sdk._errors import NetworkError
 from axiam_sdk.management import models
-from axiam_sdk.management._errors import ConflictError
+from axiam_sdk.management._errors import ConflictError, local_refusal
 from axiam_sdk.management._page import PageRequest
 from axiam_sdk.management.manifest._plan import (
     AppliedStep,
@@ -881,6 +881,7 @@ def _plan_network(
                 Step("noop", profile.segment),
             )
             continue
+        _refuse_unknown_carried(profile, existing_profile)
         push(
             "update",
             "network-profile",
@@ -897,6 +898,31 @@ def _plan_network(
         )
 
 
+def _refuse_unknown_carried(profile: NetworkProfileSpec, read: models.NetworkReplyProfile) -> None:
+    """Refuse an ``Update`` that would carry an open-enum value this SDK does not know.
+
+    CONTRACT §27.6.2 item 4 (maintainer, 2026-10-16): a profile read with an unknown
+    ``termination_action`` or ``service_type`` in a member the manifest does not state is
+    never re-sent, left out or defaulted, so ``plan`` raises the validation error naming
+    the member and the value, before any write. A manifest that states the member resolves
+    it. A ``Create`` carries nothing from a read and a ``NoChange`` writes nothing, so
+    neither reaches here.
+
+    Raises:
+        ValidationError: naming the member and the unknown value.
+    """
+    for name, known in type(read)._OPEN_ENUM_FIELDS.items():
+        value = getattr(read, name, None)
+        if not _stated(getattr(profile, name)) and isinstance(value, str) and value not in known:
+            raise local_refusal(
+                "plan",
+                name,
+                f"network profile of segment {profile.segment!r} was read with the value "
+                f"{value!r}, which this SDK does not know and never re-sends; state "
+                f"{name} in the manifest to replace it (CONTRACT.md §27.6.2 item 4)",
+            )
+
+
 def _profile_input(
     profile: NetworkProfileSpec, read: models.NetworkReplyProfile | None
 ) -> dict[str, Any]:
@@ -906,11 +932,11 @@ def _profile_input(
     stated and are not ``None``. An ``Update`` is a full replacement built from the read
     (§27.6.2 item 4): the stated member replaces the read's, an unstated one is **carried**
     from the read -- the dictionary included, so a replacement never silently moves a
-    profile to another dictionary version -- and a member stated ``None``, or read as
-    ``None``, is **left out**, which is how a replacement clears it. The carried
-    ``session_timeout_secs`` is the read's *effective* value, but the timeout is always
-    stated, so a clamped profile whose manifest states its timeout above the cap is sent
-    as stated and refused by the server.
+    profile to another dictionary version -- and a member stated ``None`` (never
+    ``termination_action``, which ``plan`` refuses), or read as ``None``, is **left out**,
+    which is how a replacement clears it. The carried ``session_timeout_secs`` is the
+    read's *effective* value, but the timeout is always stated, so a clamped profile whose
+    manifest states its timeout above the cap is sent as stated and refused by the server.
     """
     out: dict[str, Any] = {"session_timeout_secs": profile.session_timeout_secs}
     if read is not None:
