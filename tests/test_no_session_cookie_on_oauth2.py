@@ -203,6 +203,44 @@ def test_a_pat_on_uma2_travels_without_session_state_after_a_cookie_login(
     _assert_control_carries_both(routes)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "call"),
+    [pytest.param(m, p, c, id=i) for i, m, p, c in _UMA_OPERATIONS],
+)
+async def test_async_a_pat_on_uma2_travels_without_session_state_after_a_cookie_login(
+    respx_mock: respx.MockRouter,
+    method: str,
+    path: str,
+    call: Callable[[AxiamClient, str], object],
+) -> None:
+    # C164-15: the async twin of the six-operation C163-14 test. The sync lambdas build
+    # the same call; on the async client each returns an awaitable.
+    routes = _mount(respx_mock)
+    uma = respx_mock.route(method=method, url=f"{BASE_URL}{path}").mock(
+        return_value=httpx.Response(
+            200, json={"_id": "res-1", "name": "doc", "ticket": "tk", "resource_scopes": []}
+        )
+    )
+    pat = secrets.token_urlsafe(16)
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+    await client.login("user@example.com", "pw")
+
+    await call(client, pat)  # type: ignore[misc, arg-type]
+    await client._rest_send_async(
+        client._session.async_client.build_request("POST", "/api/v1/groups")
+    )
+
+    sent = uma.calls[0].request.headers
+    assert sent["authorization"] == f"Bearer {pat}"
+    assert not sent.get("cookie"), "the PAT travels alone: no axiam_* cookie"
+    assert "x-csrf-token" not in sent
+    _assert_control_carries_both(routes)
+    await client.aclose()
+
+
 def test_an_explicit_pat_wins_over_the_adopted_credential_on_uma2(
     respx_mock: respx.MockRouter,
 ) -> None:
