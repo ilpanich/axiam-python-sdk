@@ -417,6 +417,11 @@ class _Session:
         if req_host and req_host != self._base_host:
             return
         request.headers["X-Tenant-ID"] = self.tenant_slug
+        if request.headers.get("Cookie") == "":
+            # An explicit empty ``Cookie`` withholds the session (§6.1 rule 6, §20.2
+            # rule 1): its CSRF half goes with it -- a request authenticating by an
+            # ``Authorization`` header has no cookie for the token to protect.
+            return
         if request.method.upper() in _STATE_CHANGING_METHODS:
             token = self._get_csrf_token()
             if token:

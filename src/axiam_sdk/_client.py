@@ -960,8 +960,16 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         **A credential the caller passed to this one call wins** (CONTRACT.md §6.1
         rule 11, contract 1.62; C162 follow-up #100): a request that already carries an
         ``Authorization`` header -- a UMA protection call's PAT, §20 -- keeps it; the
-        adopted token fills only an empty slot. The ``Cookie`` override below applies
-        either way, so the request still authenticates as the PAT alone.
+        adopted token fills only an empty slot.
+
+        **A request that carries an ``Authorization`` header is sent without session
+        state, adopted credential or not** (CONTRACT.md §20.2 rule 1; C163-14): the
+        ``Cookie`` override below applies to it either way, and the session's
+        ``_prepare_request`` adds no ``X-CSRF-Token`` to a request whose ``Cookie`` is
+        the explicit empty string. So after a cookie ``login()`` the five ``rreg``
+        operations and ``uma_request_ticket`` authenticate as the PAT alone; the server
+        reads the cookie before the header and would otherwise run them as the user
+        session (C163-18: "the PAT alone" holds with or without an adopted credential).
 
         **Never on ``/oauth2/*``** (CONTRACT.md §6.1 rule 11, §12.1 rule 3,
         §14.6; contract 1.62 as of ``d25413506``, C162-05). A request to the
@@ -976,14 +984,14 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         transport and set their own header.
         """
         token = self._session.bearer_token
-        if token is None:
+        if token is None and "authorization" not in request.headers:
             return
         if request.url.path.startswith("/oauth2/"):
             return
         req_host = request.url.host
         if req_host and req_host != self._session._base_host:
             return
-        if "authorization" not in request.headers:
+        if "authorization" not in request.headers and token is not None:
             request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
         request.headers["Cookie"] = ""
 
