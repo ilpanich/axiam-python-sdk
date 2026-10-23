@@ -880,17 +880,25 @@ def test_an_unknown_open_enum_on_an_unstated_member_is_refused_at_plan_with_no_w
     assert fake.writes() == []
 
 
-def test_a_stated_member_resolves_an_unknown_one_and_nothing_to_change_is_no_change() -> None:
-    """The stated value replaces the unknown one; a ``NoChange`` is never refused for it."""
+@pytest.mark.parametrize(
+    ("member", "stated_value"),
+    [("termination_action", "default"), ("service_type", "framed_user")],
+)
+def test_a_stated_member_resolves_an_unknown_one_and_nothing_to_change_is_no_change(
+    member: str, stated_value: str
+) -> None:
+    """The stated value replaces the unknown one; a ``NoChange`` is never refused for it.
+
+    C163-09 (§27.9): both members, the body never carries the unknown ``"future"``, and
+    ``apply`` of an unchanged manifest writes nothing (as ``plan`` reports it converged).
+    """
     fake = FakeNetwork()
     seg = fake.add_segment()
-    fake.add_profile(seg, session_timeout_secs=600, termination_action="future")
+    fake.add_profile(seg, session_timeout_secs=600, **{member: "future"})
     stated = manifest(
         segments=(segment_spec(rank=1),),
         profiles=(
-            NetworkProfileSpec(
-                segment="staff", session_timeout_secs=900, termination_action="default"
-            ),
+            NetworkProfileSpec(segment="staff", session_timeout_secs=900, **{member: stated_value}),
         ),
     )
     unchanged = manifest(
@@ -900,9 +908,12 @@ def test_a_stated_member_resolves_an_unknown_one_and_nothing_to_change_is_no_cha
     with with_client() as (router, client):
         fake.mount(router)
         assert client.manifest.plan(unchanged).is_converged()
+        client.manifest.apply(unchanged)
+        assert fake.writes() == [], "NoChange at apply writes nothing"
         client.manifest.apply(stated)
     body = next(b for m, p, b in fake.requests if m == "PUT")
-    assert body["profile"]["termination_action"] == "default"
+    assert body["profile"][member] == stated_value
+    assert "future" not in json.dumps(body), "the unknown value is never re-sent"
 
 
 def test_a_stated_none_termination_action_is_refused_with_zero_wire_calls() -> None:
