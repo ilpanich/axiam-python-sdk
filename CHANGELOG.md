@@ -47,6 +47,22 @@ changed incompatibly, it would be recorded here and the minor bumped instead.
   ended in `AuthError`. The header is no longer copied; the jar's fresh cookies are merged
   and a PAT/bearer replay keeps `Cookie: ""`. Affects `check_access`, `batch_check` and every
   management call that met an expired access token.
+- **The in-poll §16 retry never goes past the grant's deadline** (§14.2 rule 4, §34.2 P10;
+  C164-36). `retry_sync`/`retry_async` take an optional `deadline` (seconds left); a retry whose
+  full wait -- jittered backoff floored at `Retry-After` -- would reach it is not taken and the
+  failure is re-raised, so `device_login` (and `ciba_await`, which shares the runner) send nothing
+  at or after `expires_in` and raise `expired_token`. The retry sleeps on the injected clock in
+  `ciba_await`. A bare `device_poll`/`ciba_poll` keeps the unbounded §16 budget.
+- **A `5xx`'s (and a retried `408`/`429`'s) `Retry-After` is honoured as a floor by every §16
+  retry** (§16.1; C164-37, pre-existing): `NetworkError` now carries `retry_after_ms`
+  (`None` when absent) and the runner reads it, clamped at one hour. Before, no `NetworkError`
+  ever carried it, so `check_access` met a `503` + `Retry-After: 120` with a 0.07 s wait. This
+  adds a public attribute to `NetworkError`; it is optional and defaults to `None`, so it is
+  not a source break.
+- Tests and text (C164-38, C164-41): the async transport-failure case, a transport case and a
+  retry-off case through `device_login`; the README and the `device_poll`/`device_login`
+  docstrings say the poll is §16-retried inside the attempt and bounded by the deadline; the
+  contract-1.62 comment in `test_d5_conformance.py` now has a test behind it.
 - **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
   the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
   `on_user_code` callback count against it and no poll is sent after it (the schedule keeps

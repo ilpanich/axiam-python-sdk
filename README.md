@@ -1601,8 +1601,13 @@ as a minimum (capped at the `expires_in` deadline), counts it as one interval, d
 raise the interval for it, and polls again. A single `device_poll` call still raises the
 `OAuthProtocolError` (`error == "rate_limit_exceeded"`, `retry_after_ms` set when the
 header was sent), so a hand-rolled loop decides for itself. A `5xx` is a `NetworkError`
-whatever its body (rule 6), and the `expires_in` deadline is measured on a clock from
-`device_authorize`'s return (rule 4).
+whatever its body (rule 6), and is **retried under §16 inside the poll**: a `device_poll`
+that meets a `5xx` or a transport failure makes up to three requests in all (the
+`Retry-After` of a `5xx` is a floor on each wait), never retries a `429`, and makes one
+request with `retry_enabled=False`. `device_login` bounds all of it by the `expires_in`
+deadline, measured on a clock from `device_authorize`'s return (rule 4): a retry whose wait
+would reach it is not sent and the loop raises `expired_token`. The same bound holds for the
+retries inside `ciba_await`'s polls (§34.2 P10). A bare `device_poll` has no deadline.
 
 The async `device_login` **awaits** an async callback before polling, so a
 device that needs to await a paint still satisfies §14.3 rule 2.
