@@ -817,4 +817,192 @@ async def test_async_a_500_with_the_servers_body_and_a_slow_down_429_do_not_end_
     await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
 
     assert route.call_count == 3
-    assert sleeps == [2, 2, 2]
+    # The 500 is retried inside the poll (a short §16 backoff); the interval waits are 2 s.
+    assert [wait for wait in sleeps if wait >= 1] == [2, 2]
+
+
+# ---------------------------------------------------------------------
+# C164-25 / contract 1.64 (amended again, C164-35): the poll is §16-retried inside the attempt
+# ---------------------------------------------------------------------
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_a_5xx_on_a_poll_is_retried_inside_the_poll_under_section_16(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_server_error(), _server_error(), _success()]
+    )
+
+    tokens = _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3, "the attempt cap of §16.1 is 3 in total"
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+    assert all(wait < 1 for wait in sleeps), "only §16 backoff, no interval"
+
+
+def test_device_login_completes_within_one_interval_when_the_poll_recovers_under_section_16(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_server_error(), _server_error(), _success()]
+    )
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert [wait for wait in sleeps if wait >= 1] == [2], "one interval, three requests"
+
+
+def test_a_third_5xx_in_a_row_exhausts_the_cap_and_device_poll_surfaces_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from axiam_sdk import NetworkError
+
+    _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_server_error())
+
+    with pytest.raises(NetworkError):
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+
+
+def test_a_transport_failure_on_a_poll_is_retried_and_then_a_network_error(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from axiam_sdk import NetworkError
+
+    _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[httpx.ConnectError("down"), _success()]
+    )
+
+    tokens = _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+    assert route.call_count == 2
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+
+    route.mock(side_effect=httpx.ConnectError("down"))
+    with pytest.raises(NetworkError):
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+
+def test_a_429_on_a_poll_is_not_retried_inside_the_poll(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_rate_limited("1"))
+
+    with pytest.raises(OAuthProtocolError):
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 1, "the wait is the loop's (rule 9), not §16's"
+
+
+def test_with_retry_disabled_a_5xx_makes_one_request_per_poll(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from axiam_sdk import NetworkError
+
+    _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_server_error())
+    client = _client()
+    client._retry_enabled = False
+
+    with pytest.raises(NetworkError):
+        client.device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_async_a_5xx_on_a_poll_is_retried_inside_the_poll(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _noop(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _noop)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_server_error(), _server_error(), _success()]
+    )
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    tokens = await client.device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+    route.mock(return_value=_rate_limited("1"))
+    with pytest.raises(OAuthProtocolError):
+        await client.device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+    assert route.call_count == 4, "the 429 added exactly one request"
+
+
+# ---------------------------------------------------------------------
+# C164-29: the clock wiring in device_login, through the loop itself
+# ---------------------------------------------------------------------
+
+
+def test_device_login_sends_no_poll_at_or_after_the_deadline_with_a_slow_server(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    _authorize_with(respx_mock, expires_in=10, interval=2)
+    sent_at: list[float] = []
+
+    def _slow_pending(_request: httpx.Request) -> httpx.Response:
+        sent_at.append(now[0])
+        now[0] += 3  # a slow round trip, never slept
+        return _oauth_error("authorization_pending")
+
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=_slow_pending)
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert sent_at == [2, 7], "t=2 and t=7; the next wait would reach t >= 10"
+    assert all(t < 10 for t in sent_at)
+
+
+@pytest.mark.asyncio
+async def test_async_device_login_counts_the_user_code_callback_against_the_deadline(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    async def _sleep(delay: float) -> None:
+        now[0] += delay
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    _authorize_with(respx_mock, expires_in=10, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=_oauth_error("authorization_pending")
+    )
+
+    async def _slow_callback(_auth: object) -> None:
+        now[0] += 7  # the user-code screen takes 7 s
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.device_login(_slow_callback, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert route.call_count == 1, "one poll at t=9; the next wait would pass t=10"

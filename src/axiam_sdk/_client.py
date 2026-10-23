@@ -1958,9 +1958,29 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         config = configuration or self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
         url = self._token_endpoint_url(config, tenant_id)
-        request = self._session.sync_client.build_request("POST", url, data=form)
-        response = self._rest_send_sync(request)
-        # No nonce: the device grant has no authorization request to carry one.
+
+        def attempt(_: int) -> httpx.Response:
+            """One §16 attempt: send, mapping a transport failure or a 5xx to ``NetworkError``."""
+            request = self._session.sync_client.build_request("POST", url, data=form)
+            try:
+                response = self._rest_send_sync(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport("device_poll", exc) from None
+            if response.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
+                raise error_from_http_status(
+                    response.status_code, "token request failed", response=response
+                )
+            return response
+
+        # §14.2 rule 6, §16.2: a 5xx or transport failure is retried inside the poll
+        # (bounded by §16.1); a 429 is not -- the wait is the loop's (rule 9). The
+        # answer is parsed outside the retry. No nonce: the device grant has none.
+        response = retry_sync(
+            attempt,
+            operation="device_poll",
+            enabled=self._retry_enabled,
+            telemetry=self._telemetry,
+        )
         return self._handle_device_poll_response(response, config)
 
     def device_login(

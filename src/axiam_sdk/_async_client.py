@@ -780,8 +780,27 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         config = configuration or await self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
         url = self._token_endpoint_url(config, tenant_id)
-        request = self._session.async_client.build_request("POST", url, data=form)
-        response = await self._rest_send_async(request)
+
+        async def attempt(_: int) -> httpx.Response:
+            """One §16 attempt: send, mapping a transport failure or a 5xx to ``NetworkError``."""
+            request = self._session.async_client.build_request("POST", url, data=form)
+            try:
+                response = await self._rest_send_async(request)
+            except httpx.TransportError as exc:
+                raise network_error_from_transport("device_poll", exc) from None
+            if response.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
+                raise error_from_http_status(
+                    response.status_code, "token request failed", response=response
+                )
+            return response
+
+        # §14.2 rule 6, §16.2: see the sync twin.
+        response = await retry_async(
+            attempt,
+            operation="device_poll",
+            enabled=self._retry_enabled,
+            telemetry=self._telemetry,
+        )
         return self._handle_device_poll_response(response, config)
 
     async def device_login(
