@@ -1114,3 +1114,41 @@ async def test_async_a_5xx_retry_after_that_reaches_the_deadline_ends_ciba_await
         )
 
     assert len(seen) == 1
+
+
+def test_ciba_await_carries_a_failures_retry_after_once_and_never_shortens_the_interval(
+    router: respx.MockRouter,
+) -> None:
+    """C164-54: ``[503 RA 1 x3, 429 RA 30, pending, 200]``, interval 5, ``expires_in`` 3600.
+
+    The in-poll §16 waits are the 1 s floors; a carried RA 1 does not shorten the 5 s
+    interval; the 429's RA 30 is waited once (§33.7 rule 5) and is not sticky."""
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = TestClock()
+    busy = httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "1"})
+    limited = httpx.Response(
+        429,
+        json={"error": "rate_limit_exceeded", "error_description": "slow"},
+        headers={"Retry-After": "30"},
+    )
+    seen = script(
+        router,
+        [
+            busy,
+            busy,
+            busy,
+            limited,
+            oauth_error(400, "authorization_pending"),
+            tokens_with_id_token(client),
+        ],
+        clock,
+    )
+
+    client.ciba_await(
+        initiated(3600, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+    )
+
+    assert len(seen) == 6
+    assert [wait for wait in clock.sleeps if wait >= 1] == [5, 1, 1, 5, 30, 5]

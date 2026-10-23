@@ -1060,7 +1060,9 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         <axiam_sdk.AxiamClient.ciba_await>` (CONTRACT.md §33.7): the first
         poll after ``interval``, ``slow_down`` +5 s for good, transient
         failures waited out, and a local :class:`CibaExpiredTokenError` at the
-        deadline. ``clock`` is injectable (``now()`` / ``async sleep()``)."""
+        deadline; a failure's ``Retry-After`` (a ``5xx``'s or a ``429``'s) is the
+        floor of the next wait, once. ``clock`` is injectable (``now()`` /
+        ``async sleep()``)."""
         tick = clock or AsyncSystemCibaClock()
         config = configuration or await self.oidc_discover()
         deadline = initiated.received_at + initiated.expires_in

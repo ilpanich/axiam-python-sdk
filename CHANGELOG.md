@@ -69,6 +69,12 @@ changed incompatibly, it would be recorded here and the minor bumped instead.
   once if it reaches `expires_in`) instead of polling again at the plain interval -- `Retry-After:
   120` on a 30 s grant is one request, not one per interval. Tests: the async `ciba_await` clock
   case; the README states the one-hour `Retry-After` clamp.
+- **`ciba_await` also waits a `429`'s `Retry-After`** (§33.7 rule 5; C164-54): the carry above
+  covers any non-terminal failure that carries `retry_after_ms`, a `429 rate_limit_exceeded`
+  included, which `ciba_await` previously ignored (it polled again at the interval). The carry
+  is one-shot and never shortens the interval. The `ciba_await` and `device_login` docstrings say
+  so. Test: `503`+`Retry-After: 1` x3, `429`+`Retry-After: 30`, pending, `200` waits
+  `[5, 1, 1, 5, 30, 5]` on the injected clock.
 - **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
   the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
   `on_user_code` callback count against it and no poll is sent after it (the schedule keeps

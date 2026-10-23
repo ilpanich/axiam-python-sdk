@@ -2039,8 +2039,9 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         ``expired_token``. A 5xx or transport failure mid-poll is **not**
         terminal (rule 6) — it is retried under §16 inside the poll (three
         requests in all, ``Retry-After`` a floor) and the loop then tries again
-        at its interval, because a server restart must not lose a grant the user
-        has already approved. The deadline binds all of it (rule 4): no retry is
+        at its interval -- or at the failure's ``Retry-After`` when that is longer,
+        once -- because a server restart must not lose a grant the user has
+        already approved. The deadline binds all of it (rule 4): no retry is
         sent, and no wait taken, at or after ``expires_in`` counted from
         ``device_authorize``'s return -- the loop then raises ``expired_token``.
         A ``429 rate_limit_exceeded`` is not terminal
@@ -2345,7 +2346,9 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
           permanently; ``authorization_pending`` never lowers it.
         * A transport failure, ``5xx`` (with or without an ``error`` member)
           or ``429`` (``rate_limit_exceeded``) that outlived §16 is not
-          terminal: the loop waits the interval and polls again.
+          terminal: the loop waits the interval -- or the failure's
+          ``Retry-After`` when that is longer, once (§16.1, §33.7 rule 5) -- and
+          polls again.
         * Polling stops at ``received_at + expires_in`` even if the server has
           not said ``expired_token``; :class:`CibaExpiredTokenError` is then
           raised locally, with no further request.
