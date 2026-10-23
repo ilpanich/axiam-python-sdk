@@ -1948,6 +1948,12 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         rules 5 and 8). **This SDK generates no DPoP proofs** (§21.7.3: it
         verifies them, it holds no key of its own), so it cannot drive a client
         registered for DPoP-bound tokens; it surfaces that refusal as above.
+
+        The status is read before the body (rules 6 and 9, contract 1.64): a ``5xx``
+        is a :class:`~axiam_sdk.NetworkError` whatever it says, and any ``429`` is an
+        :class:`~axiam_sdk.OAuthProtocolError` with ``error == "rate_limit_exceeded"``
+        and ``retry_after_ms`` from ``Retry-After`` -- never ``slow_down``, which only
+        a ``400`` is.
         """
         config = configuration or self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
@@ -1955,7 +1961,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         request = self._session.sync_client.build_request("POST", url, data=form)
         response = self._rest_send_sync(request)
         # No nonce: the device grant has no authorization request to carry one.
-        return self._handle_token_response(response, config, None)
+        return self._handle_device_poll_response(response, config)
 
     def device_login(
         self,
@@ -1995,10 +2001,12 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             scope=scope, tenant_id=tenant_id, configuration=config
         )
 
+        # The deadline runs from here (§14.2 rule 4): the callback below counts.
+        schedule = PollSchedule(authorization.interval, authorization.expires_in, time.monotonic)
+
         # §14.3 rule 2 — before any polling.
         on_user_code(authorization)
 
-        schedule = PollSchedule(authorization.interval, authorization.expires_in)
         while True:
             if not schedule.tick():
                 raise self._device_expired_error()

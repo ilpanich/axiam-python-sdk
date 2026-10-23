@@ -59,13 +59,23 @@ def _oauth_error(code: str) -> httpx.Response:
     return httpx.Response(400, json={"error": code, "error_description": f"{code} description"})
 
 
-def _rate_limited(retry_after: str | None = "7") -> httpx.Response:
+def _rate_limited(
+    retry_after: str | None = "7",
+    body: dict[str, object] | None = None,
+) -> httpx.Response:
+    """The server's own 429 (contract 1.64 amended): ``{"error": "rate_limit_exceeded"}``
+    with no ``error_description``, and a ``Retry-After``."""
     headers = {"Retry-After": retry_after} if retry_after is not None else {}
     return httpx.Response(
         429,
-        json={"error": "rate_limit_exceeded", "error_description": "too many requests"},
+        json=body if body is not None else {"error": "rate_limit_exceeded"},
         headers=headers,
     )
+
+
+def _server_error() -> httpx.Response:
+    """The server's own 500 at /oauth2/token (§14.2 rule 6, contract 1.64 amended)."""
+    return httpx.Response(500, json={"error": "server_error", "error_description": "db"})
 
 
 def _success() -> httpx.Response:
@@ -345,15 +355,16 @@ def test_server_error_mid_poll_is_retried_not_terminal(respx_mock: respx.MockRou
     route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
         side_effect=[
             _oauth_error("authorization_pending"),
-            httpx.Response(500, text="upstream restarting"),
-            httpx.Response(503, text="still restarting"),
+            _server_error(),
+            httpx.Response(503, json={"error": "temporarily_unavailable"}),
+            httpx.Response(502, text="bad gateway"),
             _success(),
         ]
     )
 
     tokens = _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
 
-    assert route.call_count == 4, "§14.2 rule 6: a server restart must not lose an approved grant"
+    assert route.call_count == 5, "§14.2 rule 6: a server restart must not lose an approved grant"
     assert tokens.access_token.get_secret_value() == "device-access-token"
 
 
@@ -599,3 +610,211 @@ async def test_async_429_on_a_poll_is_waited_out_and_the_interval_is_unchanged(
     assert route.call_count == 3
     assert tokens.access_token.get_secret_value() == "device-access-token"
     assert sleeps == [2, 7, 2]
+
+
+# ---------------------------------------------------------------------
+# Contract 1.64 (amended): the status decides, not the body (C164-01, -03, -04, -05, -15)
+# ---------------------------------------------------------------------
+
+
+def _authorize_with(respx_mock: respx.MockRouter, **overrides: object) -> None:
+    _mock_discovery(respx_mock)
+    respx_mock.post(DEVICE_AUTHORIZATION_ENDPOINT).mock(
+        return_value=httpx.Response(200, json=device_authorization_response(**overrides))
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "rate_limit_exceeded"},
+        {"error": "rate_limit_exceeded", "retry_after": 7},
+    ],
+    ids=["no-description", "with-retry_after-member"],
+)
+def test_the_servers_own_429_body_is_waited_out_and_the_interval_is_unchanged(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, body: dict[str, object]
+) -> None:
+    # C164-01: AXIAM's 429 carries no error_description; (b) must still engage.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            _rate_limited("7", body),
+            _oauth_error("authorization_pending"),
+            _success(),
+        ]
+    )
+
+    tokens = _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+    assert sleeps == [2, 7, 2]
+
+
+def test_a_bodiless_429_honours_retry_after_as_a_floor(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _authorize_with(respx_mock, interval=2)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[httpx.Response(429, headers={"Retry-After": "7"}), _success()]
+    )
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert sleeps == [2, 7]
+
+
+def test_a_429_that_says_slow_down_does_not_raise_the_interval(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # C164-04: only the 400 raises the interval; a 429 is the rule-9 wait whatever its body.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            httpx.Response(
+                429,
+                json={"error": "slow_down", "error_description": "x"},
+                headers={"Retry-After": "1"},
+            ),
+            _oauth_error("authorization_pending"),
+            _success(),
+        ]
+    )
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert sleeps == [2, 2, 2], "the interval stays at 2; a 400 slow_down is the only raise"
+
+
+def test_a_429_with_any_other_error_is_still_the_wait_not_terminal(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    _authorize_with(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            httpx.Response(429, json={"error": "invalid_grant", "error_description": "x"}),
+            _success(),
+        ]
+    )
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 2
+
+
+def test_a_single_device_poll_raises_a_429_whatever_its_body_names(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(
+            429, json={"error": "slow_down", "error_description": "x"}, headers={"Retry-After": "3"}
+        )
+    )
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "rate_limit_exceeded"
+    assert excinfo.value.retry_after_ms == 3000
+
+
+def test_a_5xx_on_a_poll_is_a_network_error_whatever_its_body(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # C164-03: the status is read before the body (§14.2 rule 6).
+    from axiam_sdk import NetworkError
+
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_server_error())
+
+    with pytest.raises(NetworkError):
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+
+def test_the_deadline_is_a_clock_not_the_sum_of_the_waits() -> None:
+    # C164-05: round trips and the user-code callback count against expires_in.
+    now = [100.0]
+    schedule = PollSchedule(5, 20, clock=lambda: now[0])
+    now[0] += 8  # the callback and a slow request, no sleep at all
+    assert schedule.tick() is True  # 12 s left, 5 s wait
+    now[0] += 5 + 8  # the wait, plus another slow round trip
+    assert schedule.tick() is False, "4 s left, a 5 s wait would poll past the deadline"
+
+
+@pytest.mark.asyncio
+async def test_async_a_retry_after_past_the_deadline_is_capped_and_nothing_is_sent_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _record(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    _authorize_with(respx_mock, expires_in=10, interval=1)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_rate_limited("3600"), _success()]
+    )
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert route.call_count == 1
+    assert all(wait <= 10 for wait in sleeps)
+
+
+@pytest.mark.asyncio
+async def test_async_a_429_without_a_retry_after_waits_one_interval(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _record(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    _authorize_with(respx_mock, interval=2)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=[_rate_limited(None), _success()])
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert sleeps == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_async_a_500_with_the_servers_body_and_a_slow_down_429_do_not_end_the_grant(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _record(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            _server_error(),
+            httpx.Response(429, json={"error": "slow_down"}, headers={"Retry-After": "1"}),
+            _success(),
+        ]
+    )
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert sleeps == [2, 2, 2]

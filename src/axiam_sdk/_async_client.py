@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
@@ -769,13 +770,19 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         ``invalid_client`` is terminal and not retried (§14.2 rules 5 and 8);
         this SDK generates no DPoP proofs (§21.7.3), so it cannot drive a client
         registered for DPoP-bound tokens.
+
+        The status is read before the body (rules 6 and 9, contract 1.64): a ``5xx``
+        is a :class:`~axiam_sdk.NetworkError` whatever it says, and any ``429`` is an
+        :class:`~axiam_sdk.OAuthProtocolError` with ``error == "rate_limit_exceeded"``
+        and ``retry_after_ms`` from ``Retry-After`` -- never ``slow_down``, which only
+        a ``400`` is.
         """
         config = configuration or await self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._rest_send_async(request)
-        return self._handle_token_response(response, config, None)
+        return self._handle_device_poll_response(response, config)
 
     async def device_login(
         self,
@@ -802,12 +809,14 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             scope=scope, tenant_id=tenant_id, configuration=config
         )
 
+        # The deadline runs from here (§14.2 rule 4): the callback below counts.
+        schedule = PollSchedule(authorization.interval, authorization.expires_in, time.monotonic)
+
         # §14.3 rule 2 — before any polling.
         result = on_user_code(authorization)
         if isinstance(result, Awaitable):
             await result
 
-        schedule = PollSchedule(authorization.interval, authorization.expires_in)
         while True:
             if not schedule.tick():
                 raise self._device_expired_error()

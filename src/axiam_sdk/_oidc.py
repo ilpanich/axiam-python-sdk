@@ -45,6 +45,7 @@ from axiam_sdk._errors import (
     OAuthProtocolError,
     error_from_http_status,
     error_from_oauth2_response,
+    retry_after_ms_of,
 )
 from axiam_sdk._jwks import JwksVerifier
 from axiam_sdk._models import (
@@ -308,10 +309,24 @@ class PollSchedule:
     ``slow_down``.
     """
 
-    def __init__(self, interval_seconds: int, expires_in_seconds: int) -> None:
-        """Build from a ``DeviceAuthorization``'s ``interval``/``expires_in``."""
+    def __init__(
+        self,
+        interval_seconds: int,
+        expires_in_seconds: int,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        """Build from a ``DeviceAuthorization``'s ``interval``/``expires_in``.
+
+        ``clock`` (seconds, monotonic) makes the deadline real time: it is read
+        when the schedule is built -- build it as ``device_authorize`` returns --
+        so the request round trips, the ``on_user_code`` callback and slow
+        answers count against ``expires_in`` and not only the waits slept
+        (§14.2 rule 4, C164-05). Without one the deadline is the waits alone.
+        """
         self._interval = interval_seconds if interval_seconds > 0 else DEFAULT_POLL_INTERVAL_SECONDS
         self._remaining: float = expires_in_seconds
+        self._clock = clock
+        self._deadline = clock() + expires_in_seconds if clock is not None else 0.0
         self._floor = 0.0
         self._wait: float = float(self._interval)
 
@@ -350,6 +365,8 @@ class PollSchedule:
         """
         wait = max(float(self._interval), self._floor)
         self._floor = 0.0
+        if self._clock is not None:
+            self._remaining = min(self._remaining, self._deadline - self._clock())
         if wait >= self._remaining:
             self._remaining = 0
             return False
@@ -1687,6 +1704,38 @@ class _OidcMixin:
         if isinstance(exc, NetworkError):
             return "retry"
         return "terminal"
+
+    def _handle_device_poll_response(
+        self, response: httpx.Response, configuration: OidcConfiguration
+    ) -> OidcTokenSet:
+        """Parse one device-poll answer, reading the **status before the body**
+        (§14.2 rules 6 and 9, contract 1.64 amended; C164-01, -03, -04).
+
+        * A ``5xx`` is the §2 :class:`~axiam_sdk.NetworkError` whatever its body
+          (AXIAM answers ``500 {"error": "server_error", ...}``): a restart or a
+          datastore fault does not end a grant the user has approved.
+        * Any ``429`` is ``OAuthProtocolError`` with ``error ==
+          "rate_limit_exceeded"`` and ``retry_after_ms`` from ``Retry-After``,
+          whatever the body names -- AXIAM's own carries no ``error_description``,
+          and a ``429`` that says ``slow_down`` must not raise the interval.
+        * Everything else goes through the ``/oauth2/token`` mapping, where the
+          ``400`` ``authorization_pending`` / ``slow_down`` / terminal answers
+          dispatch on ``error`` (rule 5).
+        """
+        status = response.status_code
+        if status >= 500:
+            raise error_from_http_status(status, "token request failed", response=response)
+        if status == httpx.codes.TOO_MANY_REQUESTS:
+            description = "too many requests"
+            mapped = error_from_oauth2_response(
+                status, response, "token request failed", description_optional=True
+            )
+            if isinstance(mapped, OAuthProtocolError) and mapped.error_description:
+                description = mapped.error_description
+            error = OAuthProtocolError("rate_limit_exceeded", description)
+            error.retry_after_ms = retry_after_ms_of(response)
+            raise error
+        return self._handle_token_response(response, configuration, None)
 
     @staticmethod
     def _device_expired_error() -> AuthError:
