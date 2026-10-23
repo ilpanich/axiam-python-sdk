@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.2] - 2026-10-23
 
-Contract 1.64 (axiam `fb92ec4`, the plan branch `claude/release-1.1.2-w7`): `CONTRACT.md`,
+Contract 1.64 (axiam `fb92ec4`, the plan branch `claude/release-1.1.2-w7`; `CONTRACT.md`
+from `21beda0`, the 1.64 text as amended on 2026-10-23, no version change): `CONTRACT.md`,
 `openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
 unchanged). A **patch** release: **no source-breaking change** -- the one new public member
 is the optional `OAuthProtocolError.retry_after_ms` (default `None`), and the polling loop
@@ -18,12 +19,26 @@ changed incompatibly, it would be recorded here and the minor bumped instead.
 
 ### Fixed
 
-- **A `429 rate_limit_exceeded` on a device-code poll is waited out** (CONTRACT §14.2 rule 9,
-  contract 1.64; all eleven SDKs). `device_login` (sync and async) no longer raises on it: the
-  loop waits the `Retry-After` as a minimum, capped at the `expires_in` deadline, counts the
-  wait as one interval, does **not** raise the interval (only the `400 slow_down` does) and
-  polls again. A single `device_poll` still raises the `OAuthProtocolError`, now carrying
-  `retry_after_ms`. Tested per §14.6, against a recorded sleep.
+- **A `429` on a device-code poll is waited out, decided by the status** (CONTRACT §14.2 rule
+  9, contract 1.64 as amended; C164-01, C164-04). `device_login` (sync and async) no longer
+  raises on it: the loop waits the `Retry-After` as a minimum, capped at the `expires_in`
+  deadline, counts the wait as one interval, does **not** raise the interval (only the `400
+  slow_down` does) and polls again. This holds for the server's own body, `{"error":
+  "rate_limit_exceeded"}` with no `error_description` (before this fix the SDK read it as a
+  `NetworkError` and re-polled at the plain interval, ignoring `Retry-After`), for a bodiless
+  `429`, and for a `429` whose body says `slow_down` or anything else. A single `device_poll`
+  still raises, now always an `OAuthProtocolError` with `error == "rate_limit_exceeded"` and
+  `retry_after_ms` set from the header. Behaviour change for a caller of `device_poll` that
+  caught the old `NetworkError` on a `429`: catch `OAuthProtocolError` (an `AuthError`).
+  Tested per §14.6 against a recorded sleep, with the server's own bodies.
+- **A `5xx` on a device-code poll never ends the grant, whatever its body** (§14.2 rule 6;
+  C164-03). AXIAM answers a token-endpoint fault `500 {"error": "server_error", ...}`; the SDK
+  read the body first, raised a terminal `OAuthProtocolError` and lost an approved grant. The
+  status is now read first and a `5xx` is the §2 `NetworkError` the loop retries.
+- **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
+  the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
+  `on_user_code` callback count against it and no poll is sent after it (the schedule keeps
+  the sum-of-waits bound too, so a faked sleep still ends the grant).
 - **An explicit PAT on `/uma2/*` travels without session state** (C163-14): the five
   `uma_*_resource` operations and `uma_request_ticket` send `Cookie: ""` and no
   `X-CSRF-Token` whenever the request carries a caller-passed `Authorization`, adopted

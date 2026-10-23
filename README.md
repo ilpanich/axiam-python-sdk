@@ -1595,12 +1595,14 @@ This SDK has no `private_key_jwt` client assertion and generates no DPoP proofs
 (§21.7.3: it verifies them), so it cannot drive a device client registered for either;
 it surfaces the server's `invalid_client` as above.
 
-**A `429` on a poll is waited out (contract 1.64, §14.2 rule 9).** `rate_limit_exceeded`
-at `/oauth2/token` is never terminal for `device_login`: the loop waits the `Retry-After`
+**A `429` on a poll is waited out (contract 1.64, §14.2 rule 9).** Any `429` at
+`/oauth2/token` -- the status decides, not the body -- is never terminal for `device_login`: the loop waits the `Retry-After`
 as a minimum (capped at the `expires_in` deadline), counts it as one interval, does **not**
 raise the interval for it, and polls again. A single `device_poll` call still raises the
 `OAuthProtocolError` (`error == "rate_limit_exceeded"`, `retry_after_ms` set when the
-header was sent), so a hand-rolled loop decides for itself.
+header was sent), so a hand-rolled loop decides for itself. A `5xx` is a `NetworkError`
+whatever its body (rule 6), and the `expires_in` deadline is measured on a clock from
+`device_authorize`'s return (rule 4).
 
 The async `device_login` **awaits** an async callback before polling, so a
 device that needs to await a paint still satisfies §14.3 rule 2.
