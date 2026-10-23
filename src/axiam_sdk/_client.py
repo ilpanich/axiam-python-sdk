@@ -1681,7 +1681,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             headers={
                 k: v
                 for k, v in original_request.headers.items()
-                if k.lower() not in ("content-length", "x-csrf-token")
+                if k.lower() not in ("content-length", "x-csrf-token", "cookie")
             },
         )
         return self._rest_send_sync(retry_request)

@@ -515,7 +515,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             headers={
                 k: v
                 for k, v in original_request.headers.items()
-                if k.lower() not in ("content-length", "x-csrf-token")
+                if k.lower() not in ("content-length", "x-csrf-token", "cookie")
             },
         )
         return await self._rest_send_async(retry_request)
