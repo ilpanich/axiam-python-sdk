@@ -1202,3 +1202,69 @@ def test_with_retry_disabled_device_login_makes_one_request_per_poll(
 
     assert route.call_count == 3
     assert sleeps == [2, 2, 2], "one request per poll, an interval each, no §16 wait"
+
+
+# ---------------------------------------------------------------------
+# C164-48: a 5xx's Retry-After survives a declined in-poll retry
+# ---------------------------------------------------------------------
+
+
+def test_a_5xx_retry_after_that_reaches_the_deadline_ends_the_grant_after_one_request(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=30, interval=5)
+    respond, sent = _sent_at(
+        clock,
+        lambda: httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "120"}),
+    )
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert sent == [5], "the server asked for 120 s: one request, not one per interval"
+
+
+def test_a_5xx_retry_after_inside_the_deadline_floors_the_next_interval(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=600, interval=5)
+    answers = iter(
+        [
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "60"}),
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "60"}),
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "60"}),
+            _success(),
+        ]
+    )
+    respond, sent = _sent_at(clock, lambda: next(answers))
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    # t=5: three in-poll attempts spaced by the 60 s floor; then the next interval is
+    # at least 60 s as well.
+    assert sent[-1] - sent[-2] >= 60
+
+
+@pytest.mark.asyncio
+async def test_async_a_5xx_retry_after_that_reaches_the_deadline_ends_the_grant(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=30, interval=5)
+    respond, sent = _sent_at(
+        clock,
+        lambda: httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "120"}),
+    )
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert sent == [5]

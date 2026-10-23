@@ -2072,7 +2072,15 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
                 )
             except Exception as exc:  # noqa: BLE001 - classified by §14.2
                 outcome = self._device_poll_outcome(exc)
-                if outcome == "pending" or outcome == "retry":
+                if outcome == "pending":
+                    continue
+                if outcome == "retry":
+                    # §16.1: a 5xx's Retry-After survives a declined in-poll retry; the next
+                    # wait is at least that, and tick() ends the grant if it reaches the
+                    # deadline (C164-48).
+                    retry_after_ms = getattr(exc, "retry_after_ms", None)
+                    if retry_after_ms is not None:
+                        schedule.rate_limited(retry_after_ms / 1000.0)
                     continue
                 if outcome == "slow_down":
                     schedule.slow_down()
@@ -2359,10 +2367,13 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         config = configuration or self.oidc_discover()
         deadline = initiated.received_at + initiated.expires_in
         interval = initiated.interval if initiated.interval > 0 else DEFAULT_CIBA_INTERVAL_SECONDS
+        floor = 0.0
         while True:
-            if tick.now() + interval >= deadline:
+            wait = max(interval, floor)
+            floor = 0.0
+            if tick.now() + wait >= deadline:
                 raise local_expiry()
-            tick.sleep(interval)
+            tick.sleep(wait)
             try:
                 return self._ciba_poll(
                     initiated.auth_req_id,
@@ -2377,6 +2388,12 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
                     interval += CIBA_SLOW_DOWN_INCREMENT_SECONDS
                 elif step == "terminal":
                     raise
+                else:
+                    # §16.1: a 5xx's Retry-After survives a declined in-poll retry
+                    # (C164-48); the next wait is at least that, checked against the deadline.
+                    retry_after_ms = getattr(exc, "retry_after_ms", None)
+                    if retry_after_ms is not None:
+                        floor = retry_after_ms / 1000.0
 
     # ------------------------------------------------------------------
     # RFC 7592 client configuration (CONTRACT.md §28.12, contract 1.53)

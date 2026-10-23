@@ -63,6 +63,12 @@ changed incompatibly, it would be recorded here and the minor bumped instead.
   retry-off case through `device_login`; the README and the `device_poll`/`device_login`
   docstrings say the poll is §16-retried inside the attempt and bounded by the deadline; the
   contract-1.62 comment in `test_d5_conformance.py` now has a test behind it.
+- **A `5xx`'s `Retry-After` survives a declined in-poll retry** (§16.1; C164-48): when the
+  runner declines a retry because the floor reaches the deadline, `device_login` and
+  `ciba_await` now take that `Retry-After` as the floor of their next wait (the grant ends at
+  once if it reaches `expires_in`) instead of polling again at the plain interval -- `Retry-After:
+  120` on a 30 s grant is one request, not one per interval. Tests: the async `ciba_await` clock
+  case; the README states the one-hour `Retry-After` clamp.
 - **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
   the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
   `on_user_code` callback count against it and no poll is sent after it (the schedule keeps

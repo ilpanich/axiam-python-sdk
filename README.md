@@ -2673,7 +2673,10 @@ pytest --cov=axiam_sdk --cov-report=lcov
 Read-only authorization checks — `check_access`, `can`, `batch_check`, on both the sync and
 async clients — retry transient failures under the contract's normative table: **3 attempts**
 (1 initial + 2 retries), 200 ms base, 5 s cap, **full jitter** (uniform over `[0, backoff]`),
-and `Retry-After` honored as a **floor**.
+and `Retry-After` honored as a **floor** -- up to one hour (`MAX_RETRY_AFTER_MS`); the 5 s cap
+applies to the computed backoff only, so three `503`s that each say `Retry-After: 3600` hold a
+`check_access` for about two hours. The device and CIBA loops bound every wait by the grant's
+`expires_in`, and carry a `5xx`'s `Retry-After` into their next interval.
 
 This SDK had no §16 policy before — only §9.3's refresh-then-retry-once, which is a different
 mechanism. §11.2 rule 5 had been requiring one since it was written.
