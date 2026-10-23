@@ -311,12 +311,30 @@ class PollSchedule:
     def __init__(self, interval_seconds: int, expires_in_seconds: int) -> None:
         """Build from a ``DeviceAuthorization``'s ``interval``/``expires_in``."""
         self._interval = interval_seconds if interval_seconds > 0 else DEFAULT_POLL_INTERVAL_SECONDS
-        self._remaining = expires_in_seconds
+        self._remaining: float = expires_in_seconds
+        self._floor = 0.0
+        self._wait: float = float(self._interval)
 
     @property
     def interval_seconds(self) -> int:
         """The current inter-poll delay, in seconds."""
         return self._interval
+
+    @property
+    def wait_seconds(self) -> float:
+        """The delay :meth:`tick` last scheduled: the interval, or the
+        ``Retry-After`` of a ``429`` when that was longer (§14.2 rule 9)."""
+        return self._wait
+
+    def rate_limited(self, retry_after_seconds: float | None) -> None:
+        """Apply one ``429 rate_limit_exceeded`` (§14.2 rule 9, contract 1.64).
+
+        The next wait is at least ``Retry-After`` and counts as **one**
+        interval; the interval itself is **not** raised -- only the ``400``
+        ``slow_down`` does that. A ``Retry-After`` that reaches the deadline
+        ends the grant at the next :meth:`tick`, as an interval would.
+        """
+        self._floor = max(retry_after_seconds or 0.0, 0.0)
 
     def slow_down(self) -> None:
         """Apply one ``slow_down`` (§14.2 rule 1): **cumulative, never reset.**"""
@@ -330,10 +348,13 @@ class PollSchedule:
             caller MUST stop (§14.2 rule 4) — the deadline is authoritative
             even if the server is still answering ``authorization_pending``.
         """
-        if self._interval >= self._remaining:
+        wait = max(float(self._interval), self._floor)
+        self._floor = 0.0
+        if wait >= self._remaining:
             self._remaining = 0
             return False
-        self._remaining -= self._interval
+        self._remaining -= wait
+        self._wait = wait
         return True
 
 
@@ -1645,8 +1666,10 @@ class _OidcMixin:
     def _device_poll_outcome(exc: BaseException) -> str:
         """Classify a failed poll per §14.2.
 
-        Returns ``"pending"``, ``"slow_down"``, ``"retry"`` (a transport or
-        5xx failure, which rule 6 makes non-terminal) or ``"terminal"``.
+        Returns ``"pending"``, ``"slow_down"``, ``"rate_limited"`` (a ``429``
+        ``rate_limit_exceeded``, which rule 9 makes non-terminal and which does
+        **not** raise the interval), ``"retry"`` (a transport or 5xx failure,
+        which rule 6 makes non-terminal) or ``"terminal"``.
 
         §14.2 rule 5: all five RFC 8628 §3.5 answers arrive as ``400``, which
         the §2 taxonomy would map to one indistinguishable error — so this
@@ -1657,6 +1680,8 @@ class _OidcMixin:
             return "pending"
         if code == "slow_down":
             return "slow_down"
+        if code == "rate_limit_exceeded":
+            return "rate_limited"
         if code is not None:
             return "terminal"
         if isinstance(exc, NetworkError):

@@ -20,6 +20,8 @@ unredacted response before calling this constructor. Never construct
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -83,6 +85,10 @@ class OAuthProtocolError(AuthError):
         self.reason = None
         self.error = error
         self.error_description = error_description
+        #: The ``Retry-After`` of a ``429`` answer in milliseconds, when it
+        #: carried one (set by :func:`error_from_oauth2_response`); ``None``
+        #: otherwise. The device polling loop waits it out (§14.2 rule 9).
+        self.retry_after_ms: float | None = None
 
 
 class AuthzError(Exception):
@@ -301,6 +307,29 @@ def _oauth2_error_body(
     return None
 
 
+def retry_after_ms_of(response: httpx.Response) -> float | None:
+    """The response's ``Retry-After`` in milliseconds (RFC 9110 §10.2.3), or
+    ``None`` when absent or unparsable. Both spellings are read: delta-seconds
+    and an HTTP-date (relative to now, never negative)."""
+    raw = response.headers.get("retry-after")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        return None
+    return max(seconds, 0.0) * 1000.0
+
+
 def error_from_oauth2_response(
     status: int,
     response: httpx.Response,
@@ -328,7 +357,10 @@ def error_from_oauth2_response(
     """
     oauth2_body = _oauth2_error_body(response, description_optional=description_optional)
     if oauth2_body is not None:
-        return OAuthProtocolError(oauth2_body["error"], oauth2_body["description"])
+        error = OAuthProtocolError(oauth2_body["error"], oauth2_body["description"])
+        if status == 429:
+            error.retry_after_ms = retry_after_ms_of(response)
+        return error
     return error_from_http_status(status, fallback_message, response=response)
 
 

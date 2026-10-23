@@ -15,6 +15,8 @@ The §14.6 required assertions split across two levels, deliberately:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from urllib.parse import parse_qsl
 
 import httpx
@@ -55,6 +57,15 @@ def _mock_discovery(respx_mock: respx.MockRouter, *, full: bool = True) -> None:
 
 def _oauth_error(code: str) -> httpx.Response:
     return httpx.Response(400, json={"error": code, "error_description": f"{code} description"})
+
+
+def _rate_limited(retry_after: str | None = "7") -> httpx.Response:
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return httpx.Response(
+        429,
+        json={"error": "rate_limit_exceeded", "error_description": "too many requests"},
+        headers=headers,
+    )
 
 
 def _success() -> httpx.Response:
@@ -118,6 +129,33 @@ def test_a_slowed_interval_can_exhaust_the_grant_early() -> None:
 
 def test_an_interval_equal_to_the_whole_grant_never_polls() -> None:
     assert PollSchedule(30, 30).tick() is False
+
+
+def test_rate_limited_waits_at_least_retry_after_as_one_interval_and_keeps_the_interval() -> None:
+    # §14.2 rule 9 (contract 1.64): the wait replaces one interval, never raises it.
+    schedule = PollSchedule(5, 600)
+    schedule.rate_limited(12.5)
+    assert schedule.tick() is True
+    assert schedule.wait_seconds == 12.5
+    assert schedule.interval_seconds == 5
+    assert schedule.tick() is True
+    assert schedule.wait_seconds == 5, "the Retry-After applies to one wait only"
+
+
+def test_a_retry_after_shorter_than_the_interval_never_shortens_the_wait() -> None:
+    schedule = PollSchedule(5, 600)
+    schedule.rate_limited(1)
+    assert schedule.tick() is True
+    assert schedule.wait_seconds == 5
+    schedule.rate_limited(None)
+    assert schedule.tick() is True
+    assert schedule.wait_seconds == 5
+
+
+def test_a_retry_after_past_the_deadline_ends_the_grant() -> None:
+    schedule = PollSchedule(5, 30)
+    schedule.rate_limited(60)
+    assert schedule.tick() is False
 
 
 # ---------------------------------------------------------------------
@@ -319,6 +357,83 @@ def test_server_error_mid_poll_is_retried_not_terminal(respx_mock: respx.MockRou
     assert tokens.access_token.get_secret_value() == "device-access-token"
 
 
+def test_a_429_on_a_poll_is_waited_out_not_terminal_and_the_interval_is_unchanged(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # §14.6 (contract 1.64): one poll answered 429 rate_limit_exceeded with a Retry-After,
+    # then the tokens. The loop waits at least the Retry-After (a recorded sleep, not a
+    # wall-clock one), polls again and completes; the poll after the 429 is scheduled at
+    # the interval held before it, not five seconds longer.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _mock_discovery(respx_mock)
+    respx_mock.post(DEVICE_AUTHORIZATION_ENDPOINT).mock(
+        return_value=httpx.Response(200, json=device_authorization_response(interval=2))
+    )
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_rate_limited("7"), _oauth_error("authorization_pending"), _success()]
+    )
+
+    tokens = _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+    assert sleeps == [2, 7, 2], "first interval, the Retry-After as one interval, then the interval"
+
+
+def test_a_429_without_a_retry_after_waits_one_interval_and_polls_again(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _mock_discovery(respx_mock)
+    respx_mock.post(DEVICE_AUTHORIZATION_ENDPOINT).mock(
+        return_value=httpx.Response(200, json=device_authorization_response(interval=2))
+    )
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=[_rate_limited(None), _success()])
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert sleeps == [2, 2]
+
+
+def test_a_retry_after_past_the_deadline_is_capped_and_nothing_is_sent_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    _mock_discovery(respx_mock)
+    respx_mock.post(DEVICE_AUTHORIZATION_ENDPOINT).mock(
+        return_value=httpx.Response(
+            200, json=device_authorization_response(expires_in=10, interval=1)
+        )
+    )
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_rate_limited("3600"), _success()]
+    )
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert route.call_count == 1, "§14.2 rule 4: no poll after the deadline"
+    assert all(wait <= 10 for wait in sleeps), "the wait is never longer than the grant"
+
+
+def test_a_single_device_poll_still_raises_the_429_for_a_hand_rolled_loop(
+    respx_mock: respx.MockRouter,
+) -> None:
+    # Only the loop waits; `device_poll` raises (§14.2 rule 9, last sentence).
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(return_value=_rate_limited("7"))
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "rate_limit_exceeded"
+    assert excinfo.value.retry_after_ms == 7000
+
+
 # ---------------------------------------------------------------------
 # §14.3 device_login
 # ---------------------------------------------------------------------
@@ -458,3 +573,29 @@ async def test_async_access_denied_is_terminal(respx_mock: respx.MockRouter) -> 
         await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
 
     assert excinfo.value.error == "access_denied"
+
+
+@pytest.mark.asyncio
+async def test_async_429_on_a_poll_is_waited_out_and_the_interval_is_unchanged(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _record(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    _mock_discovery(respx_mock)
+    respx_mock.post(DEVICE_AUTHORIZATION_ENDPOINT).mock(
+        return_value=httpx.Response(200, json=device_authorization_response(interval=2))
+    )
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_rate_limited("7"), _oauth_error("authorization_pending"), _success()]
+    )
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    tokens = await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+    assert sleeps == [2, 7, 2]

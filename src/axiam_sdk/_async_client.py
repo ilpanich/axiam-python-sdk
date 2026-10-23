@@ -811,7 +811,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         while True:
             if not schedule.tick():
                 raise self._device_expired_error()
-            await asyncio.sleep(schedule.interval_seconds)
+            await asyncio.sleep(schedule.wait_seconds)
             try:
                 return await self.device_poll(
                     device_code=authorization.device_code,
@@ -824,6 +824,13 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
                     continue
                 if outcome == "slow_down":
                     schedule.slow_down()
+                    continue
+                if outcome == "rate_limited":
+                    # §14.2 rule 9: waited out as one interval, interval unchanged.
+                    retry_after_ms = getattr(exc, "retry_after_ms", None)
+                    schedule.rate_limited(
+                        retry_after_ms / 1000.0 if retry_after_ms is not None else None
+                    )
                     continue
                 raise
 
