@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.2] - 2026-10-23
 
 Contract 1.64 (axiam `fb92ec4`, the plan branch `claude/release-1.1.2-w7`; `CONTRACT.md`
-from `21beda0`, the 1.64 text as amended on 2026-10-23, no version change): `CONTRACT.md`,
+from `b3f8687`, the 1.64 text as amended twice on 2026-10-23, no version change): `CONTRACT.md`,
 `openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
 unchanged). A **patch** release: **no source-breaking change** -- the one new public member
 is the optional `OAuthProtocolError.retry_after_ms` (default `None`), and the polling loop
@@ -35,6 +35,18 @@ changed incompatibly, it would be recorded here and the minor bumped instead.
   C164-03). AXIAM answers a token-endpoint fault `500 {"error": "server_error", ...}`; the SDK
   read the body first, raised a terminal `OAuthProtocolError` and lost an approved grant. The
   status is now read first and a `5xx` is the §2 `NetworkError` the loop retries.
+- **The device poll is retried under §16 inside the attempt** (§14.2 rule 6, §16.1, §16.2;
+  contract 1.64 amended again, C164-25): `device_poll` makes up to three requests on a `5xx`
+  or a transport failure (a raw `httpx` transport error is now a `NetworkError`, which the
+  loop treats as non-terminal), never on a `429` -- the wait for that is the loop's. With
+  `retry_enabled=False` it makes one request per poll.
+- **The replay after a `401` refresh carries the refreshed session** (§9.3, §3; C164-26,
+  pre-existing): `_retry_after_refresh_sync`/`_async` copied the original request's `Cookie`
+  header, which `httpx` keeps over the jar, so the replay sent the expired `axiam_access` and
+  the old `axiam_csrf` beside the new `X-CSRF-Token` and a refresh that had succeeded still
+  ended in `AuthError`. The header is no longer copied; the jar's fresh cookies are merged
+  and a PAT/bearer replay keeps `Cookie: ""`. Affects `check_access`, `batch_check` and every
+  management call that met an expired access token.
 - **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
   the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
   `on_user_code` callback count against it and no poll is sent after it (the schedule keeps
