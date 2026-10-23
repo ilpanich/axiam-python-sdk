@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import parse_qsl
 
 import httpx
@@ -1006,3 +1008,197 @@ async def test_async_device_login_counts_the_user_code_callback_against_the_dead
 
     assert excinfo.value.error == "expired_token"
     assert route.call_count == 1, "one poll at t=9; the next wait would pass t=10"
+
+
+# ---------------------------------------------------------------------
+# C164-36: the in-poll §16 retry never goes past the grant's deadline
+# ---------------------------------------------------------------------
+
+
+class _FakeClock:
+    """``time.monotonic`` plus ``time.sleep``/``asyncio.sleep`` that advance it."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 0.0
+        monkeypatch.setattr(time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(time, "sleep", self.sleep)
+        monkeypatch.setattr(asyncio, "sleep", self.async_sleep)
+        monkeypatch.setattr("random.random", lambda: 1.0)  # maximum jitter
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    async def async_sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _sent_at(clock: _FakeClock, answer: Callable[[], httpx.Response]) -> tuple[Any, list[float]]:
+    sent: list[float] = []
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        sent.append(clock.now)
+        return answer()
+
+    return respond, sent
+
+
+def test_a_poll_sent_just_before_the_deadline_is_not_retried_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 7.9 s on_user_code leaves the first poll at t=9.9 of a 10 s grant; its 500 would be
+    # retried at t>=10.1 by the unbounded runner.
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=10, interval=2)
+    respond, sent = _sent_at(clock, _server_error)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_login(lambda _auth: clock.sleep(7.9), tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert [round(t, 1) for t in sent] == [9.9], "one request, none at or after the deadline"
+
+
+def test_a_5xx_retry_after_past_the_deadline_sends_nothing_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=30, interval=5)
+    respond, sent = _sent_at(
+        clock,
+        lambda: httpx.Response(
+            503, json={"error": "temporarily_unavailable"}, headers={"Retry-After": "120"}
+        ),
+    )
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert sent and all(t < 30 for t in sent), "no request at or after 30 s"
+    assert clock.now < 30, "expired_token by the deadline, not after a 120 s wait"
+
+
+@pytest.mark.asyncio
+async def test_async_a_poll_sent_just_before_the_deadline_is_not_retried_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=10, interval=2)
+    respond, sent = _sent_at(clock, _server_error)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    async def slow_callback(_auth: object) -> None:
+        clock.now += 7.9
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.device_login(slow_callback, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert [round(t, 1) for t in sent] == [9.9]
+
+
+@pytest.mark.asyncio
+async def test_async_a_5xx_retry_after_past_the_deadline_sends_nothing_after_it(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock(monkeypatch)
+    _authorize_with(respx_mock, expires_in=30, interval=5)
+    respond, sent = _sent_at(
+        clock,
+        lambda: httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "120"}),
+    )
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=respond)
+
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(OAuthProtocolError) as excinfo:
+        await client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert excinfo.value.error == "expired_token"
+    assert sent and all(t < 30 for t in sent)
+    assert clock.now < 30
+
+
+def test_a_bare_device_poll_keeps_the_unbounded_section_16_budget_and_the_floor(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "2"}),
+            _success(),
+        ]
+    )
+
+    _client().device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 2
+    assert sleeps[0] >= 2.0, "a 5xx Retry-After is a floor on the in-poll wait (C164-37)"
+
+
+# ---------------------------------------------------------------------
+# C164-38: the async transport case, and the loop-level cases
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_a_transport_failure_twice_then_200_makes_three_requests(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from axiam_sdk import NetworkError
+
+    async def _noop(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _noop)
+    _mock_discovery(respx_mock)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[httpx.ConnectError("refused"), httpx.ReadError("reset"), _success()]
+    )
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+
+    tokens = await client.device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert tokens.access_token.get_secret_value() == "device-access-token"
+
+    before = route.call_count
+    route.mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(NetworkError):
+        await client.device_poll(device_code=DEVICE_CODE, tenant_id=TENANT_ID)
+    assert route.call_count - before == 3, "the cap is three attempts in all"
+
+
+def test_two_transport_failures_then_200_complete_device_login_in_one_interval(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[httpx.ConnectError("refused"), httpx.ConnectError("refused"), _success()]
+    )
+
+    _client().device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert [wait for wait in sleeps if wait >= 1] == [2]
+
+
+def test_with_retry_disabled_device_login_makes_one_request_per_poll(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _authorize_with(respx_mock, interval=2)
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        side_effect=[_server_error(), _server_error(), _success()]
+    )
+    client = _client()
+    client._retry_enabled = False
+
+    client.device_login(lambda _auth: None, tenant_id=TENANT_ID)
+
+    assert route.call_count == 3
+    assert sleeps == [2, 2, 2], "one request per poll, an interval each, no §16 wait"

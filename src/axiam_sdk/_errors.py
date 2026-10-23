@@ -134,6 +134,10 @@ class NetworkError(Exception):
         super().__init__(f"network error: {message}")
         self.message = message
         self.__cause__ = cause
+        #: The ``Retry-After`` of a ``408``/``429``/``5xx`` answer in milliseconds,
+        #: when it carried one (set by :func:`error_from_http_status`); the §16
+        #: runner honours it as a floor (§16.1). ``None`` otherwise.
+        self.retry_after_ms: float | None = None
 
 
 # X-3: response headers use an ALLOWLIST, not a denylist. Only these known-safe,
@@ -269,7 +273,11 @@ def error_from_http_status(
     cause: BaseException | None = None
     if response is not None:
         cause = RuntimeError(_sanitize_response(response))
-    return NetworkError(message, cause=cause)
+    network_error = NetworkError(message, cause=cause)
+    if response is not None and (status in (408, 429) or status >= 500):
+        # §16.1: ``Retry-After`` is honoured as a floor by every §16 retry (C164-37).
+        network_error.retry_after_ms = retry_after_ms_of(response)
+    return network_error
 
 
 def _oauth2_error_body(

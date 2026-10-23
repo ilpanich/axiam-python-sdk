@@ -776,6 +776,33 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         :class:`~axiam_sdk.OAuthProtocolError` with ``error == "rate_limit_exceeded"``
         and ``retry_after_ms`` from ``Retry-After`` -- never ``slow_down``, which only
         a ``400`` is.
+
+        A ``5xx`` or a transport failure is retried **inside** the poll under §16
+        (at most three requests in all, §14.2 rule 6, §16.2; the ``Retry-After`` of a
+        ``5xx`` is a floor); a ``429`` never is, and with ``retry_enabled=False`` a
+        poll is one request. A bare ``device_poll`` has no deadline;
+        :meth:`device_login` bounds the retries by the grant's ``expires_in``.
+        """
+        return await self._device_poll(
+            device_code=device_code,
+            tenant_id=tenant_id,
+            configuration=configuration,
+            deadline=None,
+        )
+
+    async def _device_poll(
+        self,
+        *,
+        device_code: SecretStr | str,
+        tenant_id: str | None,
+        configuration: OidcConfiguration | None,
+        deadline: Callable[[], float] | None,
+    ) -> OidcTokenSet:
+        """One device poll (§14.1) with an optional deadline for its in-poll §16 retry.
+
+        ``deadline`` returns the seconds left before the grant's ``expires_in``:
+        ``device_login`` passes it so that no retry is sent at or after it (§14.2
+        rule 4); the public ``device_poll`` passes ``None``.
         """
         config = configuration or await self.oidc_discover()
         form = self._device_poll_form(device_code=device_code)
@@ -800,6 +827,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             operation="device_poll",
             enabled=self._retry_enabled,
             telemetry=self._telemetry,
+            deadline=deadline,
         )
         return self._handle_device_poll_response(response, config)
 
@@ -821,7 +849,8 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
 
         Per §14.3 rule 4 (contract 1.7 errata) this SDK **returns** the token
         set rather than adopting it. Polling follows §14.2 — see the sync
-        twin's docstring for the full rule set.
+        twin's docstring for the full rule set (the in-poll §16 retry and every wait
+        are bounded by the grant's ``expires_in``, §14.2 rule 4).
         """
         config = configuration or await self.oidc_discover()
         authorization = await self.device_authorize(
@@ -841,10 +870,11 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
                 raise self._device_expired_error()
             await asyncio.sleep(schedule.wait_seconds)
             try:
-                return await self.device_poll(
+                return await self._device_poll(
                     device_code=authorization.device_code,
                     tenant_id=tenant_id,
                     configuration=config,
+                    deadline=schedule.remaining,
                 )
             except Exception as exc:  # noqa: BLE001 - classified by §14.2
                 outcome = self._device_poll_outcome(exc)
@@ -955,6 +985,25 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request, §16 within the call on transport/``5xx`` (whatever its body,
         §34.2 P8)/``408``/bodiless ``429`` only. **Store the returned tokens
         before anything else.**"""
+        return await self._ciba_poll(
+            auth_req_id,
+            tenant_id=tenant_id,
+            configuration=configuration,
+            deadline=None,
+            sleep=None,
+        )
+
+    async def _ciba_poll(
+        self,
+        auth_req_id: SecretStr | str,
+        *,
+        tenant_id: str | None,
+        configuration: OidcConfiguration | None,
+        deadline: Callable[[], float] | None,
+        sleep: Callable[[float], Awaitable[None]] | None,
+    ) -> OidcTokenSet:
+        """One CIBA poll; ``ciba_await`` passes its deadline and clock so that no §16
+        retry is sent at or after ``expires_in`` (§34.2 P10); ``ciba_poll`` passes none."""
         self._ensure_open()
         auth = self._ciba_client_auth("ciba_poll")
         config = configuration or await self.oidc_discover()
@@ -980,7 +1029,12 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             return self._build_token_set(wire, config, None)
 
         outcome = await retry_async(
-            attempt, operation="ciba_poll", enabled=self._retry_enabled, telemetry=self._telemetry
+            attempt,
+            operation="ciba_poll",
+            enabled=self._retry_enabled,
+            telemetry=self._telemetry,
+            deadline=deadline,
+            sleep=sleep,
         )
         if isinstance(outcome, Exception):
             raise outcome
@@ -1008,8 +1062,12 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
                 raise local_expiry()
             await tick.sleep(interval)
             try:
-                return await self.ciba_poll(
-                    initiated.auth_req_id, tenant_id=tenant_id, configuration=config
+                return await self._ciba_poll(
+                    initiated.auth_req_id,
+                    tenant_id=tenant_id,
+                    configuration=config,
+                    deadline=lambda: deadline - tick.now(),
+                    sleep=lambda ms: tick.sleep(ms / 1000.0),
                 )
             except Exception as exc:  # noqa: BLE001 - classified by §33.3 rule 6
                 step = poll_step(exc)

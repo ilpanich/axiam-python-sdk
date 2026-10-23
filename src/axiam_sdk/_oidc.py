@@ -341,6 +341,13 @@ class PollSchedule:
         ``Retry-After`` of a ``429`` when that was longer (§14.2 rule 9)."""
         return self._wait
 
+    def remaining(self) -> float:
+        """Seconds left before the deadline (§14.2 rule 4): the sum-of-waits bound,
+        and with a clock also the real time since the schedule was built."""
+        if self._clock is None:
+            return self._remaining
+        return min(self._remaining, self._deadline - self._clock())
+
     def rate_limited(self, retry_after_seconds: float | None) -> None:
         """Apply one ``429 rate_limit_exceeded`` (§14.2 rule 9, contract 1.64).
 
@@ -365,8 +372,7 @@ class PollSchedule:
         """
         wait = max(float(self._interval), self._floor)
         self._floor = 0.0
-        if self._clock is not None:
-            self._remaining = min(self._remaining, self._deadline - self._clock())
+        self._remaining = self.remaining()
         if wait >= self._remaining:
             self._remaining = 0
             return False
