@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-23
+
+Contract 1.64 (axiam `fb92ec4`, the plan branch `claude/release-1.1.2-w7`): `CONTRACT.md`,
+`openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
+unchanged). A **patch** release: **no source-breaking change** -- the one new public member
+is the optional `OAuthProtocolError.retry_after_ms` (default `None`), and the polling loop
+now waits where it used to raise, which no caller's types see. Had a type or signature
+changed incompatibly, it would be recorded here and the minor bumped instead.
+
+### Fixed
+
+- **A `429 rate_limit_exceeded` on a device-code poll is waited out** (CONTRACT §14.2 rule 9,
+  contract 1.64; all eleven SDKs). `device_login` (sync and async) no longer raises on it: the
+  loop waits the `Retry-After` as a minimum, capped at the `expires_in` deadline, counts the
+  wait as one interval, does **not** raise the interval (only the `400 slow_down` does) and
+  polls again. A single `device_poll` still raises the `OAuthProtocolError`, now carrying
+  `retry_after_ms`. Tested per §14.6, against a recorded sleep.
+- **An explicit PAT on `/uma2/*` travels without session state** (C163-14): the five
+  `uma_*_resource` operations and `uma_request_ticket` send `Cookie: ""` and no
+  `X-CSRF-Token` whenever the request carries a caller-passed `Authorization`, adopted
+  credential or not. After a cookie `login()` they used to send the PAT **and** the session
+  cookies; the server reads the cookie first, ran the call as the user and refused it `403`
+  (CONTRACT §20.2 rule 1). `_Session._prepare_request` adds no CSRF header to a request whose
+  `Cookie` is the explicit empty string.
+
+### Changed
+
+- The §14.6 (1.63) cookie/CSRF test now signs in through a mocked `login()` that sets
+  `axiam_access`, `axiam_refresh`, `axiam_csrf` and returns `X-CSRF-Token`, runs the three
+  `/oauth2/*` calls, then a management `POST` asserted to carry the cookie and the CSRF
+  header (C163-08). The C162-07 §27.9 test covers both members, asserts `"future"` is never
+  re-sent and that `apply` of an unchanged manifest writes nothing (C163-09). The
+  `_apply_bearer_credential` docstring no longer says "the PAT alone" without the condition
+  (C163-18).
+
+### Notes
+
+- C163-10 (the unknown open-enum value in the refusal message) is not in this issue: the
+  Python refusal already names the member and the value.
+
 ## [1.1.1] - 2026-10-20
 
 Contract 1.63 (axiam `d919ba0cc`, the plan branch `claude/release-1.1.1`): `CONTRACT.md`,

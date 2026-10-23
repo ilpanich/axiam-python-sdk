@@ -27,7 +27,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.1**) conforms to **contract 1.63**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.1.2**) conforms to **contract 1.64**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
@@ -1594,6 +1594,13 @@ next request.
 This SDK has no `private_key_jwt` client assertion and generates no DPoP proofs
 (§21.7.3: it verifies them), so it cannot drive a device client registered for either;
 it surfaces the server's `invalid_client` as above.
+
+**A `429` on a poll is waited out (contract 1.64, §14.2 rule 9).** `rate_limit_exceeded`
+at `/oauth2/token` is never terminal for `device_login`: the loop waits the `Retry-After`
+as a minimum (capped at the `expires_in` deadline), counts it as one interval, does **not**
+raise the interval for it, and polls again. A single `device_poll` call still raises the
+`OAuthProtocolError` (`error == "rate_limit_exceeded"`, `retry_after_ms` set when the
+header was sent), so a hand-rolled loop decides for itself.
 
 The async `device_login` **awaits** an async callback before polling, so a
 device that needs to await a paint still satisfies §14.3 rule 2.
