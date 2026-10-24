@@ -14,6 +14,7 @@ so a fix applied to one and not the other is a real failure mode.
 from __future__ import annotations
 
 import dataclasses
+import time
 
 import httpx
 import pytest
@@ -219,13 +220,19 @@ def _contended(statuses: list[int]) -> tuple[object, list[int]]:
 
 
 @respx.mock
-def test_a_contended_write_answer_is_retried_and_succeeds(respx_mock: respx.Router) -> None:
-    """An eligible read-only operation survives the server's new 503."""
+def test_a_contended_write_answer_is_retried_and_succeeds(
+    respx_mock: respx.Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An eligible read-only operation survives the server's new 503, and waits
+    the ``Retry-After: 1`` it carries as a floor (§16.1; C164-37)."""
+    waits: list[float] = []
+    monkeypatch.setattr(time, "sleep", waits.append)
     handler, calls = _contended([503, 200])
     respx_mock.post(f"{BASE_URL}/api/v1/authz/check").mock(side_effect=handler)
 
     assert _sync_client().check_access("read", RESOURCE).allowed is True
     assert calls[0] == 2
+    assert waits and waits[0] >= 1.0, "Retry-After is a floor on the §16 wait"
 
 
 @respx.mock
@@ -462,3 +469,47 @@ def test_dispatcher_costs_nothing_without_a_hook() -> None:
     dispatcher = TelemetryDispatcher()
     assert dispatcher.installed is False
     dispatcher.emit(Refresh(role="leader", duration_ms=1.0))  # must not raise
+
+
+@respx.mock
+def test_a_503_retry_after_of_two_seconds_floors_the_wait(
+    respx_mock: respx.Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C164-37: ``check_access`` answered ``503`` + ``Retry-After: 2``, then ``200``."""
+    waits: list[float] = []
+    monkeypatch.setattr(time, "sleep", waits.append)
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        if calls[0] == 1:
+            return httpx.Response(503, headers={"Retry-After": "2"}, json={"error": "busy"})
+        return httpx.Response(200, json={"allowed": True, "reason_code": "allowed"})
+
+    respx_mock.post(f"{BASE_URL}/api/v1/authz/check").mock(side_effect=handler)
+
+    assert _sync_client().check_access("read", RESOURCE).allowed is True
+    assert calls[0] == 2
+    assert waits[0] >= 2.0
+
+
+def test_a_network_error_from_a_retryable_status_carries_the_retry_after() -> None:
+    from axiam_sdk._errors import error_from_http_status
+
+    for status in (408, 429, 500, 503):
+        error = error_from_http_status(
+            status, "x", response=httpx.Response(status, headers={"Retry-After": "3"})
+        )
+        assert isinstance(error, NetworkError) and error.retry_after_ms == 3000
+    plain = error_from_http_status(502, "x", response=httpx.Response(502))
+    assert isinstance(plain, NetworkError) and plain.retry_after_ms is None
+    other = error_from_http_status(400, "x", response=httpx.Response(400))
+    assert isinstance(other, NetworkError) and other.retry_after_ms is None
+
+
+def test_a_retry_after_hint_is_clamped_to_an_hour() -> None:
+    from axiam_sdk._retry import MAX_RETRY_AFTER_MS, _retry_after_of
+
+    error = NetworkError("x")
+    error.retry_after_ms = 10 * MAX_RETRY_AFTER_MS
+    assert _retry_after_of(error) == MAX_RETRY_AFTER_MS

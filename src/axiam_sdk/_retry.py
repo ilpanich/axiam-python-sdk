@@ -39,6 +39,9 @@ MAX_ATTEMPTS = 3
 BASE_DELAY_MS = 200.0
 #: Ceiling on any single computed backoff, in milliseconds (§16.1).
 MAX_DELAY_MS = 5_000.0
+#: Ceiling on a server's ``Retry-After`` hint (§16.1 sets none; one hour keeps a
+#: hostile or mistaken header from parking a call indefinitely).
+MAX_RETRY_AFTER_MS = 3_600_000.0
 
 T = TypeVar("T")
 
@@ -83,7 +86,9 @@ def status_is_retryable(status: int) -> bool:
 def _retry_after_of(err: BaseException) -> float | None:
     """A ``Retry-After`` hint carried on *err*, in milliseconds, if any."""
     value = getattr(err, "retry_after_ms", None)
-    return float(value) if isinstance(value, (int, float)) else None
+    if not isinstance(value, (int, float)):
+        return None
+    return min(float(value), MAX_RETRY_AFTER_MS)
 
 
 def _should_retry(err: BaseException) -> bool:
@@ -105,6 +110,7 @@ def retry_sync(
     telemetry: TelemetryDispatcher | None = None,
     sleep: Callable[[float], None] | None = None,
     rand: Callable[[], float] | None = None,
+    deadline: Callable[[], float] | None = None,
 ) -> T:
     """Run *op* under the §16 policy, synchronously.
 
@@ -117,6 +123,11 @@ def retry_sync(
     duplicate a side effect, or replay a single-use credential (an authorization
     code, a device code at redemption, a rotating refresh token) into a hard
     ``invalid_grant``.
+
+    *deadline*, when given, returns the seconds left before a hard deadline (the
+    device or CIBA ``expires_in``, §14.2 rule 4, §34.2 P10): a retry whose full
+    wait -- jittered backoff floored at ``Retry-After`` -- would reach it is not
+    taken, and the failure is re-raised without sleeping or sending.
     """
     _sleep = sleep if sleep is not None else lambda ms: time.sleep(ms / 1000.0)
     _rand = rand if rand is not None else random.random
@@ -129,6 +140,8 @@ def retry_sync(
             if attempt == attempts or not _should_retry(err):
                 raise
             wait = delay_ms(attempt, _retry_after_of(err), _rand())
+            if deadline is not None and wait / 1000.0 >= deadline():
+                raise
             if telemetry is not None:
                 # §16.5 — without this a retried-then-succeeded call is
                 # invisible: a slow success with no signal the server is failing.
@@ -148,6 +161,7 @@ async def retry_async(
     telemetry: TelemetryDispatcher | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
     rand: Callable[[], float] | None = None,
+    deadline: Callable[[], float] | None = None,
 ) -> T:
     """Async twin of :func:`retry_sync`, sharing its arithmetic exactly."""
 
@@ -166,6 +180,8 @@ async def retry_async(
             if attempt == attempts or not _should_retry(err):
                 raise
             wait = delay_ms(attempt, _retry_after_of(err), _rand())
+            if deadline is not None and wait / 1000.0 >= deadline():
+                raise
             if telemetry is not None:
                 telemetry.emit(
                     Retry(operation=operation, attempt=attempt, delay_ms=wait, reason=str(err))

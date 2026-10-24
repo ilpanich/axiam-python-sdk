@@ -27,7 +27,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.1**) conforms to **contract 1.63**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.1.2**) conforms to **contract 1.64**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
@@ -1595,6 +1595,20 @@ This SDK has no `private_key_jwt` client assertion and generates no DPoP proofs
 (§21.7.3: it verifies them), so it cannot drive a device client registered for either;
 it surfaces the server's `invalid_client` as above.
 
+**A `429` on a poll is waited out (contract 1.64, §14.2 rule 9).** Any `429` at
+`/oauth2/token` -- the status decides, not the body -- is never terminal for `device_login`: the loop waits the `Retry-After`
+as a minimum (capped at the `expires_in` deadline), counts it as one interval, does **not**
+raise the interval for it, and polls again. A single `device_poll` call still raises the
+`OAuthProtocolError` (`error == "rate_limit_exceeded"`, `retry_after_ms` set when the
+header was sent), so a hand-rolled loop decides for itself. A `5xx` is a `NetworkError`
+whatever its body (rule 6), and is **retried under §16 inside the poll**: a `device_poll`
+that meets a `5xx` or a transport failure makes up to three requests in all (the
+`Retry-After` of a `5xx` is a floor on each wait), never retries a `429`, and makes one
+request with `retry_enabled=False`. `device_login` bounds all of it by the `expires_in`
+deadline, measured on a clock from `device_authorize`'s return (rule 4): a retry whose wait
+would reach it is not sent and the loop raises `expired_token`. The same bound holds for the
+retries inside `ciba_await`'s polls (§34.2 P10). A bare `device_poll` has no deadline.
+
 The async `device_login` **awaits** an async callback before polling, so a
 device that needs to await a paint still satisfies §14.3 rule 2.
 
@@ -2659,7 +2673,10 @@ pytest --cov=axiam_sdk --cov-report=lcov
 Read-only authorization checks — `check_access`, `can`, `batch_check`, on both the sync and
 async clients — retry transient failures under the contract's normative table: **3 attempts**
 (1 initial + 2 retries), 200 ms base, 5 s cap, **full jitter** (uniform over `[0, backoff]`),
-and `Retry-After` honored as a **floor**.
+and `Retry-After` honored as a **floor** -- up to one hour (`MAX_RETRY_AFTER_MS`); the 5 s cap
+applies to the computed backoff only, so three `503`s that each say `Retry-After: 3600` hold a
+`check_access` for about two hours. The device and CIBA loops bound every wait by the grant's
+`expires_in`, and carry a `5xx`'s `Retry-After` into their next interval.
 
 This SDK had no §16 policy before — only §9.3's refresh-then-retry-once, which is a different
 mechanism. §11.2 rule 5 had been requiring one since it was written.

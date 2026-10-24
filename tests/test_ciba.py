@@ -923,7 +923,8 @@ async def test_the_async_client_initiates_polls_and_awaits_alike(router: respx.M
         clock=clock,
     )
     assert tokens.id_claims is not None
-    assert clock.sleeps == [7, 12, 12]
+    # The §16 backoff inside the 503'd poll sleeps on the injected clock too (C164-36).
+    assert [wait for wait in clock.sleeps if wait >= 1] == [7, 12, 12]
     count = len(seen)
     assert count == 4, "the 503 was retried inside its poll"
 
@@ -976,3 +977,178 @@ def test_the_system_clocks_tell_monotonic_time() -> None:
     async_clock = AsyncSystemCibaClock()
     asyncio.run(async_clock.sleep(0))
     assert async_clock.now() >= before
+
+
+# ── C164-36: the in-poll §16 retry of ciba_await never goes past expires_in (§34.2 P10) ──
+
+
+def _busy_with_retry_after() -> httpx.Response:
+    return httpx.Response(
+        503, json={"error": "temporarily_unavailable"}, headers={"Retry-After": "120"}
+    )
+
+
+def test_a_503_retry_after_past_the_deadline_sends_no_ciba_request_after_it(
+    router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("random.random", lambda: 1.0)
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = TestClock()
+    seen = script(router, [_busy_with_retry_after()], clock)
+
+    with pytest.raises(CibaExpiredTokenError):
+        client.ciba_await(
+            initiated(30, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+        )
+
+    assert seen and all(elapsed < 30 for _form, elapsed, _request in seen)
+    assert clock.elapsed < 30, "expired by the deadline, not after a 120 s wait"
+
+
+@pytest.mark.asyncio
+async def test_async_a_503_retry_after_past_the_deadline_sends_no_ciba_request_after_it(
+    router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("random.random", lambda: 1.0)
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = AsyncTestClock()
+    seen = script(router, [_busy_with_retry_after()], clock)
+
+    with pytest.raises(CibaExpiredTokenError):
+        await client.ciba_await(
+            initiated(30, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+        )
+
+    assert seen and all(elapsed < 30 for _form, elapsed, _request in seen)
+    assert clock.elapsed < 30
+
+
+def test_a_503_retry_after_inside_the_deadline_is_waited_as_a_floor_on_the_clock(
+    router: respx.MockRouter,
+) -> None:
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = TestClock()
+    seen = script(
+        router,
+        [
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "7"}),
+            tokens_with_id_token(client),
+        ],
+        clock,
+    )
+
+    client.ciba_await(
+        initiated(600, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+    )
+
+    assert len(seen) == 2
+    assert 7 in clock.sleeps or any(wait >= 7 for wait in clock.sleeps), clock.sleeps
+
+
+# ── C164-48: the async injected clock, and a 5xx's Retry-After across a declined retry ──
+
+
+@pytest.mark.asyncio
+async def test_async_a_503_retry_after_inside_the_deadline_sleeps_on_the_injected_clock(
+    router: respx.MockRouter,
+) -> None:
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = AsyncTestClock()
+    seen = script(
+        router,
+        [
+            httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "7"}),
+            tokens_with_id_token(client),
+        ],
+        clock,
+    )
+
+    await client.ciba_await(
+        initiated(600, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+    )
+
+    assert len(seen) == 2
+    assert any(wait >= 7 for wait in clock.sleeps), clock.sleeps
+
+
+def test_a_5xx_retry_after_that_reaches_the_deadline_ends_ciba_await_after_one_request(
+    router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("random.random", lambda: 1.0)
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = TestClock()
+    seen = script(router, [_busy_with_retry_after()], clock)
+
+    with pytest.raises(CibaExpiredTokenError):
+        client.ciba_await(
+            initiated(30, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+        )
+
+    assert len(seen) == 1, "the server asked for 120 s: no poll at every interval"
+
+
+@pytest.mark.asyncio
+async def test_async_a_5xx_retry_after_that_reaches_the_deadline_ends_ciba_await(
+    router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("random.random", lambda: 1.0)
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = AsyncTestClock()
+    seen = script(router, [_busy_with_retry_after()], clock)
+
+    with pytest.raises(CibaExpiredTokenError):
+        await client.ciba_await(
+            initiated(30, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+        )
+
+    assert len(seen) == 1
+
+
+def test_ciba_await_carries_a_failures_retry_after_once_and_never_shortens_the_interval(
+    router: respx.MockRouter,
+) -> None:
+    """C164-54: ``[503 RA 1 x3, 429 RA 30, pending, 200]``, interval 5, ``expires_in`` 3600.
+
+    The in-poll §16 waits are the 1 s floors; a carried RA 1 does not shorten the 5 s
+    interval; the 429's RA 30 is waited once (§33.7 rule 5) and is not sticky."""
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=random()
+    )
+    clock = TestClock()
+    busy = httpx.Response(503, json={"error": "busy"}, headers={"Retry-After": "1"})
+    limited = httpx.Response(
+        429,
+        json={"error": "rate_limit_exceeded", "error_description": "slow"},
+        headers={"Retry-After": "30"},
+    )
+    seen = script(
+        router,
+        [
+            busy,
+            busy,
+            busy,
+            limited,
+            oauth_error(400, "authorization_pending"),
+            tokens_with_id_token(client),
+        ],
+        clock,
+    )
+
+    client.ciba_await(
+        initiated(3600, 5, clock), tenant_id=TENANT_ID, configuration=CONFIG, clock=clock
+    )
+
+    assert len(seen) == 6
+    assert [wait for wait in clock.sleeps if wait >= 1] == [5, 1, 1, 5, 30, 5]

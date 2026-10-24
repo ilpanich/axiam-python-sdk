@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-23
+
+Contract 1.64 (axiam `356a6da`, the platform PR #793 merge; `CONTRACT.md`
+from `b3f8687`, the 1.64 text as amended twice on 2026-10-23, no version change): `CONTRACT.md`,
+`openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
+unchanged). A **patch** release: **no source-breaking change** -- the one new public member
+is the optional `OAuthProtocolError.retry_after_ms` (default `None`), and the polling loop
+now waits where it used to raise, which no caller's types see. Had a type or signature
+changed incompatibly, it would be recorded here and the minor bumped instead.
+
+### Fixed
+
+- **A `429` on a device-code poll is waited out, decided by the status** (CONTRACT §14.2 rule
+  9, contract 1.64 as amended; C164-01, C164-04). `device_login` (sync and async) no longer
+  raises on it: the loop waits the `Retry-After` as a minimum, capped at the `expires_in`
+  deadline, counts the wait as one interval, does **not** raise the interval (only the `400
+  slow_down` does) and polls again. This holds for the server's own body, `{"error":
+  "rate_limit_exceeded"}` with no `error_description` (before this fix the SDK read it as a
+  `NetworkError` and re-polled at the plain interval, ignoring `Retry-After`), for a bodiless
+  `429`, and for a `429` whose body says `slow_down` or anything else. A single `device_poll`
+  still raises, now always an `OAuthProtocolError` with `error == "rate_limit_exceeded"` and
+  `retry_after_ms` set from the header. Behaviour change for a caller of `device_poll` that
+  caught the old `NetworkError` on a `429`: catch `OAuthProtocolError` (an `AuthError`).
+  Tested per §14.6 against a recorded sleep, with the server's own bodies.
+- **A `5xx` on a device-code poll never ends the grant, whatever its body** (§14.2 rule 6;
+  C164-03). AXIAM answers a token-endpoint fault `500 {"error": "server_error", ...}`; the SDK
+  read the body first, raised a terminal `OAuthProtocolError` and lost an approved grant. The
+  status is now read first and a `5xx` is the §2 `NetworkError` the loop retries.
+- **The device poll is retried under §16 inside the attempt** (§14.2 rule 6, §16.1, §16.2;
+  contract 1.64 amended again, C164-25): `device_poll` makes up to three requests on a `5xx`
+  or a transport failure (a raw `httpx` transport error is now a `NetworkError`, which the
+  loop treats as non-terminal), never on a `429` -- the wait for that is the loop's. With
+  `retry_enabled=False` it makes one request per poll.
+- **The replay after a `401` refresh carries the refreshed session** (§9.3, §3; C164-26,
+  pre-existing): `_retry_after_refresh_sync`/`_async` copied the original request's `Cookie`
+  header, which `httpx` keeps over the jar, so the replay sent the expired `axiam_access` and
+  the old `axiam_csrf` beside the new `X-CSRF-Token` and a refresh that had succeeded still
+  ended in `AuthError`. The header is no longer copied; the jar's fresh cookies are merged
+  and a PAT/bearer replay keeps `Cookie: ""`. Affects `check_access`, `batch_check` and every
+  management call that met an expired access token.
+- **The in-poll §16 retry never goes past the grant's deadline** (§14.2 rule 4, §34.2 P10;
+  C164-36). `retry_sync`/`retry_async` take an optional `deadline` (seconds left); a retry whose
+  full wait -- jittered backoff floored at `Retry-After` -- would reach it is not taken and the
+  failure is re-raised, so `device_login` (and `ciba_await`, which shares the runner) send nothing
+  at or after `expires_in` and raise `expired_token`. The retry sleeps on the injected clock in
+  `ciba_await`. A bare `device_poll`/`ciba_poll` keeps the unbounded §16 budget.
+- **A `5xx`'s (and a retried `408`/`429`'s) `Retry-After` is honoured as a floor by every §16
+  retry** (§16.1; C164-37, pre-existing): `NetworkError` now carries `retry_after_ms`
+  (`None` when absent) and the runner reads it, clamped at one hour. Before, no `NetworkError`
+  ever carried it, so `check_access` met a `503` + `Retry-After: 120` with a 0.07 s wait. This
+  adds a public attribute to `NetworkError`; it is optional and defaults to `None`, so it is
+  not a source break.
+- Tests and text (C164-38, C164-41): the async transport-failure case, a transport case and a
+  retry-off case through `device_login`; the README and the `device_poll`/`device_login`
+  docstrings say the poll is §16-retried inside the attempt and bounded by the deadline; the
+  contract-1.62 comment in `test_d5_conformance.py` now has a test behind it.
+- **A `5xx`'s `Retry-After` survives a declined in-poll retry** (§16.1; C164-48): when the
+  runner declines a retry because the floor reaches the deadline, `device_login` and
+  `ciba_await` now take that `Retry-After` as the floor of their next wait (the grant ends at
+  once if it reaches `expires_in`) instead of polling again at the plain interval -- `Retry-After:
+  120` on a 30 s grant is one request, not one per interval. Tests: the async `ciba_await` clock
+  case; the README states the one-hour `Retry-After` clamp.
+- **`ciba_await` also waits a `429`'s `Retry-After`** (§33.7 rule 5; C164-54): the carry above
+  covers any non-terminal failure that carries `retry_after_ms`, a `429 rate_limit_exceeded`
+  included, which `ciba_await` previously ignored (it polled again at the interval). The carry
+  is one-shot and never shortens the interval. The `ciba_await` and `device_login` docstrings say
+  so. Test: `503`+`Retry-After: 1` x3, `429`+`Retry-After: 30`, pending, `200` waits
+  `[5, 1, 1, 5, 30, 5]` on the injected clock.
+- **The `device_login` deadline is a clock** (§14.2 rule 4; C164-05): `expires_in` runs from
+  the moment `device_authorize` returns, so slow round trips, slow `5xx` answers and the
+  `on_user_code` callback count against it and no poll is sent after it (the schedule keeps
+  the sum-of-waits bound too, so a faked sleep still ends the grant).
+- **An explicit PAT on `/uma2/*` travels without session state** (C163-14): the five
+  `uma_*_resource` operations and `uma_request_ticket` send `Cookie: ""` and no
+  `X-CSRF-Token` whenever the request carries a caller-passed `Authorization`, adopted
+  credential or not. After a cookie `login()` they used to send the PAT **and** the session
+  cookies; the server reads the cookie first, ran the call as the user and refused it `403`
+  (CONTRACT §20.2 rule 1). `_Session._prepare_request` adds no CSRF header to a request whose
+  `Cookie` is the explicit empty string.
+
+### Changed
+
+- The §14.6 (1.63) cookie/CSRF test now signs in through a mocked `login()` that sets
+  `axiam_access`, `axiam_refresh`, `axiam_csrf` and returns `X-CSRF-Token`, runs the three
+  `/oauth2/*` calls, then a management `POST` asserted to carry the cookie and the CSRF
+  header (C163-08). The C162-07 §27.9 test covers both members, asserts `"future"` is never
+  re-sent and that `apply` of an unchanged manifest writes nothing (C163-09). The
+  `_apply_bearer_credential` docstring no longer says "the PAT alone" without the condition
+  (C163-18).
+
+### Notes
+
+- C163-10 (the unknown open-enum value in the refusal message) is not in this issue: the
+  Python refusal already names the member and the value.
+
 ## [1.1.1] - 2026-10-20
 
 Contract 1.63 (axiam `d919ba0cc`, the plan branch `claude/release-1.1.1`): `CONTRACT.md`,
