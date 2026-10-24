@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.2] - 2026-10-23
 
-Contract 1.64 (axiam `fb92ec4`, the plan branch `claude/release-1.1.2-w7`; `CONTRACT.md`
+Contract 1.64 (axiam `356a6da`, the platform PR #793 merge; `CONTRACT.md`
 from `b3f8687`, the 1.64 text as amended twice on 2026-10-23, no version change): `CONTRACT.md`,
 `openapi.json` and `management-registry.json` are re-vendored byte for byte (`proto/` is
 unchanged). A **patch** release: **no source-breaking change** -- the one new public member
