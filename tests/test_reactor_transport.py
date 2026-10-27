@@ -19,7 +19,7 @@ import json
 import logging
 import ssl
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -428,12 +428,12 @@ class TestParseRfc3339:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ("2026-07-10T12:00:00Z", datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)),
-            ("2026-07-10T12:00:00z", datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)),
-            ("2026-07-10T12:00:00+00:00", datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)),
+            ("2026-07-10T12:00:00Z", datetime(2026, 7, 10, 12, 0, tzinfo=UTC)),
+            ("2026-07-10T12:00:00z", datetime(2026, 7, 10, 12, 0, tzinfo=UTC)),
+            ("2026-07-10T12:00:00+00:00", datetime(2026, 7, 10, 12, 0, tzinfo=UTC)),
             # A naive timestamp is read as UTC rather than as local time, which
             # would make freshness depend on the reactor host's timezone.
-            ("2026-07-10T12:00:00", datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)),
+            ("2026-07-10T12:00:00", datetime(2026, 7, 10, 12, 0, tzinfo=UTC)),
         ],
     )
     async def test_accepts_every_shape_and_reads_naive_as_utc(
@@ -468,10 +468,10 @@ class TestParseRfc3339:
 
         # Whatever the rendering, the parsed instant is the same, so freshness
         # against "now" behaves identically: an hour-old timestamp is stale.
-        assert expected.tzinfo is timezone.utc
+        assert expected.tzinfo is UTC
         assert delivery.nacked == 1  # 2026-07-10 is far outside ±300 s of now.
 
     async def test_a_current_timestamp_in_each_shape_verifies(self) -> None:
         """The same shapes, stamped now, pass the freshness gate."""
-        now = datetime.now(timezone.utc).replace(microsecond=0)
+        now = datetime.now(UTC).replace(microsecond=0)
         assert to_chrono_rfc3339(now).endswith("Z")

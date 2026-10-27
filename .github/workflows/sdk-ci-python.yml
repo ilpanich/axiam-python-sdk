@@ -28,16 +28,17 @@ jobs:
       fail-fast: false
       matrix:
         # D-18: the gating matrix is floor + newest, not every release in
-        # between. The floor is `requires-python` from pyproject.toml (3.10);
-        # the newest is the latest GA interpreter (3.14, released 2025-10-07).
+        # between. The floor is `requires-python` from pyproject.toml (3.11;
+        # 3.10 reached end of life on 2026-10-31); the newest is the latest GA
+        # interpreter (3.15, released 2026-10-09).
         # Those two legs are the ones that actually catch breakage: the floor
         # rejects syntax and stdlib APIs the declared minimum does not have,
         # and the newest catches removals and deprecation-turned-error changes.
-        # 3.11/3.12/3.13 sit between two green legs and are interpolation —
+        # 3.12/3.13/3.14 sit between two green legs and are interpolation —
         # 3.12 still runs in full under the Coverage and docs workflows.
         # tests/test_language_version_policy.py fails if this list and the
         # pyproject classifiers ever disagree.
-        python-version: ['3.10', '3.14']
+        python-version: ['3.11', '3.15']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -54,7 +55,7 @@ jobs:
 
       - name: Dependency vulnerability scan (CI-03)
         run: |
-          # Patch the build tooling before auditing: Python 3.10/3.11 ship an
+          # Patch the build tooling before auditing: Python 3.11 ships an
           # older setuptools (79.0.1, flagged by PYSEC-2026-3447, fixed in
           # 83.0.0) and pip. Upgrading resolves those findings rather than
           # suppressing them; the SDK's own runtime deps are audited as-is.
@@ -62,8 +63,8 @@ jobs:
           # pip-audit runs from its own throwaway venv and audits this job's
           # environment through --path. Installed beside the SDK it would audit
           # its own toolchain too (filelock, cachecontrol, ...), and a finding
-          # there -- filelock 4.1.0 on 3.10, whose fix needs Python >= 3.11 --
-          # fails the job for a package no SDK user ever receives. Everything the
+          # there -- e.g. filelock 4.1.0 on the former 3.10 leg, whose fix needed
+          # Python >= 3.11 -- fails the job for a package no SDK user ever receives. Everything the
           # SDK installs (runtime and dev extras, pip, setuptools) is still audited.
           python -m venv "$RUNNER_TEMP/pip-audit-venv"
           "$RUNNER_TEMP/pip-audit-venv/bin/pip" install pip-audit

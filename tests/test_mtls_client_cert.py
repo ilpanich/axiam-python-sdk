@@ -61,7 +61,7 @@ def _make_ca() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
     client leaf certificates of this test's PKI."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "axiam-test-ca")])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -115,7 +115,7 @@ def _make_leaf(
     """
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject)

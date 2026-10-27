@@ -24,7 +24,7 @@ import hmac
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -43,7 +43,7 @@ def _v2_fields(now: datetime | None = None) -> dict[str, Any]:
     replay checks against the real wall clock unless a test overrides
     ``now``."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     return {
         "key_version": 2,
         "nonce": str(uuid.uuid4()),

@@ -49,7 +49,7 @@ import hmac
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from axiam_sdk.amqp._reactor_registry import (
@@ -164,8 +164,8 @@ def to_chrono_rfc3339(moment: datetime) -> str:
     A naive datetime is read as UTC; an aware one is converted.
     """
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    moment = moment.astimezone(timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
+    moment = moment.astimezone(UTC)
     stem = moment.strftime("%Y-%m-%dT%H:%M:%S")
     micros = moment.microsecond
     if micros == 0:
@@ -178,8 +178,9 @@ def to_chrono_rfc3339(moment: datetime) -> str:
 def _parse_rfc3339(value: str) -> datetime:
     """Parse an RFC 3339 timestamp, accepting a trailing ``Z``.
 
-    ``datetime.fromisoformat`` rejects a bare ``Z`` suffix before Python 3.11,
-    so it is normalized first — this SDK supports 3.10. Raises ``ValueError``
+    ``datetime.fromisoformat`` accepts a bare ``Z`` from Python 3.11 (the SDK's
+    floor), but it is still normalized first so the offset is spelt one way
+    whatever the input's case. Raises ``ValueError``
     for anything unparseable, matching ``fromisoformat``'s own contract.
     """
     normalized = value.strip()
@@ -187,7 +188,7 @@ def _parse_rfc3339(value: str) -> datetime:
         normalized = normalized[:-1] + "+00:00"
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -479,7 +480,7 @@ def verify_event(
         issued_at = _parse_rfc3339(issued_at_raw)
     except ValueError:
         return None, "stale"
-    reference = now if now is not None else datetime.now(timezone.utc)
+    reference = now if now is not None else datetime.now(UTC)
     if not is_fresh(issued_at, reference, skew_seconds):
         return None, "stale"
 
@@ -556,7 +557,7 @@ def build_reactor_reply(
     reply["key_version"] = REACTOR_KEY_VERSION
     reply["nonce"] = nonce if nonce is not None else str(uuid.uuid4())
     reply["issued_at"] = to_chrono_rfc3339(
-        issued_at if issued_at is not None else datetime.now(timezone.utc)
+        issued_at if issued_at is not None else datetime.now(UTC)
     )
     reply["hmac_signature"] = None
     return reply

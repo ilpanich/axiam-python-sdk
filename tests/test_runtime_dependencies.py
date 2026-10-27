@@ -12,15 +12,10 @@ declares it, and the interpreter running the suite actually has it.
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from pathlib import Path
 
 import jwt.algorithms
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - only taken on the 3.10 floor leg
-    import tomli as tomllib
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 

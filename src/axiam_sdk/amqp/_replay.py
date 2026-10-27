@@ -30,7 +30,7 @@ echoing the nonce, timestamp, or signature values).
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 #: Default allowed clock-skew window for ``issued_at`` freshness, in
@@ -100,9 +100,9 @@ class NonceStore:
 def _parse_rfc3339(value: str) -> datetime:
     """Parse an ISO 8601 / RFC 3339 timestamp, accepting a trailing 'Z'.
 
-    ``datetime.fromisoformat`` does not accept a bare 'Z' offset suffix on
-    Python < 3.11, so it is normalized to '+00:00' first for broad
-    compatibility with this SDK's ``requires-python = ">=3.10"``. Raises
+    A bare 'Z' (or 'z') offset suffix is normalized to '+00:00' first. Python
+    3.11+ (this SDK's floor) parses 'Z' natively, but the normalization was
+    written for 3.10 and is kept so lowercase 'z' is accepted too. Raises
     ``ValueError`` for anything unparseable (matching ``fromisoformat``'s
     own contract) so callers can catch a single exception type.
     """
@@ -111,7 +111,7 @@ def _parse_rfc3339(value: str) -> datetime:
         normalized = normalized[:-1] + "+00:00"
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -149,7 +149,7 @@ def validate_freshness(
     except ValueError:
         return "unparseable issued_at"
 
-    reference = now if now is not None else datetime.now(timezone.utc)
+    reference = now if now is not None else datetime.now(UTC)
     delta_seconds = abs((reference - issued_at).total_seconds())
     if delta_seconds > skew_seconds:
         return "stale issued_at outside allowed clock-skew window"
