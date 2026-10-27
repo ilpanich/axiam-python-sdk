@@ -504,13 +504,14 @@ def test_sync_client_has_no_async_star_methods() -> None:
 
 
 def test_async_client_exposes_canonical_async_method_names() -> None:
-    import asyncio
+    # `inspect`, not `asyncio.iscoroutinefunction`: the asyncio alias is
+    # deprecated since 3.14 and slated for removal in 3.16.
     import inspect
 
     canonical = ["login", "verify_mfa", "refresh", "logout", "check_access", "can", "batch_check"]
     for name in canonical:
         method = getattr(AsyncAxiamClient, name)
-        assert asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method), (
+        assert inspect.iscoroutinefunction(method), (
             f"AsyncAxiamClient.{name} must be an async def method"
         )
     # And none of the forbidden async_* names leak onto AsyncAxiamClient either —
