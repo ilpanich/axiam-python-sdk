@@ -20,7 +20,7 @@ unredacted response before calling this constructor. Never construct
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
@@ -331,8 +331,8 @@ def retry_after_ms_of(response: httpx.Response) -> float | None:
         except (TypeError, ValueError):
             return None
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
     if seconds != seconds or seconds in (float("inf"), float("-inf")):
         return None
     return max(seconds, 0.0) * 1000.0

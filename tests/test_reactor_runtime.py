@@ -18,7 +18,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -188,7 +188,7 @@ def signed_event(
         "timeout_ms": timeout_ms,
         "key_version": key_version,
         "nonce": nonce or str(uuid.uuid4()),
-        "issued_at": to_chrono_rfc3339(issued_at or datetime.now(timezone.utc)),
+        "issued_at": to_chrono_rfc3339(issued_at or datetime.now(UTC)),
         "hmac_signature": None,
     }
     import hashlib
@@ -564,7 +564,7 @@ class TestVerificationBeforeTheHandler:
     async def test_nacks_a_stale_event_in_either_direction(self, direction: int) -> None:
         """A future timestamp is the shape of a captured message held for later."""
         drift = timedelta(seconds=REACTOR_FRESHNESS_SKEW_SECONDS + 30) * direction
-        delivery = FakeDelivery(signed_event(issued_at=datetime.now(timezone.utc) - drift))
+        delivery = FakeDelivery(signed_event(issued_at=datetime.now(UTC) - drift))
         await dispatch(delivery, self._never_called)
         assert delivery.nacked == 1
 
@@ -637,7 +637,7 @@ class TestVerificationBeforeTheHandler:
                 "timeout_ms": 5_000,
                 "key_version": 2,
                 "nonce": str(uuid.uuid4()),
-                "issued_at": to_chrono_rfc3339(datetime.now(timezone.utc)),
+                "issued_at": to_chrono_rfc3339(datetime.now(UTC)),
                 "hmac_signature": None,
                 **override,
             }

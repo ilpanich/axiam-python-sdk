@@ -23,7 +23,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
   version, 2.0.0
 - **API docs:** [ilpanich.github.io/axiam-python-sdk](https://ilpanich.github.io/axiam-python-sdk/)
 - **License:** Apache-2.0
-- **Python:** `>=3.10` (D-11) — see [Supported Python versions](#supported-python-versions)
+- **Python:** `>=3.11` (D-11) — see [Supported Python versions](#supported-python-versions)
 
 ## Contract conformance
 
@@ -266,17 +266,17 @@ from axiam_sdk import AxiamClient
 
 | | Version | Why this one |
 |---|---|---|
-| **Floor** | 3.10 | The oldest interpreter still receiving upstream security fixes. `requires-python = ">=3.10"`, so `pip` refuses to install below it. |
-| **Newest** | 3.14 | The newest GA interpreter (released 2025-10-07). |
+| **Floor** | 3.11 | The oldest interpreter still receiving upstream security fixes (3.10 reached end of life on 2026-10-31). `requires-python = ">=3.11"`, so `pip` refuses to install below it. |
+| **Newest** | 3.15 | The newest GA interpreter (released 2026-10-09). |
 
-Everything between the two — 3.11, 3.12, 3.13 — is supported and carries a
+Everything between the two — 3.12, 3.13, 3.14 — is supported and carries a
 trove classifier.
 
 **The SDK is built against the floor, and runs on everything up to the newest.**
 Those are two different claims and CI proves both of them separately: the
-gating matrix in `sdk-ci-python.yml` runs the full test suite on 3.10 **and**
-on 3.14 (D-18). The floor leg is what stops a 3.12-only stdlib API or a
-`match` statement from slipping in; the newest leg is what catches a removal
+gating matrix in `sdk-ci-python.yml` runs the full test suite on 3.11 **and**
+on 3.15 (D-18). The floor leg is what stops a 3.12-only stdlib API or a
+PEP 695 `type` statement from slipping in; the newest leg is what catches a removal
 or a deprecation that has become an error. A version between two green legs is
 interpolation, which is why the matrix is two legs rather than five — 3.12
 additionally runs the whole suite under the Coverage and docs workflows.

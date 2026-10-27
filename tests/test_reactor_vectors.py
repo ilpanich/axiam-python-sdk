@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -230,13 +230,13 @@ class TestSignDirection:
         produces and having the server re-serialize ``…T12:00:00Z`` is a
         ``bad_signature`` with no other symptom.
         """
-        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 0, timezone.utc)) == (
+        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 0, UTC)) == (
             "2026-07-10T12:00:00Z"
         )
-        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 123000, timezone.utc)) == (
+        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 123000, UTC)) == (
             "2026-07-10T12:00:00.123Z"
         )
-        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 123456, timezone.utc)) == (
+        assert to_chrono_rfc3339(datetime(2026, 7, 10, 12, 0, 0, 123456, UTC)) == (
             "2026-07-10T12:00:00.123456Z"
         )
         # A naive datetime is read as UTC; a non-UTC aware one is converted.

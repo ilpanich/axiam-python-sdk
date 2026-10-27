@@ -26,14 +26,10 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - only taken on the 3.10 floor leg
-    import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -44,10 +40,10 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sdk-ci-python.yml"
 # no minor and is deliberately not matched.
 _CLASSIFIER_RE = re.compile(r"^Programming Language :: Python :: (\d+)\.(\d+)$")
 
-# `python-version: ['3.10', '3.14']` in the workflow's test matrix.
+# `python-version: ['3.11', '3.15']` in the workflow's test matrix.
 _MATRIX_RE = re.compile(r"^\s*python-version:\s*\[(?P<versions>[^\]]*)\]\s*$", re.M)
 
-# `requires-python = ">=3.10"`. The policy is a simple inclusive floor: if this
+# `requires-python = ">=3.11"`. The policy is a simple inclusive floor: if this
 # ever grows an upper bound or a second clause, the parse below should fail
 # loudly rather than quietly interpret half of it.
 _REQUIRES_RE = re.compile(r"^>=\s*(\d+)\.(\d+)$")

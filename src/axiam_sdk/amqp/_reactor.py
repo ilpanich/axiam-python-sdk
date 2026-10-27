@@ -45,7 +45,7 @@ import random
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from axiam_sdk._telemetry import (
@@ -351,7 +351,7 @@ async def dispatch_reactor_delivery(
     event, rejection = verify_event(
         body,
         ctx.signing_key,
-        datetime.now(timezone.utc),
+        datetime.now(UTC),
         ctx.skew_seconds,
     )
     if event is None:
@@ -396,7 +396,7 @@ async def dispatch_reactor_delivery(
         # Shutdown, not a handler failure. Publishing nothing is still the right
         # answer, and the cancellation must keep propagating (§18).
         raise
-    except asyncio.TimeoutError:
+    except TimeoutError:
         ctx.logger.warning(
             "axiam_sdk.reactor: handler outran timeout_ms for %s; publishing no reply "
             "so the registration's failure_policy decides",

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Python 3.10 is no longer supported; the floor is now 3.11.** `requires-python`
+  moves from `>=3.10` to `>=3.11` and the `Programming Language :: Python :: 3.10`
+  classifier is dropped. Python 3.10 reached end of life on 2026-10-31 and receives
+  no further security fixes, and aio-pika 10 (the current AMQP line) no longer
+  installs on it. On 3.10, `pip` keeps resolving to axiam-sdk 1.1.2, the last
+  release that supports it. The SDK's own API is unchanged.
+
+### Added
+
+- **Python 3.15 is a supported and CI-built interpreter.** The classifier
+  `Programming Language :: Python :: 3.15` is added, and the newest leg of the
+  floor + newest gating matrix (D-18) moves from 3.14 to 3.15 (GA 2026-10-09).
+  The matrix is now `['3.11', '3.15']`. `tests/test_language_version_policy.py`
+  checks it against the classifiers.
+
+### Changed
+
+- The dev-only `tomli` backport is removed, since `tomllib` is in the stdlib from
+  3.11. Ruff now targets `py311`, which rewrites `datetime.timezone.utc` to
+  `datetime.UTC` and `asyncio.TimeoutError` to `TimeoutError`. Both are the same
+  objects, so behaviour does not change. `UP042` (`(str, Enum)` -> `StrEnum`) is
+  ignored on purpose, because it would change what the public `WebauthnFailure`
+  and `SetFailureReason` members render as through `str()` and `format()`.
+
 ## [1.1.2] - 2026-10-23
 
 Contract 1.64 (axiam `356a6da`, the platform PR #793 merge; `CONTRACT.md`

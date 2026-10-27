@@ -14,7 +14,7 @@ import hmac
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -29,7 +29,7 @@ def _v2_fields() -> dict[str, Any]:
     return {
         "key_version": 2,
         "nonce": str(uuid.uuid4()),
-        "issued_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "issued_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 

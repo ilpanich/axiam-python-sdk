@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, SecretStr
 
@@ -138,9 +138,9 @@ def _reference_epoch(now: datetime | None) -> float:
     when ``now`` is ``None``.
     """
     if now is None:
-        return datetime.now(timezone.utc).timestamp()
+        return datetime.now(UTC).timestamp()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     return now.timestamp()
 
 

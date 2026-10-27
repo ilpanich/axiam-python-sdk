@@ -6,7 +6,7 @@ reference-vector paths in ``test_amqp_v2_replay.py``.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from axiam_sdk.amqp._replay import NonceStore, validate_freshness
 
@@ -15,7 +15,7 @@ def _fresh_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "key_version": 2,
         "nonce": "nonce-abc",
-        "issued_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "issued_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     event.update(overrides)
     return event
@@ -98,7 +98,7 @@ def test_unparseable_issued_at() -> None:
 
 def test_stale_issued_at() -> None:
     store = NonceStore(ttl_seconds=600)
-    old = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert validate_freshness(_fresh_event(issued_at=old), store, skew_seconds=300) == (
         "stale issued_at outside allowed clock-skew window"
     )
@@ -112,7 +112,7 @@ def test_missing_nonce() -> None:
 
 def test_replayed_nonce() -> None:
     store = NonceStore(ttl_seconds=600)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     event = _fresh_event(nonce="dup", issued_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
     assert validate_freshness(event, store, now=now) is None
     # A distinct event object with the same nonce, same store -> replay.
@@ -122,7 +122,7 @@ def test_replayed_nonce() -> None:
 
 def test_naive_issued_at_treated_as_utc() -> None:
     store = NonceStore(ttl_seconds=600)
-    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     # No 'Z' / offset suffix -> parsed as naive then coerced to UTC.
     event = _fresh_event(issued_at="2026-01-01T12:00:00")
     assert validate_freshness(event, store, now=now) is None
