@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dependency ranges widened to the current releases.** `grpcio` and the dev
+  `grpcio-tools` go from `<1.85` to `<1.86` (1.85.0). `aio-pika` goes from
+  `==9.6.*` to `>=9.6,<11`, so aio-pika 10.x is accepted and an application
+  pinned to 9.6 still resolves. The gRPC stubs are unchanged and still generated
+  by `grpcio-tools` 1.78 against the `>=1.78` runtime floor. The docs build moves
+  from Sphinx `~=8.1` to `~=9.2`.
 - The dev-only `tomli` backport is removed, since `tomllib` is in the stdlib from
   3.11. Ruff now targets `py311`, which rewrites `datetime.timezone.utc` to
   `datetime.UTC` and `asyncio.TimeoutError` to `TimeoutError`. Both are the same
