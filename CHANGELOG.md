@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-29
+
 ### Breaking changes
 
 - **Python 3.10 is no longer supported; the floor is now 3.11.** `requires-python`
@@ -38,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   objects, so behaviour does not change. `UP042` (`(str, Enum)` -> `StrEnum`) is
   ignored on purpose, because it would change what the public `WebauthnFailure`
   and `SetFailureReason` members render as through `str()` and `format()`.
+
+- Use inspect.iscoroutinefunction instead of the asyncio alias
+
+- Accept grpcio 1.85, aio-pika 10 and Sphinx 9
+
+- Raise the floor to 3.11 and cover Python 3.15
+
+- Bump pypa/gh-action-pypi-publish from 1.14.2 to 1.14.3
+
+- Bump actions/setup-python from 7.0.0 to 7.1.0
 
 ## [1.1.2] - 2026-10-23
 
