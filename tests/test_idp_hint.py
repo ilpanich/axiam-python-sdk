@@ -171,3 +171,52 @@ async def test_par_idp_hint_in_pushed_body(async_: bool) -> None:
     with pytest.raises(ValueError, match="256"):
         await push(idp_hint="a" * 257)
     assert len(route.calls) == before
+
+
+@ASYNC
+@respx.mock
+async def test_par_idp_hint_from_begin_url_pushed(async_: bool) -> None:
+    """D-N36: ``oidc_begin(idp_hint=...)`` then ``oidc_par(request)`` with no
+    argument pushes the begin URL's hint, once; the redirect stays two parameters."""
+    route = respx.post(PAR_ENDPOINT).mock(
+        return_value=httpx.Response(201, json={"request_uri": REQUEST_URI, "expires_in": 90})
+    )
+    client = _client(async_)
+    authorization = await _begin(async_, idp_hint="corp-okta")
+    result = client.oidc_par(
+        request=authorization,
+        redirect_uri=REDIRECT_URI,
+        configuration=_config(),
+        tenant_id=TENANT_ID,
+    )
+    pushed = await result if async_ else result  # type: ignore[misc]
+
+    form = parse_qsl(route.calls.last.request.content.decode())
+    assert [v for k, v in form if k == "axiam_idp_hint"] == ["corp-okta"]
+    assert "kc_idp_hint" not in dict(form)
+    assert {k for k, _ in _params(pushed.authorization_url)} == {"client_id", "request_uri"}
+    assert len(_params(pushed.authorization_url)) == 2
+
+
+@ASYNC
+@respx.mock
+async def test_par_idp_hint_argument_wins(async_: bool) -> None:
+    """D-N36: the ``oidc_par`` argument beats the begin URL's hint."""
+    route = respx.post(PAR_ENDPOINT).mock(
+        return_value=httpx.Response(201, json={"request_uri": REQUEST_URI, "expires_in": 90})
+    )
+    client = _client(async_)
+    authorization = await _begin(async_, idp_hint="corp-okta")
+    result = client.oidc_par(
+        request=authorization,
+        redirect_uri=REDIRECT_URI,
+        configuration=_config(),
+        tenant_id=TENANT_ID,
+        idp_hint="other",
+    )
+    pushed = await result if async_ else result  # type: ignore[misc]
+
+    form = parse_qsl(route.calls.last.request.content.decode())
+    assert [v for k, v in form if k == "axiam_idp_hint"] == ["other"]
+    assert "corp-okta" not in route.calls.last.request.content.decode()
+    assert {k for k, _ in _params(pushed.authorization_url)} == {"client_id", "request_uri"}

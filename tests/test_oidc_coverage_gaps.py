@@ -169,7 +169,7 @@ def test_oidc_refresh_single_flight_failure_propagates_to_all_waiters_sync(
         import time
 
         time.sleep(0.02)
-        return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(500)
 
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
     client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
@@ -202,7 +202,7 @@ async def test_oidc_refresh_single_flight_failure_propagates_to_all_waiters_asyn
     async def responder(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         await asyncio.sleep(0.02)
-        return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(500)
 
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
     client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)

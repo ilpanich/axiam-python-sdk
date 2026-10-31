@@ -111,10 +111,13 @@ async def _login(
     return result
 
 
-def _oauth_error(status: int, error: str, description: str = "refused", **headers: str) -> Any:
-    return httpx.Response(
-        status, json={"error": error, "error_description": description}, headers=headers
-    )
+def _oauth_error(status: int, error: str, description: str | None = None, **headers: str) -> Any:
+    """An RFC 6749 §5.2 error response. ``error_description`` is optional there, so
+    it is omitted unless given -- AXIAM's route limiters send none (C165-01)."""
+    body: dict[str, Any] = {"error": error}
+    if description is not None:
+        body["error_description"] = description
+    return httpx.Response(status, json=body, headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -458,9 +461,21 @@ async def test_client_and_scope_refusals_surfaced(
 
 
 @pytest.mark.parametrize("mode", MODES)
-async def test_rate_limit_with_retry_after_mapped(mode: Mode, respx_mock: respx.MockRouter) -> None:
+@pytest.mark.parametrize(
+    "extra_body",
+    [{}, {"retry_after": 7}],
+    ids=["error_only", "with_retry_after_member"],
+)
+async def test_rate_limit_with_retry_after_mapped(
+    mode: Mode, extra_body: dict[str, Any], respx_mock: respx.MockRouter
+) -> None:
+    # Exactly AXIAM's route-limiter body: no ``error_description`` (C165-01).
     route = respx_mock.post(TOKEN_URL).mock(
-        return_value=_oauth_error(429, "rate_limit_exceeded", "slow down", **{"Retry-After": "7"})
+        return_value=httpx.Response(
+            429,
+            json={"error": "rate_limit_exceeded", **extra_body},
+            headers={"Retry-After": "7"},
+        )
     )
 
     with pytest.raises(OAuthProtocolError) as excinfo:

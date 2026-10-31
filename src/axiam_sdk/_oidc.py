@@ -33,7 +33,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 
 import httpx
 from pydantic import SecretStr
@@ -443,6 +443,16 @@ def _expose_secret(value: SecretStr | str) -> str:
     """Read a secret that the caller may have supplied wrapped or bare
     (port-brief-addendum item 6)."""
     return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+
+def _begin_url_idp_hint(url: str) -> str | None:
+    """The ``axiam_idp_hint`` an ``oidc_begin`` authorization URL carries, or
+    ``None`` (CONTRACT.md §26.2 rule 8, D-N36). ``oidc_begin`` emits it at most
+    once and has already validated it."""
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        if key == AUTHORIZE_IDP_HINT_PARAM and value:
+            return value
+    return None
 
 
 def _validate_idp_hint(idp_hint: str | None) -> str | None:
@@ -1135,7 +1145,9 @@ class _OidcMixin:
         a client able to chain one pushed request into another.
 
         ``idp_hint`` (contract 1.65, §26.2 rule 8) rides this body as
-        ``axiam_idp_hint`` when set and is absent otherwise.
+        ``axiam_idp_hint`` when set and is absent otherwise. When the argument
+        is unset, the ``axiam_idp_hint`` the ``oidc_begin`` URL carries is
+        pushed instead (D-N36); the argument wins when both are set.
         """
         form = {
             "client_id": self._require_oidc_client_id(),
@@ -1150,6 +1162,10 @@ class _OidcMixin:
         if dpop_jkt is not None:
             form["dpop_jkt"] = dpop_jkt
         hint = _validate_idp_hint(idp_hint)
+        if hint is None:
+            # D-N36 (§26.2 rule 8): with no argument, the hint the begin URL
+            # already carries is the one pushed; the argument wins when set.
+            hint = _begin_url_idp_hint(request.url)
         if hint is not None:
             # §26.2 rule 8: the pushed body carries the hint, exactly once; the
             # redirect built from the request_uri never does.
@@ -1314,7 +1330,16 @@ class _OidcMixin:
         (§12.3 rule 3) rather than the generic §2 mapping.
         """
         if response.status_code != httpx.codes.OK:
-            raise error_from_oauth2_response(response.status_code, response, "token request failed")
+            # description_optional: AXIAM's route limiters on /oauth2/token answer
+            # ``429 {"error":"rate_limit_exceeded"}`` with no description (§12.3
+            # rule 3, §37.3); the same mapper serves native sign-in, exchange,
+            # refresh and client credentials.
+            raise error_from_oauth2_response(
+                response.status_code,
+                response,
+                "token request failed",
+                description_optional=True,
+            )
         wire = response.json()
         return self._build_token_set(wire, configuration, nonce)
 

@@ -32,7 +32,11 @@ This SDK (**1.1.2**) conforms to **contract 1.65**: CONTRACT.md §1–§13 and �
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations), and — new in contract 1.65 —
 **§37** (native sign-in with a provider ID token) with the `idp_hint` input of `oidc_begin` and
-`oidc_par` (§12.1, §26.2 rule 8). §12 is
+`oidc_par` (§12.1, §26.2 rule 8; `oidc_par` pushes the begin URL's hint when its own
+argument is unset). **Server floor:** federation-config admin calls (`federation.create_config`,
+`get_config`, `list_configs`, `update_config`) of this 1.2-line SDK need an AXIAM server
+**1.2.0 or later**: `FederationConfigResponse.native_login` is required from 1.2.0, and a
+response from an older server fails to decode. §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
 

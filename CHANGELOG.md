@@ -54,6 +54,28 @@ the package version is unchanged here.
   server-side by default (`oauth2.refresh_reuse_response = revoke_session`): `invalid_grant`
   on `oidc_refresh` means the session is over. The SDK's single-flight guard already
   prevents it from causing this and it never retries that token; no SDK code changed.
+- **Server floor:** federation-config admin calls (`federation.create_config`, `get_config`,
+  `list_configs`, `update_config`) of this 1.2-line SDK need an AXIAM server **1.2.0 or
+  later**: `FederationConfigResponse.native_login` is required from 1.2.0, and a response
+  from an older server fails to decode (a pydantic `ValidationError`).
+- **`oidc_par` pushes the begin URL's hint (D-N36, §26.2 rule 8).** With no `idp_hint`
+  argument, the `axiam_idp_hint` that `oidc_begin(idp_hint=...)` put in the request's URL is
+  pushed in the PAR body; the `oidc_par` argument wins when both are set.
+- Re-vendored `CONTRACT.md` (1.65 as amended 2026-10-31, sha256 `95ee87ba...359529`).
+
+### Source compatibility
+
+- `FederationConfigResponse` gained the required member `native_login`; code that builds one
+  (test fixtures, mocks) must supply it. Every other regenerated member is optional.
+
+### Fixed
+
+- **Route-level `429` on `/oauth2/token` (C165-01).** AXIAM's limiters answer
+  `429 {"error":"rate_limit_exceeded"}` (optionally with `"retry_after":N`) and no
+  `error_description`; the token mapper required one, so `login_with_provider_id_token`,
+  `oidc_exchange`, `oidc_refresh` and `login_client_credentials` raised `NetworkError` and
+  dropped `Retry-After`. They now raise `OAuthProtocolError(rate_limit_exceeded)` with
+  `retry_after_ms` (any status whose body has an `error` member is read that way, §12.3 rule 3).
 
 
 ## [1.1.3] - 2026-10-29
