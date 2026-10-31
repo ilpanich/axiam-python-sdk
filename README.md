@@ -27,17 +27,19 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.2**) conforms to **contract 1.64**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.1.2**) conforms to **contract 1.65**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
-local-verification set, and §1.1.1/§10.3's gRPC token operations). §12 is
+local-verification set, and §1.1.1/§10.3's gRPC token operations), and — new in contract 1.65 —
+**§37** (native sign-in with a provider ID token) with the `idp_hint` input of `oidc_begin` and
+`oidc_par` (§12.1, §26.2 rule 8). §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
 
 CONTRACT.md's Conformance Statement for §36 (network segments, reply profiles and the
 RADIUS decision, a §27 namespace, ported from the merge commit that carries the routes):
 
-> This SDK conforms to CONTRACT.md §1–§13, §14, §15, §17, §19, §27, §28, §28.12, §29, §30, §31, §32, §33 and §36.
+> This SDK conforms to CONTRACT.md §1–§13, §14, §15, §17, §19, §27, §28, §28.12, §29, §30, §31, §32, §33, §36 and §37.
 
 Manifest pruning: not offered in any namespace (§27.10; pruning is a MAY, §27.6 rule 4).
 
@@ -892,6 +894,8 @@ endpoints, and — as of **contract 1.38** — render and drive the public
 | `oidc_exchange(...)` | `POST /oauth2/token` (`authorization_code`) — validates the returned ID token in full (§12.4) before returning |
 | `oidc_refresh(...)` | `POST /oauth2/token` (`refresh_token`) — a **distinct** operation from `refresh()`, under the same §9 single-flight guard |
 | `login_client_credentials(...)` | `POST /oauth2/token` (`client_credentials`) — service-account M2M login, no `id_token` |
+| `login_with_provider_id_token(...)` | `POST /oauth2/token` (native sign-in, §37, contract 1.65) — see [Native sign-in](#native-sign-in-with-a-provider-id-token-37). Not one of the thirteen |
+| `native_nonce()` | §37.4 — a fresh `(raw, hashed)` nonce pair; **pure local computation**, synchronous on both clients |
 | `introspect(...)` | `POST /oauth2/introspect` (RFC 7662) — requires confidential-client credentials |
 | `revoke(...)` | `POST /oauth2/revoke` (RFC 7009) — idempotent; any `200` (including for an unknown token) is success |
 | `sso_start(...)` | `POST /api/v1/auth/federation/oidc/start` — step 1 of upstream-IdP SSO |
@@ -900,6 +904,16 @@ endpoints, and — as of **contract 1.38** — render and drive the public
 | `sso_start_oauth2(...)` | `POST /api/v1/auth/federation/oauth2/start` — step 1 through a **plain-OAuth2** upstream (GitHub, Facebook, `generic_oauth2`). PKCE is mandatory here and is generated and held **server-side**, so this SDK computes no verifier and sends no challenge |
 | `sso_complete_oauth2(...)` | `POST /api/v1/auth/federation/oauth2/callback` — step 2 of the OAuth2 variant; same `Set-Cookie` session and same post-login sync as `sso_complete` |
 | `sso_complete_handoff(...)` | `POST /api/v1/auth/federation/handoff` — redeems the single-use `axiam_handoff` code the SAML and Apple flows deliver. Valid 60 s, redeemable **once**; a `401` is terminal and is **never retried** |
+
+**A replayed refresh token now ends the session (contract 1.65, §9).** With the server's
+default `oauth2.refresh_reuse_response = revoke_session`, presenting an already-rotated
+refresh token to `oidc_refresh` is still `400 invalid_grant` and now also invalidates the
+session and revokes every refresh token under it, the successor included. Treat
+`invalid_grant` from `oidc_refresh` as "the session is over": the SDK never retries it with
+the same token, and the caller must authorize again. The single-flight guard (one wire call
+per burst, one outcome shared by every concurrent caller) is what keeps this SDK from causing
+it — but it is per client instance, so refreshing the same token from two places (two
+processes sharing a token store) is a defect.
 
 Both `AxiamClient` (sync) and `AsyncAxiamClient` (async, `async def` twins
 under the *same* names, SDK-Q08) expose all thirteen — including `oidc_begin`,
@@ -1545,6 +1559,26 @@ pushed request into another.
 
 Worked example: [`examples/par_login.py`](examples/par_login.py).
 
+### Choosing the provider — `idp_hint` (contract 1.65, §12.1 / §26.2 rule 8)
+
+`oidc_begin(..., idp_hint="corp-okta")` adds the ninth query parameter,
+`axiam_idp_hint`, and sends the browser straight to that provider instead of the
+chooser. The value is a provider UUID, a `provider_slug` or a branded kind name
+(`google`, `github`, `facebook`, `apple`, `microsoft`). It is checked for emptiness
+and length (256 bytes) only — `ValueError` otherwise, with no URL built — and is
+never trimmed, case-folded or looked up: a hint the server cannot resolve is
+ignored, exactly as if absent. It is emitted once (an `axiam_idp_hint` in
+`extra_params` is dropped when `idp_hint` is set) and there is no `kc_idp_hint`.
+
+Under PAR the hint belongs to the **push**: `oidc_par(..., idp_hint="corp-okta")`
+carries it in the pushed body, and the redirect built from the `request_uri` stays
+exactly `client_id` + `request_uri`.
+
+```python
+request = client.oidc_begin(configuration=cfg, redirect_uri=uri, idp_hint="google")
+pushed = client.oidc_par(request=request, redirect_uri=uri, idp_hint="google")
+```
+
 ## Device authorization grant (§14)
 
 RFC 8628 — signing in a device that cannot show a browser: a TV, a CLI, a
@@ -1696,6 +1730,51 @@ exchanged = client.token_exchange(
   It also cannot be exchanged again — exchanges do not compose.
 
 The operator guide is `docs/api/federated-token-exchange.md`.
+
+## Native sign-in with a provider ID token (§37)
+
+A mobile or desktop app that uses Google, Apple or Facebook's *native* SDK ends up
+holding an ID token the provider signed for that app. `login_with_provider_id_token`
+presents it to AXIAM's token endpoint (grant
+`urn:axiam:params:oauth:grant-type:provider-id-token`) and returns the ordinary
+`OidcTokenSet`. It is **not** token exchange, and it works on `AxiamClient` and
+`AsyncAxiamClient` under the same name.
+
+```python
+client = AxiamClient(
+    base_url=..., tenant_slug=tenant_uuid, client_id="my-ios-app"
+)  # public client: no secret
+
+pair = client.native_nonce()  # local, no I/O
+# 1. give the provider's native SDK pair.hashed as ITS nonce  (SHA-256(raw), lower-case hex)
+# 2. it returns an ID token; pass the RAW nonce to AXIAM:
+tokens = client.login_with_provider_id_token(
+    "corp-google",  # the provider's UUID or provider_slug -- NOT the kind name
+    provider_id_token,  # str or SecretStr
+    pair.raw,  # SecretStr (or str); sent byte for byte
+    scopes=["openid"],  # optional; none means no scopes and no ID token
+)
+```
+
+What to know:
+
+- `provider` is sent verbatim — a UUID or the operator's slug. A kind name such as
+  `google` works only if the operator also chose it as the slug.
+- `nonce` is the **raw** nonce; the SDK never hashes it, never reads the token's
+  claim and never invents one. `native_nonce()` returns a `ProviderNonce` whose `raw`
+  is a `SecretStr` and whose `hashed` is the plain hex string for the provider's SDK.
+- No scope is added: pass `openid` if you want `id_claims`.
+- Empty `provider`/`id_token`/`nonce` is a `ValueError`, and a client with no tenant
+  UUID is an `AuthError`, both before any request.
+- **Never retried**, by the SDK or by you with the same pair: the provider's token
+  is single-use across the deployment. Every refusal of it is the one generic
+  `OAuthProtocolError` `invalid_grant` — do not try to tell the causes apart; get a
+  fresh provider token and a fresh nonce. `consent_required` has also spent the token.
+  A transport failure after the request left is a `NetworkError` and is indeterminate.
+- The provider ID token and the raw nonce are credentials: they are never logged,
+  kept or put in an error. Hold the raw nonce only for the length of the attempt.
+- The returned set is **returned, not adopted**, as for `login_client_credentials`
+  and `device_login`.
 
 ## UMA 2.0 — Protection API and ticket grant (§20)
 
@@ -2245,7 +2324,7 @@ top-level entry of the same name wherever the document publishes one:
 
 | Operation | Endpoint aliased |
 |---|---|
-| `oidc_exchange`, `oidc_refresh`, `login_client_credentials`, `device_poll`, `token_exchange` | `token_endpoint` |
+| `oidc_exchange`, `oidc_refresh`, `login_client_credentials`, `login_with_provider_id_token`, `device_poll`, `token_exchange` | `token_endpoint` |
 | `introspect` | `introspection_endpoint` |
 | `revoke` | `revocation_endpoint` |
 | `device_authorize` | `device_authorization_endpoint` |

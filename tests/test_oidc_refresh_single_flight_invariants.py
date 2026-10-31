@@ -584,3 +584,107 @@ async def test_async_burst_of_six_makes_one_call_and_shares_it(
 
     assert calls["n"] == 1
     assert all(r.access_token.get_secret_value() == "one-refresh-token" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# CONTRACT.md §9, contract 1.65 -- "a replayed refresh token ends the session":
+# the 1.65 port CONFIRMS that an `invalid_grant` on `oidc_refresh` is one wire
+# call whose error every waiter of a burst receives, and that the spent token is
+# never presented again. No SDK code changed; this is the rule-2 test run against
+# `invalid_grant` instead of a success.
+# ---------------------------------------------------------------------------
+
+_SPENT = "spent-refresh-token"
+_INVALID_GRANT = {"error": "invalid_grant", "error_description": "the refresh token is not valid"}
+
+
+def _spent_token_presentations(route: respx.Route) -> int:
+    return sum(b"refresh_token=" + _SPENT.encode() in call.request.content for call in route.calls)
+
+
+@pytest.mark.asyncio
+async def test_async_invalid_grant_is_one_wire_call_shared_by_every_waiter(
+    respx_mock: respx.MockRouter,
+) -> None:
+    from axiam_sdk import OAuthProtocolError
+
+    _mock_discovery(respx_mock)
+    release = asyncio.Event()
+
+    started = {"n": 0}
+
+    async def responder(request: httpx.Request) -> httpx.Response:
+        started["n"] += 1
+        await release.wait()
+        return httpx.Response(400, json=_INVALID_GRANT)
+
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+
+    waiters = 6  # N >= 5
+    tasks = [
+        asyncio.create_task(client.oidc_refresh(refresh_token=_SPENT, tenant_id=TENANT_ID))
+        for _ in range(waiters)
+    ]
+    await _poll_until(lambda: started["n"] == 1, what="the single wire call to start")
+    await asyncio.sleep(0.05)  # every waiter has had time to reach the guard
+    release.set()
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert len(route.calls) == 1, "exactly one wire call for the whole burst"
+    assert all(isinstance(o, OAuthProtocolError) for o in outcomes)
+    assert {o.error for o in outcomes if isinstance(o, OAuthProtocolError)} == {"invalid_grant"}
+    assert len({id(o) for o in outcomes}) == 1, "every waiter received that one error"
+
+    # The session is over: a later call that brings no new token from the caller
+    # makes no further request with the spent token on its own -- the SDK holds
+    # none to present, and nothing re-sends the first one in the background.
+    await asyncio.sleep(0)
+    assert _spent_token_presentations(route) == 1
+    assert len(route.calls) == 1
+
+
+def test_sync_invalid_grant_is_one_wire_call_shared_by_every_waiter(
+    respx_mock: respx.MockRouter,
+) -> None:
+    from axiam_sdk import OAuthProtocolError
+
+    _mock_discovery(respx_mock)
+    release = threading.Event()
+
+    started = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        started["n"] += 1
+        release.wait(5)
+        return httpx.Response(400, json=_INVALID_GRANT)
+
+    route = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+
+    waiters = 6  # N >= 5
+    outcomes: list[BaseException | None] = [None] * waiters
+    arrived = threading.Barrier(waiters + 1)
+
+    def worker(index: int) -> None:
+        arrived.wait(5)
+        try:
+            client.oidc_refresh(refresh_token=_SPENT, tenant_id=TENANT_ID)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertions
+            outcomes[index] = exc
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(waiters)]
+    for thread in threads:
+        thread.start()
+    arrived.wait(5)
+    _poll_sync(lambda: started["n"] == 1, "the single wire call to start")
+    time.sleep(0.2)  # let the other callers reach the guard while the call is held open
+    release.set()
+    for thread in threads:
+        thread.join(10)
+
+    assert len(route.calls) == 1, "exactly one wire call for the whole burst"
+    assert all(isinstance(o, OAuthProtocolError) for o in outcomes)
+    assert {o.error for o in outcomes if isinstance(o, OAuthProtocolError)} == {"invalid_grant"}
+    assert len({id(o) for o in outcomes}) == 1, "every waiter received that one error"
+    assert _spent_token_presentations(route) == 1

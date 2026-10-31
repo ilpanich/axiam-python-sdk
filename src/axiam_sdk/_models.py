@@ -548,6 +548,28 @@ class OidcTokenSet(BaseModel):
     model_config = {"frozen": True}
 
 
+class ProviderNonce(BaseModel):
+    """The nonce pair of a native sign-in (CONTRACT.md §37.4), returned by
+    :meth:`~axiam_sdk.AxiamClient.native_nonce`.
+
+    ``raw`` is the **preimage**: the value
+    :meth:`~axiam_sdk.AxiamClient.login_with_provider_id_token` sends to AXIAM.
+    It is a ``SecretStr`` (§37.6) — unlike the nonce of §12.3 rule 2 it is a
+    credential, because together with the provider's ID token it signs the user
+    in — so ``repr``, ``str`` and JSON serialization redact it. Hold it only for
+    the length of the attempt.
+
+    ``hashed`` is ``SHA-256(raw)`` as 64 lower-case hexadecimal characters: the
+    value to give the provider's native SDK as *its* nonce. It travels to the
+    provider and into the token, so it is a plain string.
+    """
+
+    raw: SecretStr
+    hashed: str
+
+    model_config = {"frozen": True}
+
+
 class IntrospectionResult(BaseModel):
     """The RFC 7662 introspection result (wire schema
     ``IntrospectionResponse``, CONTRACT.md §12.1). Only ``active`` is

@@ -74,3 +74,22 @@ def compute_code_challenge(code_verifier: str) -> str:
     """
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def native_nonce_pair() -> tuple[str, str]:
+    """Generate a fresh ``(raw, hashed)`` nonce pair for a native sign-in
+    (CONTRACT.md §37.4).
+
+    ``raw`` is 32 CSPRNG bytes, base64url-encoded without padding (so ASCII and
+    far below the server's 512-byte bound). ``hashed`` is the SHA-256 of the
+    bytes of ``raw`` **as sent**, as lower-case hexadecimal (64 characters) —
+    the value the provider's SDK is given and the one that ends up in the
+    ID token's ``nonce`` claim. Nothing is stored.
+    """
+    raw = random_url_safe_token(CSPRNG_BYTES)
+    return raw, hash_native_nonce(raw)
+
+
+def hash_native_nonce(raw: str) -> str:
+    """``SHA-256(raw)`` as lower-case hexadecimal (CONTRACT.md §37.4 rule 2)."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

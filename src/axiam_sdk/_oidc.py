@@ -56,6 +56,7 @@ from axiam_sdk._models import (
     IntrospectionResult,
     OidcConfiguration,
     OidcTokenSet,
+    ProviderNonce,
     PushedAuthorizationRequest,
     RequestingPartyToken,
     ResourceSet,
@@ -69,6 +70,7 @@ from axiam_sdk._oidc_pkce import (
     CODE_CHALLENGE_METHOD_S256,
     compute_code_challenge,
     generate_code_verifier,
+    native_nonce_pair,
     random_url_safe_token,
 )
 
@@ -133,6 +135,21 @@ rule 1). The increase is permanent and cumulative."""
 
 TOKEN_EXCHANGE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:token-exchange"
 """``grant_type`` of an RFC 8693 exchange."""
+
+PROVIDER_ID_TOKEN_GRANT_TYPE = "urn:axiam:params:oauth:grant-type:provider-id-token"
+"""``grant_type`` of a native sign-in with a provider ID token (CONTRACT.md §37).
+Not token exchange: ``token_exchange`` refuses ID tokens by name and by shape."""
+
+AUTHORIZE_IDP_HINT_PARAM = "axiam_idp_hint"
+"""The authorization-request query parameter / pushed-body field that names the
+provider to sign in with (CONTRACT.md §12.1 ``idp_hint``, §26.2 rule 8). There is
+no ``kc_idp_hint`` alias."""
+
+IDP_HINT_MAX_BYTES = 256
+"""Upper bound, in UTF-8 bytes, of an ``idp_hint`` (CONTRACT.md §12.1)."""
+
+PROVIDER_ID_TOKEN_NONCE_MAX_BYTES = 512
+"""The server's bound on the raw ``nonce`` of a native sign-in (§37.2 rule 4)."""
 
 ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 """The ``actor_token_type`` this SDK sends, and the ``subject_token_type`` a
@@ -426,6 +443,31 @@ def _expose_secret(value: SecretStr | str) -> str:
     """Read a secret that the caller may have supplied wrapped or bare
     (port-brief-addendum item 6)."""
     return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+
+def _validate_idp_hint(idp_hint: str | None) -> str | None:
+    """Check an ``idp_hint`` for emptiness and length — and nothing else
+    (CONTRACT.md §12.1 ``idp_hint`` rule 2).
+
+    The value is not trimmed, case-folded, parsed as a UUID, looked up against
+    ``sso_providers`` or compared with the kind-name list: an unresolvable hint
+    is ignored by the server, byte-identically to no hint at all.
+
+    Raises:
+        ValueError: for an empty value or one over 256 UTF-8 bytes — a
+            programming error, raised before any URL is built or request sent.
+    """
+    if idp_hint is None:
+        return None
+    if idp_hint == "":
+        raise ValueError(
+            "idp_hint must not be empty: omit it to choose no provider (CONTRACT.md §12.1)."
+        )
+    if len(idp_hint.encode("utf-8")) > IDP_HINT_MAX_BYTES:
+        raise ValueError(
+            f"idp_hint must be at most {IDP_HINT_MAX_BYTES} bytes (UTF-8) (CONTRACT.md §12.1)."
+        )
+    return idp_hint
 
 
 def _normalize_scope(scope: str | Sequence[str] | None) -> str:
@@ -864,6 +906,7 @@ class _OidcMixin:
         redirect_uri: str,
         scope: str | Sequence[str] | None = None,
         extra_params: dict[str, str] | None = None,
+        idp_hint: str | None = None,
     ) -> AuthorizationRequest:
         """Build an :class:`~axiam_sdk._models.AuthorizationRequest`
         (CONTRACT.md §12.1) — pure local computation, no network I/O.
@@ -874,6 +917,12 @@ class _OidcMixin:
         ``authorization_endpoint`` with exactly the eight parameters §12.1
         rule 5 mandates, plus any ``extra_params`` the caller adds.
 
+        ``idp_hint`` (contract 1.65, §12.1) is emitted as the ninth parameter,
+        ``axiam_idp_hint``, only when set. It is the single source of that
+        parameter: a caller-supplied ``axiam_idp_hint`` in ``extra_params`` is
+        dropped when ``idp_hint`` is set (the server refuses a repeated one) and
+        passes through, once, when it is not. There is no ``kc_idp_hint``.
+
         Nothing is stored: persist the returned ``state``, ``nonce``, and
         ``code_verifier`` yourself (§12.3 rule 1).
 
@@ -881,11 +930,12 @@ class _OidcMixin:
             AuthError: if no ``client_id`` was configured at construction
                 time.
             ValueError: if ``extra_params`` tries to override one of the
-                eight SDK-owned parameters (a programming error, per
-                port-brief-addendum item 9 — deliberately NOT the auth-error
-                taxonomy).
+                eight SDK-owned parameters, or ``idp_hint`` is empty or longer
+                than 256 bytes (programming errors, per port-brief-addendum
+                item 9 — deliberately NOT the auth-error taxonomy).
         """
         client_id = self._require_oidc_client_id()
+        idp_hint = _validate_idp_hint(idp_hint)
         state = random_url_safe_token()
         nonce = random_url_safe_token()
         code_verifier = generate_code_verifier()
@@ -898,6 +948,8 @@ class _OidcMixin:
                     f"oidc_begin: extra_params may not override the SDK-owned authorization "
                     f'parameter "{key}" (CONTRACT.md §12.1 rule 5).'
                 )
+            if idp_hint is not None and key == AUTHORIZE_IDP_HINT_PARAM:
+                continue
             query[key] = value
 
         query["response_type"] = "code"
@@ -908,6 +960,8 @@ class _OidcMixin:
         query["nonce"] = nonce
         query["code_challenge"] = code_challenge
         query["code_challenge_method"] = CODE_CHALLENGE_METHOD_S256
+        if idp_hint is not None:
+            query[AUTHORIZE_IDP_HINT_PARAM] = idp_hint
 
         url = _append_query(configuration.authorization_endpoint, query)
         return AuthorizationRequest(
@@ -955,6 +1009,75 @@ class _OidcMixin:
             form["scope"] = scope
         return form
 
+    def _provider_id_token_form(
+        self,
+        *,
+        provider: str,
+        id_token: SecretStr | str,
+        nonce: SecretStr | str,
+        scopes: Sequence[str] | None,
+        resource: str | None,
+    ) -> dict[str, str]:
+        """Build the native sign-in form body (CONTRACT.md §37.1) — and refuse
+        an empty ``provider``, ``id_token`` or ``nonce`` locally (§37.2 rule 4).
+
+        Exactly the §37.1 field set: ``grant_type``, ``client_id``, ``provider``,
+        ``id_token``, ``nonce``, ``scope`` and ``resource`` when given, and the
+        client's credential when it has one. ``nonce`` is the caller's **raw**
+        value byte for byte (rule 3); ``scope`` is the space-joined ``scopes``
+        and is omitted — never sent empty, and with no ``openid`` added — when
+        the caller named none (rule 7).
+
+        Raises:
+            ValueError: for an empty ``provider``, ``id_token`` or ``nonce``, or
+                a ``nonce`` over the server's 512-byte bound. The messages name
+                the argument, never its value.
+        """
+        raw_id_token = _expose_secret(id_token)
+        raw_nonce = _expose_secret(nonce)
+        for name, value in (
+            ("provider", provider),
+            ("id_token", raw_id_token),
+            ("nonce", raw_nonce),
+        ):
+            if value == "":
+                raise ValueError(
+                    f"login_with_provider_id_token: {name} must not be empty "
+                    "(CONTRACT.md §37.2 rule 4)."
+                )
+        if len(raw_nonce.encode("utf-8")) > PROVIDER_ID_TOKEN_NONCE_MAX_BYTES:
+            raise ValueError(
+                "login_with_provider_id_token: nonce is longer than the server's "
+                f"{PROVIDER_ID_TOKEN_NONCE_MAX_BYTES}-byte bound (CONTRACT.md §37.2 rule 4)."
+            )
+        form = {
+            "grant_type": PROVIDER_ID_TOKEN_GRANT_TYPE,
+            "client_id": self._require_oidc_client_id(),
+            "provider": provider,
+            "id_token": raw_id_token,
+            "nonce": raw_nonce,
+        }
+        self._append_client_secret(form)
+        if scopes:
+            form["scope"] = " ".join(scopes)
+        if resource is not None:
+            form["resource"] = resource
+        return form
+
+    def native_nonce(self) -> ProviderNonce:
+        """A fresh nonce pair for a native sign-in (CONTRACT.md §37.4) — **pure
+        local computation, no network I/O**, and synchronous on both clients.
+
+        Give the provider's native SDK ``hashed`` as *its* nonce, then pass
+        ``raw`` as the ``nonce`` of :meth:`login_with_provider_id_token` with the
+        ID token the provider returns. ``raw`` is 32 CSPRNG bytes in unpadded
+        base64url, wrapped in ``SecretStr``; ``hashed`` is ``SHA-256(raw)`` as 64
+        lower-case hexadecimal characters. Every call returns a different pair and
+        nothing is stored: hold ``raw`` only for the length of the attempt.
+        """
+        raw, hashed = native_nonce_pair()
+        return ProviderNonce(raw=SecretStr(raw), hashed=hashed)
+
     def _introspect_form(
         self, *, token: SecretStr | str, token_type_hint: str | None
     ) -> dict[str, str]:
@@ -992,6 +1115,7 @@ class _OidcMixin:
         redirect_uri: str,
         scope: str | Sequence[str] | None,
         dpop_jkt: str | None = None,
+        idp_hint: str | None = None,
     ) -> dict[str, str]:
         """Build the ``POST /oauth2/par`` form body (§26.1).
 
@@ -1009,6 +1133,9 @@ class _OidcMixin:
         makes it the one authorization parameter a client MUST NOT push; the
         server models it so it can refuse it, and a client able to send it is
         a client able to chain one pushed request into another.
+
+        ``idp_hint`` (contract 1.65, §26.2 rule 8) rides this body as
+        ``axiam_idp_hint`` when set and is absent otherwise.
         """
         form = {
             "client_id": self._require_oidc_client_id(),
@@ -1022,6 +1149,11 @@ class _OidcMixin:
         }
         if dpop_jkt is not None:
             form["dpop_jkt"] = dpop_jkt
+        hint = _validate_idp_hint(idp_hint)
+        if hint is not None:
+            # §26.2 rule 8: the pushed body carries the hint, exactly once; the
+            # redirect built from the request_uri never does.
+            form[AUTHORIZE_IDP_HINT_PARAM] = hint
         self._append_client_secret(form)
         return form
 
