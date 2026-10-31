@@ -71,6 +71,7 @@ def config_body(**extra: Any) -> dict[str, Any]:
         "client_id": "axiam",
         "enabled": True,
         "allow_sha1_signatures": False,
+        "native_login": {"client_ids": [], "enabled": False, "max_token_age_secs": 300},
         "allow_tenant_inheritance": False,
         "allowed_algorithms": [],
         "allowed_issuer_tenants": [],
