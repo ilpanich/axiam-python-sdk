@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Contract 1.65 (axiam 76d35d9, `openapi.json` 1.2.0). The release number is the maintainer's;
+the package version is unchanged here.
+
+### Added
+
+- **Native sign-in with a provider ID token (CONTRACT.md §37).**
+  `login_with_provider_id_token(provider, id_token, nonce, *, scopes=None, resource=None,
+  tenant_id=None, configuration=None) -> OidcTokenSet` on both `AxiamClient` and
+  `AsyncAxiamClient`: one `POST /oauth2/token` with
+  `grant_type=urn:axiam:params:oauth:grant-type:provider-id-token`, for an app that holds
+  the ID token Google, Apple or Facebook's native SDK produced. `provider` (UUID or slug) and
+  the **raw** `nonce` are sent verbatim; `id_token` and `nonce` accept `str` or `SecretStr`;
+  no `openid` is added; empty inputs are a `ValueError` and a slug-only client an `AuthError`,
+  both before any request; the call is never retried, `invalid_grant` is surfaced as the
+  server's generic `OAuthProtocolError` and not refined, and neither the provider token nor
+  the raw nonce is logged, kept or put in an error. A returned ID token is validated under
+  §12.4 with the raw nonce. Like `login_client_credentials` and `device_login`, the token
+  set is returned, not adopted.
+- **`native_nonce() -> ProviderNonce`** (§37.4): a synchronous, network-free pair on both
+  clients - `raw` is 32 CSPRNG bytes in unpadded base64url wrapped in `SecretStr`, `hashed`
+  is `SHA-256(raw)` as 64 lower-case hex characters. `ProviderNonce` is exported from the
+  package root.
+- **`idp_hint` on `oidc_begin` and `oidc_par`** (§12.1, §26.2 rule 8): emitted as the query
+  parameter `axiam_idp_hint` (once) on the authorization URL, and carried in the **pushed
+  body** under PAR, never in the `request_uri` redirect. Validated for emptiness and length
+  (256 bytes) only, with `ValueError`; there is no `kc_idp_hint`.
+- Tests: the thirteen §37.9 tests, the five `idp_hint` tests, and the §9 confirmation that
+  a mocked `400 invalid_grant` on `oidc_refresh` is one wire call whose error every
+  concurrent waiter receives, with the spent token never presented again.
+
+### Changed
+
+- Re-vendored `CONTRACT.md` (1.65), `openapi.json` (1.2.0) and `management-registry.json`
+  byte for byte, and regenerated the §27 management surface: `default_idp` on
+  `CreateOAuth2ClientRequest`, `OAuth2ClientResponse` (and the update form),
+  `native_login` (`NativeLoginTrustRequest` / `NativeLoginTrustResponse`) on the federation
+  config types, `TokenRequest.provider` / `id_token` / `nonce`,
+  `PushedAuthorizationRequest.axiam_idp_hint`, and `refresh_reuse_response` on the settings
+  bodies (`OAuth2Policy`, `SetOrgSettings`, `TenantSettingsOverride`). `settings.set_org` is a
+  `replace` operation and the member is optional, so a `SetOrgSettings` built without it
+  moves an organization on `refuse` back to `revoke_session`; this SDK has no composed
+  read-before-write form for organization settings, so carry the member over from the
+  `SecuritySettings` you read. The registry is unchanged at 202 operations in 29 namespaces.
+- **Server behaviour to know about:** a replayed refresh token now ends the session
+  server-side by default (`oauth2.refresh_reuse_response = revoke_session`): `invalid_grant`
+  on `oidc_refresh` means the session is over. The SDK's single-flight guard already
+  prevents it from causing this and it never retries that token; no SDK code changed.
+- **Server floor:** federation-config admin calls (`federation.create_config`, `get_config`,
+  `list_configs`, `update_config`) of this 1.2-line SDK need an AXIAM server **1.2.0 or
+  later**: `FederationConfigResponse.native_login` is required from 1.2.0, and a response
+  from an older server fails to decode (a pydantic `ValidationError`).
+- **`oidc_par` pushes the begin URL's hint (D-N36, §26.2 rule 8).** With no `idp_hint`
+  argument, the `axiam_idp_hint` that `oidc_begin(idp_hint=...)` put in the request's URL is
+  pushed in the PAR body; the `oidc_par` argument wins when both are set.
+- Re-vendored `CONTRACT.md` (1.65 as amended 2026-10-31, sha256 `95ee87ba...359529`).
+
+### Source compatibility
+
+- `FederationConfigResponse` gained the required member `native_login`; code that builds one
+  (test fixtures, mocks) must supply it. Every other regenerated member is optional.
+
+### Fixed
+
+- **Route-level `429` on `/oauth2/token` (C165-01).** AXIAM's limiters answer
+  `429 {"error":"rate_limit_exceeded"}` (optionally with `"retry_after":N`) and no
+  `error_description`; the token mapper required one, so `login_with_provider_id_token`,
+  `oidc_exchange`, `oidc_refresh` and `login_client_credentials` raised `NetworkError` and
+  dropped `Retry-After`. They now raise `OAuthProtocolError(rate_limit_exceeded)` with
+  `retry_after_ms` (any status whose body has an `error` member is read that way, §12.3 rule 3).
+- **A `3xx` from an `/oauth2/*` POST is a `NetworkError` whatever its body (C165-25).** The
+  shared `/oauth2/*` error mapper read the body before the status, so a redirect answer
+  carrying `{"error": ...}` surfaced as `OAuthProtocolError`; it now checks the status first
+  (§12.1 rule 3). No redirect was ever followed.
+
+
 ## [1.1.3] - 2026-10-29
 
 ### Breaking changes

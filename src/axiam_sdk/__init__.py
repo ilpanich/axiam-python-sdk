@@ -58,6 +58,7 @@ from axiam_sdk._models import (
     MtlsEndpointAliases,
     OidcConfiguration,
     OidcTokenSet,
+    ProviderNonce,
     PushedAuthorizationRequest,
     ReasonCode,
     RequestedPermission,
@@ -202,6 +203,9 @@ __all__ = [
     "PasswordResetContext",
     # §26 pushed authorization requests (RFC 9126).
     "PushedAuthorizationRequest",
+    # §37 native sign-in with a provider ID token: `login_with_provider_id_token` and
+    # `native_nonce` are methods of both clients; this is the pair `native_nonce` returns.
+    "ProviderNonce",
     # §28 MCP resource-server helpers (RFC 9728 + RFC 6750). Framework-agnostic
     # and I/O-free, so they live at the top level rather than under
     # `axiam_sdk.fastapi`/`axiam_sdk.django` — `serve_protected_resource_metadata`

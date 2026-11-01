@@ -83,6 +83,7 @@ from axiam_sdk._oidc import (
     SSO_PROVIDERS_PATH,
     SSO_START_PATH,
     PollSchedule,
+    _expose_secret,
     _OidcMixin,
 )
 from axiam_sdk._registration import (
@@ -1712,16 +1713,23 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         redirect_uri: str,
         scope: str | list[str] | None = None,
         extra_params: dict[str, str] | None = None,
+        idp_hint: str | None = None,
     ) -> AuthorizationRequest:
         """Build an authorization request (CONTRACT.md §12.1) — **pure
         local computation, no network I/O**. Nothing is stored: persist
         the returned ``state``, ``nonce``, and ``code_verifier`` yourself
-        (§12.3 rule 1)."""
+        (§12.3 rule 1).
+
+        ``idp_hint`` (contract 1.65) names the provider to sign in with
+        (a UUID, a ``provider_slug`` or a branded kind name such as ``google``) and
+        is emitted once as ``axiam_idp_hint``; it is validated for emptiness and
+        length only (``ValueError``). See :meth:`oidc_par` for PAR."""
         return self._oidc_begin_impl(
             configuration=configuration,
             redirect_uri=redirect_uri,
             scope=scope,
             extra_params=extra_params,
+            idp_hint=idp_hint,
         )
 
     def oidc_par(
@@ -1733,6 +1741,7 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         dpop_jkt: str | None = None,
         tenant_id: str | None = None,
         configuration: OidcConfiguration | None = None,
+        idp_hint: str | None = None,
     ) -> PushedAuthorizationRequest:
         """``POST /oauth2/par`` (CONTRACT.md §26.1) — push the authorization
         request over the back channel and get an opaque handle to redirect
@@ -1766,6 +1775,11 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         holds no DPoP key of its own (§21.9): it verifies proofs, it does not
         mint them. Omitted from the form entirely when ``None``.
 
+        ``idp_hint`` (contract 1.65, §26.2 rule 8) is pushed in the form body as
+        ``axiam_idp_hint`` — exactly once, and absent when ``None``. The redirect
+        built from the ``request_uri`` never carries it: the server reads the
+        pushed one. Validated for emptiness and length only (``ValueError``).
+
         Raises:
             AuthError: when the discovery document advertises no
                 ``pushed_authorization_request_endpoint``.
@@ -1773,7 +1787,11 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         """
         config = configuration or self.oidc_discover()
         form = self._par_form(
-            request=request, redirect_uri=redirect_uri, scope=scope, dpop_jkt=dpop_jkt
+            request=request,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            dpop_jkt=dpop_jkt,
+            idp_hint=idp_hint,
         )
         url = self._par_url(config, tenant_id)
         http_request = self._session.sync_client.build_request("POST", url, data=form)
@@ -1880,6 +1898,83 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         response = self._rest_send_sync(request)
         # No nonce: rule 6 does not apply to this grant.
         return self._handle_token_response(response, config, None)
+
+    def login_with_provider_id_token(
+        self,
+        provider: str,
+        id_token: SecretStr | str,
+        nonce: SecretStr | str,
+        *,
+        scopes: Sequence[str] | None = None,
+        resource: str | None = None,
+        tenant_id: str | None = None,
+        configuration: OidcConfiguration | None = None,
+    ) -> OidcTokenSet:
+        """Native sign-in with a provider ID token (CONTRACT.md §37): ``POST
+        /oauth2/token`` with
+        ``grant_type=urn:axiam:params:oauth:grant-type:provider-id-token``.
+
+        For a mobile or desktop app that holds the ID token Google, Apple or
+        Facebook's native SDK produced. This is **not** token exchange
+        (:meth:`token_exchange` refuses ID tokens) and it never falls back to it
+        or to a browser flow.
+
+        Args:
+            provider: The provider's UUID or its ``provider_slug`` — sent
+                verbatim (no trimming, case folding or lookup). A provider
+                *kind* name such as ``google`` is **not** accepted here unless
+                the operator also chose it as the slug.
+            id_token: The provider's ID token. Accepted as a ``SecretStr`` or a
+                plain string and never logged, repr'd or kept.
+            nonce: The **raw** nonce — the preimage whose SHA-256 hex the
+                provider's SDK was given. Sent byte for byte: never hashed,
+                never replaced by the token's own ``nonce`` claim, never
+                generated here. :meth:`native_nonce` produces the pair.
+            scopes: Optional scopes, space-joined. None means *no scopes* (the
+                server then issues no ID token) — ``openid`` is **not** added;
+                pass it to receive ``id_claims``.
+            resource: Optional RFC 8707 resource indicator.
+            tenant_id: The tenant UUID for the ``tenant_id`` query parameter,
+                else the one this client has resolved (§12.3 rule 4).
+
+        Returns:
+            The ordinary :class:`~axiam_sdk.OidcTokenSet`. A returned ID token is
+            validated under §12.4 with the raw ``nonce`` as the expected nonce;
+            ``token_type`` is read from the response. Like
+            :meth:`login_client_credentials` and :meth:`device_login`, the set is
+            **returned, not adopted**.
+
+        Never retried — not on a status, not on a transport failure: the
+        provider's token is single-use across the deployment and the server may
+        already have spent it. Every refusal of it is the one generic
+        ``OAuthProtocolError`` ``invalid_grant`` (the causes are not told apart);
+        recover with a **fresh** provider token and a **fresh** nonce.
+        ``consent_required`` also means the token is spent. A transport failure
+        after the request left is a ``NetworkError`` (indeterminate).
+
+        Raises:
+            ValueError: an empty ``provider``, ``id_token`` or ``nonce`` (or a
+                ``nonce`` over 512 bytes), before any request.
+            AuthError: no ``client_id`` configured, or no tenant UUID available
+                (a slug-only client), before any request.
+            OAuthProtocolError: any ``error`` the server returns.
+            NetworkError: a transport failure, or a ``5xx`` without an
+                ``OAuth2ErrorResponse`` body.
+        """
+        form = self._provider_id_token_form(
+            provider=provider, id_token=id_token, nonce=nonce, scopes=scopes, resource=resource
+        )
+        resolved_tenant = self._resolve_oauth2_tenant_id(tenant_id)
+        config = configuration or self.oidc_discover()
+        url = self._token_endpoint_url(config, resolved_tenant)
+        request = self._session.sync_client.build_request("POST", url, data=form)
+        try:
+            response = self._rest_send_sync(request)
+        except httpx.TransportError as exc:
+            raise network_error_from_transport("login_with_provider_id_token", exc) from None
+        # §12.4 rule 6 with the RAW nonce (§37.2 rule 8): AXIAM's own ID token
+        # carries the request's nonce as sent, not its hash.
+        return self._handle_token_response(response, config, _expose_secret(nonce))
 
     def device_authorize(
         self,

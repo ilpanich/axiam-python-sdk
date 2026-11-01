@@ -1205,6 +1205,9 @@ class CreateFederationConfigRequest(ManagementModel):
     metadata_url: str | None = None
     """OIDC discovery URL or SAML metadata URL."""
 
+    native_login: NativeLoginTrustRequest | None = None
+    """``native_login``."""
+
     protocol: str
     """Federation protocol: "OidcConnect" or "Saml"."""
 
@@ -1511,6 +1514,19 @@ class CreateOAuth2ClientRequest(ManagementModel):
     gates is a later wave. Unlike `authn_request_params` it is permitted on
     a `fapi2` client, because it relaxes nothing — it decides only how an
     anonymous browser is answered.
+    """
+
+    default_idp: str | None = None
+    """G-B (#817) — the federation provider (a federation config `id`) this
+
+    client's sign-in page starts with when an authorization request carries
+    no `axiam_idp_hint`; a hint that names a provider overrides it.
+
+    Must name a provider this tenant can sign in with — its own enabled
+    configs, or the organization's enabled ones it inherits — or the
+    registration is refused with `400`. If that provider is later disabled
+    or deleted the default is ignored at the authorization endpoint (the
+    provider chooser is shown), never an error. Omit for none.
     """
 
     dpop_bound_access_tokens: bool | None = None
@@ -2297,6 +2313,9 @@ class FederationConfigResponse(ManagementModel):
     rather than sending a stored one. True only for an Apple config with
     both identifiers set.
     """
+
+    native_login: NativeLoginTrustResponse
+    """Native sign-in trust (G-A)."""
 
     pkce_required: bool
     """Whether PKCE is sent on the authorization request. Always true for the
@@ -3150,6 +3169,56 @@ what the widening removes is the claim that nothing else can occur.
 """
 
 
+class NativeLoginTrustRequest(ManagementModel):
+    """Native sign-in trust (G-A): which ID tokens this provider issued to an
+    app are accepted as a sign-in at the token endpoint.
+
+    Mirrors the domain block on the wire, as `TokenExchangeTrustRequest`
+    does, so an omitted member takes its documented default rather than
+    failing deserialization. Only an `OidcConnect` provider may enable it.
+
+    Every field is optional, so this is a **sparse** body: what you leave
+    out is left unchanged, and is omitted from the wire request entirely
+    rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    client_ids: list[str] | None = None
+    """The audiences a presented ID token may carry: the iOS bundle ID, Android
+
+    client ID or Apple app ID the native SDK was configured with. Required
+    (non-empty) when `enabled`; at most 64 entries of at most 512
+    characters, none blank, none repeated. The web `client_id` is accepted
+    only when it is listed here.
+    """
+
+    enabled: bool | None = None
+    """Off unless explicitly enabled. Configuring a provider for browser login
+
+    is not agreement to accept its ID tokens from apps.
+    """
+
+    max_token_age_secs: int | None = None
+    """Bound on `now - iat` for a presented ID token, 1 to 3600 seconds.
+
+    Omitted: 300.
+    """
+
+
+class NativeLoginTrustResponse(ManagementModel):
+    """Native sign-in trust as returned to an administrator. Nothing here is
+    secret; it is never part of the unauthenticated providers listing.
+    """
+
+    client_ids: list[str]
+    """The accepted ID-token audiences."""
+
+    enabled: bool
+    """Whether ID tokens from apps are accepted as a sign-in."""
+
+    max_token_age_secs: int
+    """Bound on `now - iat`, in seconds."""
+
+
 class NetworkPolicyResponse(ManagementModel):
     """The tenant's network policy, as the management API returns it."""
 
@@ -3580,6 +3649,14 @@ class OAuth2ClientResponse(ManagementModel):
     created_at: str
     """``created_at``."""
 
+    default_idp: str | None = None
+    """G-B (#817) — the provider this client's sign-in page starts with when a
+
+    request carries no hint; absent for none. Echoed as stored: a value
+    whose provider has since been disabled is shown, and ignored at the
+    authorization endpoint.
+    """
+
     dpop_bound_access_tokens: bool
     """``dpop_bound_access_tokens``."""
 
@@ -3672,6 +3749,39 @@ class OAuth2ClientResponse(ManagementModel):
 
     updated_at: str
     """``updated_at``."""
+
+
+class OAuth2Policy(ManagementModel):
+    """OAuth 2.0 authorization-server behaviour that is a tenant's to decide
+    (G-C, #818).
+
+    A struct of its own rather than a field on `TokenPolicy` because it is
+    not a lifetime, and so the resolved setting reads by its documented
+    name, `oauth2.refresh_reuse_response`.
+
+    Every field is optional, so this is a **sparse** body: what you leave
+    out is left unchanged, and is omitted from the wire request entirely
+    rather than sent as ``null`` (§27.4 rule 5).
+    """
+
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "refresh_reuse_response": frozenset({"revoke_session", "refuse"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
+    refresh_reuse_response: RefreshReuseResponse | None = None
+    """What a refused refresh-token replay does besides refusing. Ordered: a
+
+    tenant may move from `refuse` to `revoke_session` and never back while
+    its organization's baseline is `revoke_session`.
+
+    Published as a reference to the `RefreshReuseResponse` schema, so the
+    two legal values reach the SDK generators as an `enum` (F4-W1-06, #823).
+    """
 
 
 class OidcAuthorizeRequest(ManagementModel):
@@ -4592,6 +4702,44 @@ class ReadyResponse(ManagementModel):
 
     status: str
     """``status``."""
+
+
+RefreshReuseResponse = Literal["revoke_session", "refuse"] | str
+"""What the token endpoint does when a refresh token that has already been
+
+rotated is presented again and **refused** (G-C, #818 — the T-254
+amendment).
+
+Two values, ordered by strictness:
+
+* `revoke_session` — the default (D-N2). The refusal also invalidates the
+session the replayed token names (which publishes to the revocation feed)
+and revokes every refresh token issued under that session — whichever client
+it was issued to, the console sign-in included, with no back-channel logout
+sent — as the authorization-code replay path does for a code (RFC 6749
+§10.5; OAuth 2.0 Security BCP §4.14.2). Only a presentation by the token's
+own client, passing the token's sender constraint, triggers it (#821). On a
+client with no grace window the honest holder of a replayed token has
+nothing left to lose — its token is already dead and it never received the
+successor — so the revocation costs it nothing and costs whoever holds the
+successor everything. * `refuse` — the 1.1.x behaviour: the presentation is
+refused, marked on the session and audited, and nothing else is revoked.
+
+Neither value changes what is *accepted*. A `fapi2` client's presentation
+inside the grace window is accepted and marked whatever this says (D-N4); a
+token revoked at logout is not a replay and revokes nothing.
+
+This text is published as the schema's description in `sdks/openapi.json`,
+so it carries no rustdoc intra-doc links (F4-W1-08, #824).
+
+An **open** enum. The trailing ``| str`` is what makes a value this SDK's
+copy of the spec does not list validate instead of raising -- CONTRACT
+§27.11 rule 1. A bare ``Literal`` is validated strictly by pydantic, so the
+next value the server adds would fail the *whole* response it arrived in,
+taking down every record on the page over one field of one of them. The
+listed members stay in the annotation because they are what a reader needs;
+what the widening removes is the claim that nothing else can occur.
+"""
 
 
 class RegistrationTokenResponse(ManagementModel):
@@ -5733,6 +5881,12 @@ class SecuritySettings(ManagementModel):
     notification: NotificationPolicy
     """``notification``."""
 
+    oauth2: OAuth2Policy | None = None
+    """G-C (#818) — `oauth2.refresh_reuse_response`. Defaulted so a document
+
+    written before the field reads as the default.
+    """
+
     oidc: OidcPolicy
     """``oidc``."""
 
@@ -6015,6 +6169,15 @@ class SetOrgEmailConfig(ManagementModel):
 class SetOrgSettings(ManagementModel):
     """Input for setting organization-level security settings."""
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "refresh_reuse_response": frozenset({"revoke_session", "refuse"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     access_token_lifetime_secs: int
     """``access_token_lifetime_secs``."""
 
@@ -6099,6 +6262,15 @@ class SetOrgSettings(ManagementModel):
 
     password_history_count: int
     """``password_history_count``."""
+
+    refresh_reuse_response: RefreshReuseResponse | None = None
+    """G-C (#818) — defaulted to `revoke_session` (D-N2): an API client written
+
+    before the field lands on the new default. `refuse` restores the 1.1.x
+    behaviour. Because it is defaulted, a `PUT` from a client written before
+    1.2.0 (which omits it) sets an organization on `refuse` back to
+    `revoke_session` — the stricter direction (F4-W1-06).
+    """
 
     refresh_token_lifetime_secs: int
     """``refresh_token_lifetime_secs``."""
@@ -6692,6 +6864,15 @@ class TenantSettingsOverride(ManagementModel):
     rather than sent as ``null`` (§27.4 rule 5).
     """
 
+    _OPEN_ENUM_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "refresh_reuse_response": frozenset({"revoke_session", "refuse"}),
+    }
+    """The open enums among this model's fields and the values this SDK knows:
+
+    an unknown value decodes, and :meth:`to_wire` refuses to send it
+    (CONTRACT §29.2, §32.2).
+    """
+
     access_token_lifetime_secs: int | None = None
     """``access_token_lifetime_secs``."""
 
@@ -6775,6 +6956,9 @@ class TenantSettingsOverride(ManagementModel):
 
     password_history_count: int | None = None
     """``password_history_count``."""
+
+    refresh_reuse_response: RefreshReuseResponse | None = None
+    """``refresh_reuse_response``."""
 
     refresh_token_lifetime_secs: int | None = None
     """``refresh_token_lifetime_secs``."""
@@ -7152,6 +7336,9 @@ class UpdateFederationConfigRequest(ManagementModel):
     here.
     """
 
+    native_login: NativeLoginTrustRequest | None = None
+    """``native_login``."""
+
     provider: str | None = None
     """``provider``."""
 
@@ -7335,6 +7522,13 @@ class UpdateOAuth2ClientRequest(ManagementModel):
 
     browser_sso: bool | None = None
     """X7.3 — see [`CreateOAuth2ClientRequest::browser_sso`]."""
+
+    default_idp: str | None = None
+    """G-B (#817) — see [`CreateOAuth2ClientRequest::default_idp`]. Omitted
+
+    leaves it; `null` clears it; an id is held to the create rule (`400`
+    unless it names a provider this tenant can sign in with).
+    """
 
     dpop_bound_access_tokens: bool | None = None
     """``dpop_bound_access_tokens``."""
@@ -7946,6 +8140,8 @@ for _model in (
     MfaPolicy,
     MigrateCustodyResponse,
     MtlsTrustAnchorResponse,
+    NativeLoginTrustRequest,
+    NativeLoginTrustResponse,
     NetworkPolicyResponse,
     NetworkReplyProfile,
     NetworkReplyProfileInput,
@@ -7954,6 +8150,7 @@ for _model in (
     NotificationRuleResponse,
     OAuth2ClientCreatedResponse,
     OAuth2ClientResponse,
+    OAuth2Policy,
     OidcAuthorizeRequest,
     OidcAuthorizeResponse,
     OidcCallbackRequest,
