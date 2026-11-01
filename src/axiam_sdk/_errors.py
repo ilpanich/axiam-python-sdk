@@ -363,6 +363,11 @@ def error_from_oauth2_response(
     a fabricated protocol error. ``description_optional`` is the §28.12.3 /
     §33.4 reading — see :func:`_oauth2_error_body`.
     """
+    if 300 <= status <= 399:
+        # §12.1 rule 3: no redirect is followed and a 3xx is a NetworkError, whatever
+        # its body says (C165-25) -- status first, then body. The generic mapping
+        # wraps a sanitised cause; the body is never read.
+        return error_from_http_status(status, fallback_message, response=response)
     oauth2_body = _oauth2_error_body(response, description_optional=description_optional)
     if oauth2_body is not None:
         error = OAuthProtocolError(oauth2_body["error"], oauth2_body["description"])

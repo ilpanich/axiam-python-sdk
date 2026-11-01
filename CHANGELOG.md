@@ -76,6 +76,10 @@ the package version is unchanged here.
   `oidc_exchange`, `oidc_refresh` and `login_client_credentials` raised `NetworkError` and
   dropped `Retry-After`. They now raise `OAuthProtocolError(rate_limit_exceeded)` with
   `retry_after_ms` (any status whose body has an `error` member is read that way, §12.3 rule 3).
+- **A `3xx` from an `/oauth2/*` POST is a `NetworkError` whatever its body (C165-25).** The
+  shared `/oauth2/*` error mapper read the body before the status, so a redirect answer
+  carrying `{"error": ...}` surfaced as `OAuthProtocolError`; it now checks the status first
+  (§12.1 rule 3). No redirect was ever followed.
 
 
 ## [1.1.3] - 2026-10-29

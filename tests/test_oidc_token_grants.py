@@ -567,3 +567,67 @@ def test_other_query_parameters_on_the_advertised_endpoint_are_preserved(
     sent = route.calls.last.request
     assert sent.url.params.get_list("tenant_id") == [TENANT_ID]
     assert sent.url.params["region"] == "eu-west-1"
+
+
+# ---------------------------------------------------------------------
+# §12.1 rule 3 — a 3xx is a NetworkError, whatever its body (C165-25)
+# ---------------------------------------------------------------------
+
+_SECOND_HOST = "http://second.example.test"
+
+
+def _redirect_route(respx_mock: respx.MockRouter) -> tuple[respx.Route, respx.Route]:
+    _mock_discovery(respx_mock)
+    first = respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(
+            307,
+            headers={"Location": f"{_SECOND_HOST}/oauth2/token"},
+            json={"error": "invalid_grant", "error_description": "from an intermediary"},
+        )
+    )
+    second = respx_mock.post(f"{_SECOND_HOST}/oauth2/token").mock(
+        return_value=httpx.Response(200, json=_token_response())
+    )
+    return first, second
+
+
+def _assert_redirect_is_network_error(exc: BaseException) -> None:
+    from axiam_sdk import NetworkError
+
+    assert type(exc) is NetworkError
+    assert not isinstance(exc, OAuthProtocolError)
+    text = f"{exc!r} {exc} {exc.__cause__!r}"
+    for secret in ("refresh-token-1", CLIENT_SECRET, "the-refresh-token"):
+        assert secret not in text
+
+
+def test_oidc_refresh_3xx_with_error_body_is_network_error(
+    respx_mock: respx.MockRouter,
+) -> None:
+    first, second = _redirect_route(respx_mock)
+    client = AxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        client.oidc_refresh(refresh_token="the-refresh-token", tenant_id=TENANT_ID)
+
+    _assert_redirect_is_network_error(excinfo.value)
+    assert first.call_count == 1
+    assert second.call_count == 0
+
+
+async def test_async_oidc_refresh_3xx_with_error_body_is_network_error(
+    respx_mock: respx.MockRouter,
+) -> None:
+    first, second = _redirect_route(respx_mock)
+    client = AsyncAxiamClient(
+        base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        await client.oidc_refresh(refresh_token="the-refresh-token", tenant_id=TENANT_ID)
+
+    _assert_redirect_is_network_error(excinfo.value)
+    assert first.call_count == 1
+    assert second.call_count == 0
