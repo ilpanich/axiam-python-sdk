@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Contract 1.65 (axiam 76d35d9, `openapi.json` 1.2.0). The release number is the maintainer's;
-the package version is unchanged here.
+Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, `openapi.json`
+1.2.0). The release number is the maintainer's; the package version is unchanged here.
 
 ### Added
 
+- **Contract 1.66 re-sync.** `CONTRACT.md`, `openapi.json` (spec digest
+  `sha256:09419a6e…`) and `management-registry.json` re-vendored byte for byte; `proto/` is
+  unchanged and the §27 layer regenerates identically (202 operations). **No API change**:
+  the optional `reauthenticate` start input (§12.1 rule 12c) is not ported.
+- A test confirming §12.1 rule 12b (#837): the `axiam_fed_bind` cookie an `sso_start`
+  response sets is presented on the following `sso_complete` of the same client and absent
+  from a second client's (`tests/test_oidc_sso.py`). No §4 change was needed.
 - **Native sign-in with a provider ID token (CONTRACT.md §37).**
   `login_with_provider_id_token(provider, id_token, nonce, *, scopes=None, resource=None,
   tenant_id=None, configuration=None) -> OidcTokenSet` on both `AxiamClient` and
