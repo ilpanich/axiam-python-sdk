@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Contract 1.66 (axiam a916544; §34.10), on top of contract 1.65 (axiam 76d35d9, `openapi.json`
+Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, `openapi.json`
 1.2.0). The release number is the maintainer's; the package version is unchanged here.
 
 ### Added
