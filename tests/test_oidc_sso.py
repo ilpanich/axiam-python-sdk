@@ -236,6 +236,56 @@ def test_sso_complete_network_error_on_5xx(respx_mock: respx.MockRouter) -> None
         client.sso_complete(state="st", code="c")
 
 
+def test_sso_complete_presents_the_federation_binding_cookie_of_its_own_start(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Contract 1.66, §12.1 rule 12b (#837): the binding cookie an ``sso_start``
+    response sets is presented on the following ``sso_complete`` of the SAME
+    client (its §4 jar) and absent from a second, separate client's."""
+    binding = "fEdBiNdInGvAlUe0123456789abcdefghijklmnopqr"
+    assert len(binding) == 43
+    respx_mock.post(f"{BASE_URL}/api/v1/auth/federation/oidc/start").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "authorize_url": "https://idp.example.test/authorize?x=1",
+                "state": "federation-state-1",
+                "expires_in_secs": 600,
+            },
+            # Plain-http mock form: the server's ``cookie_secure = false`` cookie.
+            headers=[
+                ("Set-Cookie", f"axiam_fed_bind={binding}; Path=/; HttpOnly; SameSite=Strict")
+            ],
+        )
+    )
+    callback = respx_mock.post(f"{BASE_URL}/api/v1/auth/federation/oidc/callback").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "user_id": "u",
+                "session_id": "s",
+                "expires_in": 900,
+                "redirect_uri": REDIRECT_URI,
+            },
+            headers=[_set_cookie("axiam_access", _access_token())],
+        )
+    )
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", org_slug="acme-org")
+
+    client.sso_start(federation_config_id=FEDERATION_CONFIG_ID, redirect_uri=REDIRECT_URI)
+    client.sso_complete(state="federation-state-1", code="idp-code-1")
+
+    # A second, separate client never ran the start: its jar is empty.
+    other = AxiamClient(base_url=BASE_URL, tenant_slug="acme", org_slug="acme-org")
+    other.sso_complete(state="federation-state-1", code="idp-code-1")
+
+    assert callback.call_count == 2
+    first = callback.calls[0].request.headers.get("cookie", "")
+    second = callback.calls[1].request.headers.get("cookie", "")
+    assert f"axiam_fed_bind={binding}" in [c.strip() for c in first.split(";")]
+    assert "axiam_fed_bind=" not in second
+
+
 @pytest.mark.asyncio
 async def test_async_sso_complete_happy_path(respx_mock: respx.MockRouter) -> None:
     access = _access_token()

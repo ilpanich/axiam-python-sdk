@@ -27,7 +27,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.2**) conforms to **contract 1.65**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.1.2**) conforms to **contract 1.66**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations), and — new in contract 1.65 —
@@ -36,7 +36,10 @@ local-verification set, and §1.1.1/§10.3's gRPC token operations), and — new
 argument is unset). **Server floor:** federation-config admin calls (`federation.create_config`,
 `get_config`, `list_configs`, `update_config`) of this 1.2-line SDK need an AXIAM server
 **1.2.0 or later**: `FederationConfigResponse.native_login` is required from 1.2.0, and a
-response from an older server fails to decode. §12 is
+response from an older server fails to decode. Contract 1.66 (§34.10) adds no operation:
+a federated sign-in is bound to the client that started it (§12.1 rule 12b), so send the
+start and the completion of one sign-in through the **same client instance** — its §4 cookie
+jar carries the `axiam_fed_bind` cookie, and a completion without it is a terminal `401`. §12 is
 implemented in full at its 1.38 shape: all **thirteen** operations, including the
 four public "Sign in with X" entry points, on both clients.
 
