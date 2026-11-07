@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-07
+
 Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, `openapi.json`
 1.2.0). The release number is the maintainer's; the package version is unchanged here.
 
@@ -44,6 +46,8 @@ Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, 
   a mocked `400 invalid_grant` on `oidc_refresh` is one wire call whose error every
   concurrent waiter receives, with the spent token never presented again.
 
+- Native sign-in with a provider ID token and idp_hint (contract 1.65 §37)
+
 ### Changed
 
 - Re-vendored `CONTRACT.md` (1.65), `openapi.json` (1.2.0) and `management-registry.json`
@@ -70,6 +74,18 @@ Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, 
   pushed in the PAR body; the `oidc_par` argument wins when both are set.
 - Re-vendored `CONTRACT.md` (1.65 as amended 2026-10-31, sha256 `95ee87ba...359529`).
 
+- re-vendor openapi.json and the management registry (axiam 1.2.3)
+
+- re-vendor CONTRACT.md 1.66 as amended at ilpanich/axiam 5f9d079
+
+- re-sync contract 1.66 and openapi.json; confirm the federated sign-in cookie binding (§12.1 rule 12b)
+
+- re-vendor openapi.json and the management registry (logout/reset-mfa 500, D-N44)
+
+- re-vendor openapi.json and the management registry (end_session 500, D-N42)
+
+- re-vendor contract 1.65, openapi 1.2.0 and the management registry
+
 ### Source compatibility
 
 - `FederationConfigResponse` gained the required member `native_login`; code that builds one
@@ -88,6 +104,9 @@ Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, 
   carrying `{"error": ...}` surfaced as `OAuthProtocolError`; it now checks the status first
   (§12.1 rule 3). No redirect was ever followed.
 
+- Contract 1.65 review sweep 2 (C165-25)
+
+- Contract 1.65 review findings (C165-01, -04, -08, -11)
 
 ## [1.1.3] - 2026-10-29
 
