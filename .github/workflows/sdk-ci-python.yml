@@ -114,7 +114,7 @@ jobs:
       # `python -m grpc_tools.protoc` (via scripts/gen_grpc.sh) for BOTH local
       # and CI, run against this repo's own vendored proto/axiam/v1.
       - name: Install grpcio-tools (matches the pinned grpcio runtime)
-        run: pip install 'grpcio-tools==1.78.*'
+        run: pip install 'grpcio-tools==1.78.0'
 
       - name: Regenerate gRPC stubs
         run: bash scripts/gen_grpc.sh
@@ -268,7 +268,7 @@ jobs:
       # tag is trusted — same drift-check as the PR gate, run again here as
       # a belt-and-suspenders confirm on the tagged commit.
       - name: Install grpcio-tools (matches the pinned grpcio runtime)
-        run: pip install 'grpcio-tools==1.78.*'
+        run: pip install 'grpcio-tools==1.78.0'
 
       - name: Regenerate gRPC stubs
         run: bash scripts/gen_grpc.sh

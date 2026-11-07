@@ -17,8 +17,8 @@
 # Only the generated `_pb2_grpc.py` service file needs this; the `_pb2.py`
 # message file is fine standalone.
 #
-# IMPORTANT: install `grpcio-tools==1.78.*` (matching the PY-01-pinned
-# `grpcio==1.78.*` runtime dependency in pyproject.toml) before running this
+# IMPORTANT: install exactly `grpcio-tools==1.78.0` (the oldest runtime the
+# `grpcio>=1.78` dependency in pyproject.toml allows) before running this
 # script. grpc_tools.protoc embeds its own version as
 # `GRPC_GENERATED_VERSION` in the generated `_pb2_grpc.py` and raises
 # RuntimeError at import time if the installed `grpcio` is older than that
