@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-08
+
+### Changed
+
+- Pin grpcio-tools to exactly 1.78.0 for the stub drift-check
+
 ## [1.2.5] - 2026-11-07
 
 Contract 1.66 (axiam 5f9d079; §34.10), on top of contract 1.65 (axiam 76d35d9, `openapi.json`

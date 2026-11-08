@@ -107,7 +107,7 @@ from axiam_sdk._webauthn import (
     webauthn_request_json,
 )
 
-__version__ = "1.2.5"
+__version__ = "1.3.0"
 
 from axiam_sdk._decision_memo import DecisionMemo
 from axiam_sdk._telemetry import (
