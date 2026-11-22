@@ -63,6 +63,24 @@ failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ci
 transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
 a `None` write-only secret is omitted, never sent as `null` (P12.3).
 
+### Contract 1.68 — the 1.4.0 release (security audit 2026-11-14, wave 3)
+
+Ported from `CONTRACT.md` §8 ("Signed authorization responses"), §10.1 rules 10 – 12, §11.2 rule 11
+and §12.8. Four of these are **behaviour changes** for integrators; the migration for each is in
+[`CHANGELOG.md`](./CHANGELOG.md) under `[1.4.0]`.
+
+- **`require_role` reads the `roles` claim only (N15, D-1).** It no longer maps the OAuth `scope`
+  claim onto roles and **fails closed (403)** when the token carries no `roles` claim. Request the
+  `roles` scope for it to work. `require_scope` checks granted scopes. `AxiamUser` gains `scopes`
+  and `roles_claim_present`.
+- **The access-token guards refuse tokens that are not access tokens (N14).** A `typ` other than
+  `at+jwt`, a `purpose` claim and a header with no `kid` are all refused on
+  `verify_access_token` / `verify_with_proofs` / `verify_sender_constrained`.
+- **The login glue binds the callback to the browser that started it (C7)** with a
+  `__Host-axiam_oidc_bind` cookie, and **only follows a same-origin relative `return_to` (C6)**.
+- **A new AMQP authorization requester (N2)**, `axiam_sdk.amqp.AuthzRequester`, which verifies the
+  server's signed response.
+
 ### Contract 1.62 — the 1.1.0 release (§34.6)
 
 Contract 1.62 adds one management namespace, `network`, and changes how a device client
@@ -463,6 +481,44 @@ Against a minimal-profile server use REST or gRPC; `GET /health` reports
 `profile: minimal` and lists `amqp_authz` and `amqp_audit_ingestion` under
 `unavailable`.
 
+### AMQP authorization requester (§8, contract 1.68)
+
+`AuthzRequester` is the publishing side of AMQP authorization: it sends a signed `AuthzRequest`
+on `axiam.authz.request` (default exchange) with a **private** `reply_to` queue — an exclusive,
+auto-delete, broker-named `amq.gen-…` queue only this requester consumes — and accepts only the
+server's signed answer to *that* request.
+
+```python
+from axiam_sdk.amqp import AioPikaAuthzTransport, AuthzRequester
+
+# `channel` is an aio-pika channel you opened over amqps:// (§8b).
+async with await AuthzRequester.open(
+    AioPikaAuthzTransport(channel),
+    tenant_id=tenant_id,  # the requester's OWN tenant
+    signing_key=tenant_subkey,  # that tenant's AMQP subkey for key_version 2 (§8.1)
+) as requester:
+    decision = await requester.check(user_id, "documents:read", document_id, "confidential")
+    if decision.allowed:
+        ...
+```
+
+A response completes a `check` only when, over the **received bytes** with the trailing
+`hmac_signature` member cut out (never a re-serialization — `json.dumps` would escape the `é` a
+`reason` can carry and fail to verify the genuine answer), the HMAC-SHA256 under your tenant's
+subkey verifies in constant time, `tenant_id` is yours, and `correlation_id` **and** `nonce` match a
+request still outstanding. Anything else — a tampered decision, another tenant's or another
+request's response, a duplicate or case-variant key, an `allowed` that is not a JSON boolean — is
+nacked without requeue, logged as a security event (never a signature value), is **never an
+allow**, and `check` keeps waiting for the genuine answer until its timeout (`TimeoutError`).
+
+A server older than contract 1.68 answers unsigned. They are refused unless you pass
+`allow_unsigned_responses=True` for one rolling upgrade (logged as a warning; the opt-out never
+admits a response that *carries* a signature and fails it). The reply queue name must not be empty
+or start with `axiam.`. Where more than one service of a tenant publishes authorization requests,
+the exclusive `reply_to` is what keeps them apart; deny SDK principals read access on
+`axiam.authz.request` at the broker (§8, trust boundary). Against a server in the minimal profile
+(AMQP off) use REST or gRPC.
+
 ### Reactors — AMQP extension actors (§22)
 
 A **reactor** is an external process that subscribes to named hook events on the AMQP bus and
@@ -677,6 +733,11 @@ the single entry point `JwksVerifier.verify_access_token(...)`:
 | 6 | `aud` | Checked **only** when `expected_audience` is configured; a user-facing resource server should pass `RECOMMENDED_RESOURCE_SERVER_AUDIENCE` (`"axiam:user"`) |
 | 7 | clock skew | `DEFAULT_CLOCK_SKEW_SECONDS` (60 s), bounded by `MAX_CLOCK_SKEW_SECONDS` — never settable to an unbounded value |
 | 9 | `cnf` (sender-constrained tokens, contract 1.51) | A token carrying `cnf` is refused: this entry point has no transport evidence to accept a certificate- or DPoP-bound token with. `JwksVerifier.verify_with_proofs(token, expected_tenant_id=, certificate_thumbprint=, dpop_thumbprint=)` is the entry point that CAN accept one, given the evidence; `verify_sender_constrained(...)` is its certificate-only shape. An unbound token is unaffected either way — rule 9 constrains tokens that claim a constraint, not every token |
+| 10 | `typ` (contract 1.68) | When the header carries `typ` it must be `at+jwt` (ASCII case-insensitive, with or without `application/`); `JWT`, `logout+jwt`, `secevent+jwt` and the `axiam-…+jwt` purpose types are refused. A header with no `typ` passes this rule. **Upgrade note:** a pre-1.67 server's access token carries `typ: JWT` and is refused until the holder refreshes |
+| 11 | `purpose` (contract 1.68) | A token whose claims contain a `purpose` member — an MFA challenge, an MFA setup token, the WebAuthn state token — is refused whatever its value and whatever `typ` says |
+| 12 | `kid` (contract 1.68) | Required: the key is selected by `kid`, never by "the only key in the set". A token with no `kid` is refused (PyJWT's key client already behaves this way; `tests/test_access_token_kind.py` pins it) |
+
+Rules 10 – 12 apply on the **access-token path only** — the ID token, the back-channel logout token and the SSF event token are verified by their own routines.
 
 ```python
 from axiam_sdk._jwks import (
@@ -815,6 +876,22 @@ decision caching: every request is a fresh `check_access` round-trip.
 `require_role` is a local, no-round-trip check against the verified
 identity's roles — cheaper but coarser, and NOT a substitute for
 `require_access`'s authoritative, resource-level check.
+
+**`require_role` reads the token's `roles` claim and nothing else (contract 1.68;
+N15).** The OAuth `scope` claim names what the *client* asked for, not what the
+user holds, so it is never mapped onto roles; a token with **no `roles` claim**
+(or one that is not an array of strings) is a **403** on every `require_role`.
+AXIAM emits `roles` — the names of the user's global roles in the tenant — only
+when the client requested, and is allowed, the **`roles` scope**, so *your
+application must request that scope* (add `roles` to the `scope` you pass to
+`oidc_begin`, and have an administrator add it to the client's registered
+scopes) or every `require_role` is a 403. The claim is a snapshot taken when the
+token is minted (stale for at most one access-token lifetime); `require_access`
+evaluates live and stays the authoritative check. To check granted OAuth scopes
+use **`require_scope`** (FastAPI `require_scope(verifier, tenant, *scopes)`,
+Django `@require_scope(*scopes)`); the identity exposes `user.roles`,
+`user.scopes` and `user.roles_claim_present` (an explicit `roles: []` is "no
+roles"; no claim is "ask for the scope").
 
 **FastAPI** (`axiam-sdk[fastapi]`) — `require_access` takes the async
 `AsyncAxiamClient`:
@@ -1052,6 +1129,22 @@ builds a two-route `APIRouter` (login redirect + callback); `axiam_sdk.django.oi
 builds a `(login_view, callback_view)` pair sharing one state store. Both
 delegate entirely to the operations above and to the existing session/cookie
 machinery — see [`examples/oidc_login.py`](./examples/oidc_login.py).
+
+**Browser binding and `return_to` (contract 1.68; C7, C6).** The login route sets a random
+32-byte `__Host-axiam_oidc_bind` cookie (`HttpOnly; Secure; SameSite=Lax; Path=/`, 10 minutes) and
+stores its SHA-256 on the state entry as `binding_digest`; the callback consumes the entry first and
+then completes only for a request presenting a matching cookie — otherwise the same uniform `401`
+as an unknown state, with **no token request** and **no success callback**. Every callback response
+clears the cookie. On an `http://localhost` / `127.0.0.1` / `[::1]` `redirect_uri` the name is
+`axiam_oidc_bind` without `Secure` (a browser stores no `Secure` cookie over plain HTTP); nowhere
+else. Two sign-ins started at once in one browser: the later one wins, the earlier restarts. A
+custom `OidcStateStore` **must persist and return `OidcStateEntry.binding_digest`** unchanged (an
+entry without it is refused). Pass the request to your session code with `on_success_request`
+(`(tokens, entry, request)`; `on_success` keeps its two-argument form). Only a **same-origin
+relative `return_to`** (one leading `/`; no `//` or `/\` prefix; no backslash or control character)
+is stored or followed — anything else falls back to `success_redirect` or the JSON summary; widen it
+with an `allow_return_to=` predicate (consulted only for values the default rule refuses).
+`MemoryOidcStateStore` is bounded (`max_entries`, 10 000, oldest evicted first).
 
 ## OPAQUE (§23)
 

@@ -35,6 +35,15 @@ from tests._oidc_testkit import (  # noqa: E402
 )
 
 REDIRECT_URI = "https://app.test/oidc/callback"
+
+
+def _binding_cookie(login_response: object) -> str:
+    """The ``Cookie`` header a browser sends back after the login redirect: the §12.8
+    browser-binding cookie the login view set."""
+    cookies = login_response.cookies  # type: ignore[attr-defined]
+    return "; ".join(f"{name}={morsel.value}" for name, morsel in cookies.items())
+
+
 TENANT_ID = "77777777-7777-7777-7777-777777777777"
 
 
@@ -129,7 +138,9 @@ def _full_login_then_callback(
     )
 
     callback_request = RequestFactory().get(
-        "/oidc/callback", {"state": state, "code": "idp-code-1"}
+        "/oidc/callback",
+        {"state": state, "code": "idp-code-1"},
+        HTTP_COOKIE=_binding_cookie(login_response),
     )
     callback_response = callback_view(callback_request)
     return login_response, callback_response
@@ -226,7 +237,13 @@ def test_callback_view_oauth_protocol_error_is_401(respx_mock: respx.MockRouter)
     login_response = login_view(RequestFactory().get("/oidc/login"))
     state = parse_qs(urlsplit(login_response.headers["Location"]).query)["state"][0]
 
-    response = callback_view(RequestFactory().get("/oidc/callback", {"state": state, "code": "c"}))
+    response = callback_view(
+        RequestFactory().get(
+            "/oidc/callback",
+            {"state": state, "code": "c"},
+            HTTP_COOKIE=_binding_cookie(login_response),
+        )
+    )
 
     assert response.status_code == 401
     import json
@@ -252,5 +269,11 @@ def test_login_and_callback_share_the_same_default_store(respx_mock: respx.MockR
     # callback_view share one store instance; an unshared pair would 401
     # with "unknown ... login state" instead).
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=httpx.ConnectError("boom"))
-    response = callback_view(RequestFactory().get("/oidc/callback", {"state": state, "code": "c"}))
+    response = callback_view(
+        RequestFactory().get(
+            "/oidc/callback",
+            {"state": state, "code": "c"},
+            HTTP_COOKIE=_binding_cookie(login_response),
+        )
+    )
     assert response.status_code == 503

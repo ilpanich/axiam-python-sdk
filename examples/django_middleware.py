@@ -23,8 +23,10 @@ calling the authz endpoint -> 503 (fail closed, CONTRACT.md §11.2.5); a
 missing request.axiam_user (middleware not installed) -> 401.
 
 require_role(*roles) is a local, no-round-trip check against the already-
-verified identity's roles — cheaper but coarser than require_access, and
-NOT a substitute for it (§11.2.9).
+verified token's `roles` claim — cheaper but coarser than require_access, and
+NOT a substitute for it (§11.2.9). It reads `roles` only and answers 403 when
+the token has none (contract 1.68): request the `roles` scope.
+require_scope(*scopes) checks the granted `scope` instead.
 
 This example is illustrative/importable — it does not require a live AXIAM
 server to byte-compile or import (SC#4). Serving real traffic requires the

@@ -113,6 +113,18 @@ MAX_CLOCK_SKEW_SECONDS = 60
 RECOMMENDED_RESOURCE_SERVER_AUDIENCE = "axiam:user"
 
 
+def _is_access_token_typ(typ: object) -> bool:
+    """CONTRACT.md §10.1 rule 10: ``typ`` is ``at+jwt`` (RFC 9068 §2.1),
+    compared ASCII case-insensitively, with or without the ``application/``
+    prefix (RFC 7515 §4.1.9) — exactly as the server compares it."""
+    if not isinstance(typ, str) or not typ.isascii():
+        return False
+    lowered = typ.lower()
+    if lowered.startswith("application/"):
+        lowered = lowered[len("application/") :]
+    return lowered == "at+jwt"
+
+
 class JwksVerifier:
     """Fetches, caches, and locally verifies AXIAM access tokens against the
     organization-wide EdDSA JWKS."""
@@ -393,6 +405,16 @@ class JwksVerifier:
         if header.get("alg") != "EdDSA":
             raise AuthError(f"unexpected alg {header.get('alg')!r}: only EdDSA is accepted")
 
+        # Rule 10 (contract 1.68, N14): a header that names a ``typ`` must name
+        # an access token. Absent ``typ`` is not rejected by this rule.
+        if "typ" in header and not _is_access_token_typ(header["typ"]):
+            raise AuthError("token typ is not an access token (at+jwt)")
+
+        # Rule 12 (contract 1.68): the key is selected by ``kid`` and by nothing
+        # else. ``PyJWKClient`` already refuses a header with no ``kid`` rather
+        # than falling back to "the only key in the set", so no explicit check
+        # is added here (SA-21: not reproduced); ``test_access_token_kind``
+        # pins that behaviour.
         try:
             signing_key = self._get_signing_key(token)
         except PyJWTError as exc:
@@ -438,6 +460,13 @@ class JwksVerifier:
             # object). Fail closed with the standard rejection rather than
             # letting it surface as an unhandled 500 in a caller's guard.
             raise AuthError("token claims are malformed") from exc
+
+        # Rule 11 (contract 1.68, N14): a ``purpose`` member marks an MFA
+        # challenge, MFA setup or WebAuthn state token, which AXIAM signs with
+        # this same key. Read from the verified payload itself, whatever its
+        # value (``null`` included) and whatever ``typ`` says.
+        if "purpose" in claims:
+            raise AuthError("token carries a purpose claim and is not an access token")
 
         # Rules 2/3, JSON-type half. PyJWT coerces `exp`/`nbf` with `int()`,
         # so a string "9999999999" passes its own check; §10.1 requires the

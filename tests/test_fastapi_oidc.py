@@ -29,6 +29,13 @@ from tests._oidc_testkit import (
 REDIRECT_URI = "https://app.test/oidc/callback"
 
 
+def _binding_cookie(login_response: httpx.Response) -> dict[str, str]:
+    """The ``Cookie`` header a browser sends back after the login redirect: the §12.8
+    browser-binding cookie the login route set."""
+    pairs = [header.split(";", 1)[0] for header in login_response.headers.get_list("set-cookie")]
+    return {"cookie": "; ".join(pairs)}
+
+
 def _mock_discovery(respx_mock: respx.MockRouter) -> None:
     respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
         return_value=httpx.Response(200, json=discovery_document())
@@ -126,7 +133,11 @@ def _full_login_then_callback(
         )
     )
 
-    callback_response = app.get("/callback", params={"state": state, "code": "idp-code-1"})
+    callback_response = app.get(
+        "/callback",
+        params={"state": state, "code": "idp-code-1"},
+        headers=_binding_cookie(login_response),
+    )
     return app, callback_response
 
 
@@ -229,7 +240,9 @@ def test_callback_token_exchange_network_error_is_503(respx_mock: respx.MockRout
     login_response = app.get("/login")
     state = parse_qs(urlsplit(login_response.headers["location"]).query)["state"][0]
 
-    response = app.get("/callback", params={"state": state, "code": "c"})
+    response = app.get(
+        "/callback", params={"state": state, "code": "c"}, headers=_binding_cookie(login_response)
+    )
 
     assert response.status_code == 503
     assert response.json()["detail"]["error"] == "oidc_unavailable"
@@ -249,7 +262,9 @@ def test_callback_oauth_protocol_error_is_401(respx_mock: respx.MockRouter) -> N
     login_response = app.get("/login")
     state = parse_qs(urlsplit(login_response.headers["location"]).query)["state"][0]
 
-    response = app.get("/callback", params={"state": state, "code": "c"})
+    response = app.get(
+        "/callback", params={"state": state, "code": "c"}, headers=_binding_cookie(login_response)
+    )
 
     assert response.status_code == 401
     assert response.json()["detail"]["message"] == "invalid_grant: code replayed"

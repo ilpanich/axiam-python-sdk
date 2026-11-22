@@ -60,7 +60,7 @@ def _sign_eddsa_token(private_key: Ed25519PrivateKey, kid: str, claims: dict[str
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid, "typ": "at+jwt"})
 
 
 class _FakeJwksEndpoint:
@@ -116,7 +116,13 @@ def test_valid_same_tenant_token_yields_200_and_identity(
     token = _sign_eddsa_token(
         private_key,
         "test-kid-1",
-        {"sub": "user-1", "tenant_id": "acme", "scope": "read write", "exp": time.time() + 3600},
+        {
+            "sub": "user-1",
+            "tenant_id": "acme",
+            "scope": "read write",
+            "roles": ["editor"],
+            "exp": time.time() + 3600,
+        },
     )
 
     response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
@@ -125,7 +131,8 @@ def test_valid_same_tenant_token_yields_200_and_identity(
     body = response.json()
     assert body["user_id"] == "user-1"
     assert body["tenant_id"] == "acme"
-    assert body["roles"] == ["read", "write"]
+    # N15 (contract 1.68): roles come from the ``roles`` claim only, never from ``scope``.
+    assert body["roles"] == ["editor"]
 
 
 def test_missing_token_yields_401(verifier_and_endpoint) -> None:

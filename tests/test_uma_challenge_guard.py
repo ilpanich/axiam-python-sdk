@@ -79,7 +79,9 @@ def _token(private_key: Ed25519PrivateKey) -> str:
         encryption_algorithm=serialization.NoEncryption(),
     )
     claims = {"sub": "user-1", "tenant_id": "acme", "exp": time.time() + 3600}
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": "test-kid-1"})
+    return jwt.encode(
+        claims, pem, algorithm="EdDSA", headers={"kid": "test-kid-1", "typ": "at+jwt"}
+    )
 
 
 def _app(

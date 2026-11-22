@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-22
+
+Contract 1.68 (security audit 2026-11-14, wave 3). `CONTRACT.md`, `openapi.json` and
+`management-registry.json` re-vendored byte for byte from `ilpanich/axiam`; `proto/` is unchanged
+and the §27 layer regenerates (`management/models.py`, 202 operations). **This is a minor release
+that changes behaviour in four places (C7, C6, N15, N14); read the migration notes.**
+
+### Security
+
+- **C7 — login CSRF in the "Login with AXIAM" glue.** `oidc_login_views` (Django) and
+  `oidc_login_router` (FastAPI) kept the in-flight login keyed by `state` alone, so a callback
+  loaded in a browser *other* than the one that started the login completed it and called
+  `on_success` with the other account's tokens. The login now sets a random `__Host-axiam_oidc_bind`
+  cookie (`HttpOnly; Secure; SameSite=Lax; Path=/`, 600 s; `axiam_oidc_bind` without `Secure` on an
+  `http://localhost` / `127.0.0.1` / `[::1]` `redirect_uri`, nowhere else) and stores its SHA-256 on
+  the state entry (`OidcStateEntry.binding_digest`). The callback consumes the entry first, then
+  compares the cookie in constant time; a missing or different cookie, or an entry with no digest,
+  is the uniform `401` — no token request, no success callback. Every callback response clears the
+  cookie. (CONTRACT.md §12.8 rule 1.)
+- **C6 — open redirect after login.** The glue followed `return_to` unvalidated, so
+  `/login?return_to=https://evil.example` ended on an attacker's origin after a genuine sign-in.
+  Only a same-origin relative path (one leading `/`; no `//` or `/\` prefix; no backslash or
+  control character) is stored and, again, followed; anything else is dropped and the callback
+  falls back to `success_redirect` or the JSON summary. (§12.8 rule 3.)
+- **N14 — purpose tokens as access tokens.** `JwksVerifier.verify_access_token`,
+  `verify_with_proofs` and `verify_sender_constrained` (and so every FastAPI and Django guard) now
+  refuse a header `typ` other than `at+jwt` (rule 10), any token whose claims contain `purpose`
+  (rule 11: MFA challenge, MFA setup, WebAuthn state — signed with the access-token key and carrying
+  no `aud`), and, as before, a header with no `kid` (rule 12: PyJWT's key client never fell back to
+  "the only key", so this is pinned by tests, not changed). A header with no `typ` still passes.
+  The ID-token, logout-token and SSF paths are untouched. (§10.1 rules 10 – 12.)
+- **N15 — `require_role` authorized on OAuth scopes.** The FastAPI dependency and the Django
+  middleware built the identity's `roles` from the token's `scope` claim, so any user signed in
+  through a client registered for a scope named like a role passed that role's guard, and a real
+  role holder whose token lacked the scope was refused. `roles` is now the token's `roles` claim
+  and nothing else, and `require_role` fails closed (403) when it is absent. (§11.2 rule 11.)
+- The cookie double-submit comparison (`fastapi` `_assert_csrf_valid`, Django `_is_csrf_valid`) is
+  now over encoded bytes: `hmac.compare_digest` on two `str` raised `TypeError` for a non-ASCII
+  header or cookie, turning a 403 into a 500.
+- `MemoryOidcStateStore` is bounded (`max_entries`, default 10 000, oldest evicted first): the login
+  route is unauthenticated and every call saves an entry.
+
+### Added
+
+- **`axiam_sdk.amqp.AuthzRequester` — an AMQP authorization requester (N2, D-9; §8 "Signed
+  authorization responses").** Publishes a signed `AuthzRequest` (fresh unpredictable
+  `correlation_id` and `nonce`) on `axiam.authz.request` with a private exclusive auto-delete
+  broker-named `reply_to` queue, and completes a `check(...)` only with the server's signed answer
+  to *that* request: HMAC-SHA256 under the tenant subkey over the **received** bytes with the
+  trailing signature member cut out (never a re-serialization), the decision decoded from those same
+  bytes, `tenant_id` the requester's own, `correlation_id` and `nonce` matching an outstanding
+  request. Anything else is nacked without requeue, logged, never an allow. Unsigned responses are
+  refused unless `allow_unsigned_responses=True`. Also `AioPikaAuthzTransport`, `AuthzDecision`,
+  `AuthzTransport`, `build_authz_request`. Tests pin all four §8 vectors.
+- `require_scope` — `axiam_sdk.fastapi.require_scope(verifier, tenant, *scopes)` and
+  `axiam_sdk.django.decorators.require_scope(*scopes)`: a local check of the token's granted `scope`.
+- `AxiamUser.scopes` (granted scopes) and `AxiamUser.roles_claim_present` (FastAPI and Django).
+- `on_success_request` and `allow_return_to` on `oidc_login_views` / `oidc_login_router`:
+  `on_success_request(tokens, entry, request)` receives the request that completed the sign-in
+  (`on_success` keeps its two-argument signature); `allow_return_to(value) -> bool` may widen the
+  `return_to` rule (consulted only for values the default rule refuses; a predicate that raises
+  accepts nothing).
+- `OidcStateEntry.binding_digest` (optional) and `MemoryOidcStateStore(max_entries=...)`.
+
+### Migration notes
+
+- **`require_role` (N15).** Add the **`roles` scope** to what you request (`oidc_begin(scope="openid
+  roles")`, and have an administrator add `roles` to the OAuth2 client's registered scopes); without
+  it every `require_role` is a 403. If you used `require_role("x")` as a stand-in for "the client was
+  granted scope x", switch to `require_scope("x")`. Code reading `user.roles` now sees role names,
+  not scopes; read `user.scopes` for the latter. `roles` is a snapshot taken when the token is
+  minted (stale for at most one access-token lifetime); `require_access` remains the live check.
+- **Login glue (C7).** Nothing to change if you pass no store or use `MemoryOidcStateStore`. **A
+  custom `OidcStateStore` must persist `OidcStateEntry.binding_digest` and return it unchanged** (it
+  is an optional dataclass field; a store that rebuilds entries from a fixed column list refuses
+  every sign-in after the upgrade). Sign-ins in flight across the deploy fail once and restart. The
+  callback must be reached by the same browser that hit the login route, over the scheme the cookie
+  needs: `https:` for `__Host-axiam_oidc_bind`; a plain-HTTP non-loopback `redirect_uri` never works.
+  Create your session in `on_success_request` (it receives the request) instead of reaching for
+  ambient context.
+- **`return_to` (C6).** A `return_to` that is not a same-origin relative path is dropped. If your
+  application redirects to another of your origins after login, pass `allow_return_to=` an
+  allowlist predicate.
+- **Access-token guards (N14).** A token whose header says `typ: JWT` — an access token minted by a
+  server older than 1.67 — is refused until its holder refreshes (at most one access-token lifetime,
+  15 minutes by default). Test fixtures that mint access tokens should set `typ: at+jwt` (or no
+  `typ`). A token carrying a `purpose` claim is never an access token.
+- **AMQP.** Nothing changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
+  `axiam.authz.response`, move to `AuthzRequester`; the shared queue is where another tenant's
+  answers, and any principal's forgeries, arrive.
+
 ## [1.3.1] - 2026-11-11
 
 ### Changed

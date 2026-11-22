@@ -78,7 +78,7 @@ def _sign_eddsa_token(private_key: Ed25519PrivateKey, kid: str, claims: dict[str
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid, "typ": "at+jwt"})
 
 
 class _FakeJwksEndpoint:

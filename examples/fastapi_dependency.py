@@ -19,8 +19,10 @@ the doc_id path parameter). Denied -> 403; an unresolvable resource id ->
 closed, CONTRACT.md §11.2.5).
 
 require_role(verifier, configured_tenant, *roles) is a local, no-round-trip
-check against the already-verified identity's roles — cheaper but coarser
-than require_access, and NOT a substitute for it (§11.2.9).
+check against the already-verified token's `roles` claim — cheaper but
+coarser than require_access, and NOT a substitute for it (§11.2.9). It reads
+`roles` only and answers 403 when the token has none (contract 1.68): request
+the `roles` scope. require_scope(...) checks the granted `scope` instead.
 
 This example is illustrative/importable — it does not require a live AXIAM
 server to byte-compile or to construct the FastAPI app object (SC#4).

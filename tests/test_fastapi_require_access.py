@@ -76,7 +76,7 @@ def _sign_eddsa_token(private_key: Ed25519PrivateKey, kid: str, claims: dict[str
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid, "typ": "at+jwt"})
 
 
 class _FakeJwksEndpoint:
@@ -487,7 +487,7 @@ def test_require_role_allows_matching_role(
     private_key, _jwk = eddsa_keypair
     app = _make_role_app(verifier, "admin", "auditor")
     test_client = TestClient(app)
-    token = _token(private_key, scope="auditor")
+    token = _token(private_key, scope="reader", roles=["auditor"])
 
     response = test_client.get("/admin", headers={"Authorization": f"Bearer {token}"})
 
@@ -500,7 +500,7 @@ def test_require_role_denies_missing_role(
     private_key, _jwk = eddsa_keypair
     app = _make_role_app(verifier, "admin")
     test_client = TestClient(app)
-    token = _token(private_key, scope="reader")
+    token = _token(private_key, scope="reader", roles=["reader"])
 
     response = test_client.get("/admin", headers={"Authorization": f"Bearer {token}"})
 
