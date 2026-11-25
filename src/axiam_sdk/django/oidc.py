@@ -30,6 +30,14 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonRes
 from axiam_sdk._client import AxiamClient
 from axiam_sdk._errors import AuthError, NetworkError
 from axiam_sdk._models import OidcTokenSet
+from axiam_sdk._oidc_binding import (
+    BINDING_COOKIE_MAX_AGE_SECONDS,
+    BindingCookieSpec,
+    binding_cookie_spec,
+    binding_matches,
+    new_binding,
+    resolve_return_to,
+)
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 
 #: §12 login-glue HTTP status mapping (port-brief-addendum item 19,
@@ -37,6 +45,26 @@ from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStat
 _INVALID_REQUEST_STATUS = 400
 _AUTH_FAILED_STATUS = 401
 _UNAVAILABLE_STATUS = 503
+
+#: The uniform refusal for an unknown, expired, already-used or unbound ``state``.
+_UNKNOWN_STATE_MESSAGE = "unknown, expired, or already-used login state"
+
+
+def _set_binding_cookie(
+    response: HttpResponse, spec: BindingCookieSpec, value: str, max_age: int
+) -> None:
+    """Set (or, with an empty ``value`` and ``max_age=0``, clear) the binding
+    cookie: ``HttpOnly``, ``SameSite=Lax``, ``Path=/``, no ``Domain``, and
+    ``Secure`` unless the plain-HTTP loopback fallback name is in use."""
+    response.set_cookie(
+        spec.name,
+        value,
+        max_age=max_age,
+        path="/",
+        secure=spec.secure,
+        httponly=True,
+        samesite="Lax",
+    )
 
 
 def oidc_login_views(
@@ -48,6 +76,8 @@ def oidc_login_views(
     tenant_id: str | None = None,
     success_redirect: str | None = None,
     on_success: Callable[[OidcTokenSet, OidcStateEntry], None] | None = None,
+    on_success_request: Callable[[OidcTokenSet, OidcStateEntry, HttpRequest], None] | None = None,
+    allow_return_to: Callable[[str], bool] | None = None,
 ) -> tuple[Callable[[HttpRequest], HttpResponse], Callable[[HttpRequest], HttpResponse]]:
     """Build a ``(login_view, callback_view)`` pair implementing "Login with
     AXIAM" (CONTRACT.md §12) for a Django URLconf.
@@ -82,18 +112,41 @@ def oidc_login_views(
             a prior ``login()``) when omitted.
         success_redirect: Where to send the browser after a successful
             login. Falls back to the ``return_to`` query parameter captured
-            at login time, then to a JSON summary.
+            at login time **when it is a same-origin relative path** (see
+            ``allow_return_to``), then to a JSON summary.
         on_success: Called with the validated token set and the consumed
             state entry once the exchange succeeds — the hook where an
             application establishes its OWN session (sign a cookie, write a
             session row, ...). The SDK deliberately does not do this: what a
             session means is the application's decision.
+        on_success_request: As ``on_success``, with the Django request that
+            completed the sign-in as a third argument, so the application
+            creates its session on that request without reaching for ambient
+            context (CONTRACT.md §12.8 rule 2; ``on_success`` keeps its
+            two-argument signature). When both are given, ``on_success`` runs
+            first. Either runs only after the browser binding and the §12.4
+            checks have both succeeded.
+        allow_return_to: Optional predicate that may **widen** the
+            ``return_to`` rule (CONTRACT.md §12.8 rule 3) — e.g. an allowlist
+            of the application's other origins. Consulted, when the entry is
+            stored and again before redirecting, only for a value the default
+            rule (a single leading ``/``; no ``//`` or ``/\\`` prefix; no
+            backslash or control character) refuses; a predicate that raises
+            accepts nothing. There is no default predicate.
+
+    **Browser binding (CONTRACT.md §12.8 rule 1, contract 1.68).** The login
+    view sets a ``__Host-axiam_oidc_bind`` cookie (``HttpOnly; Secure;
+    SameSite=Lax; Path=/``; ``axiam_oidc_bind`` without ``Secure`` on an
+    ``http://localhost`` ``redirect_uri``) and the callback completes only for
+    the browser that presents it; every callback response clears it. The
+    ``OidcStateStore`` you supply MUST persist ``OidcStateEntry.binding_digest``.
 
     Returns:
         A ``(login_view, callback_view)`` tuple of plain Django view
         functions, ready to wire into ``urlpatterns``.
     """
     state_store: OidcStateStore = store if store is not None else MemoryOidcStateStore()
+    cookie_spec = binding_cookie_spec(redirect_uri)
 
     def login_view(request: HttpRequest) -> HttpResponse:
         """Step 1 — build the authorization request, park its state, and
@@ -115,26 +168,41 @@ def oidc_login_views(
                 status=_UNAVAILABLE_STATUS,
             )
 
+        # A new binding for every login; a cookie this request presents is never reused.
+        binding_value, digest = new_binding()
         state_store.save(
             OidcStateEntry(
                 state=authorization_request.state,
                 nonce=authorization_request.nonce,
                 code_verifier=authorization_request.code_verifier,
                 redirect_uri=redirect_uri,
-                return_to=return_to,
+                return_to=resolve_return_to(return_to, allow_return_to),
+                binding_digest=digest,
             )
         )
-        return HttpResponseRedirect(authorization_request.url)
+        response = HttpResponseRedirect(authorization_request.url)
+        _set_binding_cookie(response, cookie_spec, binding_value, BINDING_COOKIE_MAX_AGE_SECONDS)
+        return response
 
     def callback_view(request: HttpRequest) -> HttpResponse:
-        """Step 2 — validate the callback, consume the stored state,
-        exchange the code, and respond (CONTRACT.md §12.1 ``oidc_exchange``).
+        """Step 2 — validate the callback, consume the stored state, check
+        the browser binding, exchange the code, and respond (CONTRACT.md
+        §12.1 ``oidc_exchange``, §12.8).
 
         Failure mapping (port-brief-addendum item 19): IdP returned
         ``error=...`` -> 401; ``state``/``code`` missing -> 400; ``state``
-        unknown/expired/already-used -> 401; any §12.4 ID-token failure or
-        ``OAuthProtocolError`` -> 401; a transport failure -> 503.
+        unknown/expired/already-used, or no matching binding cookie -> the
+        same uniform 401; any §12.4 ID-token failure or ``OAuthProtocolError``
+        -> 401; a transport failure -> 503. Every response clears the binding
+        cookie.
         """
+        response = _complete(request)
+        _set_binding_cookie(response, cookie_spec, "", 0)
+        return response
+
+    def _complete(request: HttpRequest) -> HttpResponse:
+        """The callback proper; :func:`callback_view` clears the binding
+        cookie on whatever this returns."""
         error = request.GET.get("error")
         if error:
             error_description = request.GET.get("error_description")
@@ -156,12 +224,19 @@ def oidc_login_views(
             )
 
         # Single-use consume (§12.3 rule 1): a replayed callback finds nothing.
+        # ALWAYS before the binding comparison (§12.8 rule 1 (c)): the state is
+        # spent whatever happens next, so a refused callback cannot be retried.
         entry = state_store.consume(state)
-        if entry is None:
+        if entry is None or not binding_matches(
+            entry.binding_digest, request.COOKIES.get(cookie_spec.name)
+        ):
+            # One answer for "unknown state" and "wrong browser", so the
+            # refusal does not say which check failed. No token request, no
+            # success callback.
             return JsonResponse(
                 {
                     "error": "authentication_failed",
-                    "message": "unknown, expired, or already-used login state",
+                    "message": _UNKNOWN_STATE_MESSAGE,
                 },
                 status=_AUTH_FAILED_STATUS,
             )
@@ -192,8 +267,12 @@ def oidc_login_views(
 
         if on_success is not None:
             on_success(tokens, entry)
+        if on_success_request is not None:
+            on_success_request(tokens, entry, request)
 
-        destination = success_redirect or entry.return_to
+        # Checked again here (§12.8 rule 3): the store may be the integrator's
+        # and the entry older glue's.
+        destination = success_redirect or resolve_return_to(entry.return_to, allow_return_to)
         if destination:
             return HttpResponseRedirect(destination)
 

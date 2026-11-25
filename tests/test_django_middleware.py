@@ -71,7 +71,7 @@ def _sign_eddsa_token(private_key: Ed25519PrivateKey, kid: str, claims: dict[str
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": kid, "typ": "at+jwt"})
 
 
 class _FakeJwksEndpoint:
@@ -265,6 +265,7 @@ def test_axiam_user_populated_with_roles(eddsa_keypair, bound_verifier) -> None:
             "sub": "user-1",
             "tenant_id": "acme",
             "scope": "read write",
+            "roles": ["editor"],
             "exp": time.time() + 3600,
         },
     )
@@ -274,7 +275,10 @@ def test_axiam_user_populated_with_roles(eddsa_keypair, bound_verifier) -> None:
 
     assert request.axiam_user.user_id == "user-1"
     assert request.axiam_user.tenant_id == "acme"
-    assert request.axiam_user.roles == ["read", "write"]
+    # N15 (contract 1.68): roles come from the ``roles`` claim only; the granted
+    # scopes are a separate member and are never mapped onto roles.
+    assert request.axiam_user.roles == ["editor"]
+    assert request.axiam_user.scopes == ["read", "write"]
 
 
 def test_scope_null_does_not_500(eddsa_keypair, bound_verifier) -> None:

@@ -95,7 +95,7 @@ def _sign(private_key: Ed25519PrivateKey, claims: dict[str, Any]) -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": _KID})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": _KID, "typ": "at+jwt"})
 
 
 def _unsigned_alg_none(claims: dict[str, Any]) -> str:
@@ -223,7 +223,7 @@ def test_token_with_an_unknown_kid_is_rejected(keypair, valid_claims) -> None:
                     encryption_algorithm=serialization.NoEncryption(),
                 ),
                 algorithm="EdDSA",
-                headers={"kid": "some-other-kid"},
+                headers={"kid": "some-other-kid", "typ": "at+jwt"},
             ),
             expected_tenant_id=_TENANT,
         )

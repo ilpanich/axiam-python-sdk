@@ -17,6 +17,14 @@ v2 replay protection (NEW-4). Two surfaces share those primitives:
   re-exported for callers that need to verify freshness directly or inject
   a shared store across multiple consumers.
 
+**§8 — the authorization requester (contract 1.68; N2).**
+
+- :class:`AuthzRequester` — publishes a signed ``AuthzRequest`` on ``axiam.authz.request``
+  with a private, exclusive ``reply_to`` queue and accepts only the server's signed answer to
+  *that* request: signature under the tenant subkey over the **received** bytes, ``tenant_id``,
+  ``correlation_id`` and ``nonce`` bound to an outstanding request. Anything else is nacked
+  without requeue and never an allow. :class:`AioPikaAuthzTransport` is the ``aio-pika`` seam.
+
 **§22 — the reactor runtime.** A reactor is an external process that subscribes
 to named hook events on the AMQP bus and answers back — allow, deny, or a
 field-allow-listed mutation — inside a timeout the server declared.
@@ -44,6 +52,17 @@ never verifies with no other symptom — a reactor body serializes
 :mod:`axiam_sdk.amqp._reactor_protocol` for that and the two other traps.
 """
 
+from axiam_sdk.amqp._authz_requester import (
+    AUTHZ_KEY_VERSION,
+    AUTHZ_REQUEST_QUEUE,
+    AioPikaAuthzTransport,
+    AuthzDecision,
+    AuthzDelivery,
+    AuthzRequester,
+    AuthzRequesterClosedError,
+    AuthzTransport,
+    build_authz_request,
+)
 from axiam_sdk.amqp._consumer import ErrDrop, consume
 from axiam_sdk.amqp._hmac import verify_hmac
 from axiam_sdk.amqp._reactor import (
@@ -114,6 +133,16 @@ from axiam_sdk.amqp._reactor_router import (
 from axiam_sdk.amqp._replay import DEFAULT_SKEW_SECONDS, NonceStore, validate_freshness
 
 __all__ = [
+    # §8 — the authorization requester (contract 1.68).
+    "AuthzRequester",
+    "AuthzDecision",
+    "AuthzRequesterClosedError",
+    "AuthzTransport",
+    "AuthzDelivery",
+    "AioPikaAuthzTransport",
+    "build_authz_request",
+    "AUTHZ_REQUEST_QUEUE",
+    "AUTHZ_KEY_VERSION",
     # §8 — the event consumer.
     "consume",
     "ErrDrop",

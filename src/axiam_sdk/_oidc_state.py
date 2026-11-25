@@ -27,6 +27,11 @@ from pydantic import SecretStr
 #: rule 1).
 OIDC_STATE_TTL_SECONDS = 600.0
 
+#: How many in-flight logins :class:`MemoryOidcStateStore` holds before it evicts the oldest.
+#: The login route is unauthenticated and every call saves one entry, so an unbounded dict is a
+#: memory-exhaustion lever.
+DEFAULT_MAX_ENTRIES = 10_000
+
 
 @dataclass(frozen=True)
 class OidcStateEntry:
@@ -52,6 +57,13 @@ class OidcStateEntry:
     #: Optional application-owned data, e.g. the page the user was heading
     #: to before login.
     return_to: str | None = None
+    #: Lower-case hex SHA-256 of the browser-binding cookie value the login route set
+    #: (CONTRACT.md §12.8 rule 1, contract 1.68). **Optional** so a store written against 1.67
+    #: still works and an entry without it can be read -- the glue then refuses the callback.
+    #: A caller-supplied store MUST persist this member and return it unchanged: one that
+    #: rebuilds entries from a fixed column list refuses every sign-in after the upgrade, which
+    #: is the safe failure. Not secret, but not logged either.
+    binding_digest: str | None = None
 
 
 class OidcStateStore(Protocol):
@@ -91,6 +103,8 @@ class MemoryOidcStateStore:
     on :meth:`save` — no background thread/timer is held, since a library
     must not keep the host process alive (port-brief-addendum item 8).
 
+    Bounded (``max_entries``, 10 000 by default): the oldest entry is evicted first.
+
     Suitable for a single-process app and for tests. A multi-instance
     deployment needs a shared store (Redis, database) — implement
     :class:`OidcStateStore` yourself for that; nothing in the SDK assumes
@@ -101,7 +115,11 @@ class MemoryOidcStateStore:
     thread-pool-offloaded call) callers never corrupt the underlying dict.
     """
 
-    def __init__(self, ttl_seconds: float = OIDC_STATE_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        ttl_seconds: float = OIDC_STATE_TTL_SECONDS,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+    ) -> None:
         """Build an empty store.
 
         Args:
@@ -110,8 +128,15 @@ class MemoryOidcStateStore:
                 **clamped to it**: a shorter TTL is honored (useful in
                 tests), a longer one is reduced, because CONTRACT.md §12.3
                 rule 1 fixes 10 minutes as the maximum.
+            max_entries: Most entries held at once (default
+                :data:`DEFAULT_MAX_ENTRIES`). Beyond it the oldest entry is evicted
+                first; an evicted login simply fails at its callback and restarts.
         """
+        if max_entries < 1:
+            raise ValueError("max_entries must be at least 1")
         self._ttl_seconds = min(ttl_seconds, OIDC_STATE_TTL_SECONDS)
+        self._max_entries = max_entries
+        # Insertion-ordered: re-saving a state moves it to the newest position.
         self._entries: dict[str, tuple[OidcStateEntry, float]] = {}
         self._lock = threading.Lock()
 
@@ -127,7 +152,10 @@ class MemoryOidcStateStore:
         ``ttl_seconds`` from now."""
         with self._lock:
             self._sweep_locked()
+            self._entries.pop(entry.state, None)
             self._entries[entry.state] = (entry, time.monotonic() + self._ttl_seconds)
+            while len(self._entries) > self._max_entries:
+                del self._entries[next(iter(self._entries))]
 
     def consume(self, state: str) -> OidcStateEntry | None:
         """Atomically return and delete the entry for ``state``.

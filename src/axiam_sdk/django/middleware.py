@@ -59,6 +59,7 @@ from asgiref.sync import iscoroutinefunction, markcoroutinefunction
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
+from axiam_sdk._claims import roles_from_claims, scopes_from_claims
 from axiam_sdk._jwks import DEFAULT_CLOCK_SKEW_SECONDS, JwksVerifier
 from axiam_sdk._mcp import McpGuardChallenges, challenge_for_401, is_metadata_document_request
 
@@ -90,6 +91,13 @@ class AxiamUser:
     user_id: str
     tenant_id: str
     roles: list[str] = field(default_factory=list)
+    #: The token's granted ``scope`` values (contract 1.68, N15) — what the
+    #: *client* asked for, never mapped onto ``roles``; checked by
+    #: ``require_scope``.
+    scopes: list[str] = field(default_factory=list)
+    #: ``True`` when the token carried a ``roles`` claim (possibly ``[]``: "no roles"),
+    #: ``False`` when it carried none — "ask for the ``roles`` scope" (§11.2 rule 11 (b)).
+    roles_claim_present: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,7 +146,9 @@ def _is_csrf_valid(request: HttpRequest) -> bool:
     cookie = request.COOKIES.get(_CSRF_COOKIE_NAME, "")
     if not header or not cookie:
         return False
-    return hmac.compare_digest(header, cookie)
+    # Encoded bytes: ``compare_digest`` on two ``str`` raises TypeError for a
+    # non-ASCII character, which would turn a refusal into a 500.
+    return hmac.compare_digest(header.encode(), cookie.encode())
 
 
 class _MalformedClaims(Exception):
@@ -157,25 +167,33 @@ def _build_user(claims: dict[str, Any]) -> AxiamUser:
 
     Returns:
         An ``AxiamUser`` with ``user_id`` from ``sub``, ``tenant_id`` from
-        ``tenant_id``, and ``roles`` split from the space-delimited
-        ``scope`` claim (empty when ``scope`` is absent or ``null``).
+        ``tenant_id``, ``roles`` from the ``roles`` claim only (empty when it
+        is absent, ``null`` or malformed) and ``scopes`` split from the
+        space-delimited ``scope`` claim (contract 1.68, N15).
 
     Raises:
         _MalformedClaims: if ``sub`` or ``tenant_id`` is missing, so the
             caller can degrade to a standardized 401 instead of an
             unhandled 500 (WR-02).
     """
-    # WR-02: ``dict.get("scope", "")`` returns ``None`` (not ``""``) when the
-    # claim is PRESENT with an explicit JSON ``null`` value, and ``list(None)``
-    # raises TypeError. ``claims.get("scope") or ""`` maps both absent AND null
-    # scope to empty roles, matching how an absent scope is already handled.
-    roles_claim = claims.get("scope") or ""
-    roles = roles_claim.split() if isinstance(roles_claim, str) else list(roles_claim)
+    # Contract 1.68 (N15, D-1): ``roles`` is the ``roles`` claim and nothing
+    # else; the ``scope`` claim is exposed separately as ``scopes``. Both
+    # degrade to an empty list for an absent, ``null`` or malformed claim
+    # (WR-02: never a 500), so ``require_role`` fails closed.
+    claimed_roles = roles_from_claims(claims)
+    roles = claimed_roles or []
+    scopes = scopes_from_claims(claims)
     subject = claims.get("sub")
     tenant_id = claims.get("tenant_id")
     if not subject or not tenant_id:
         raise _MalformedClaims("access token is missing sub/tenant_id")
-    return AxiamUser(user_id=subject, tenant_id=tenant_id, roles=roles)
+    return AxiamUser(
+        user_id=subject,
+        tenant_id=tenant_id,
+        roles=roles,
+        scopes=scopes,
+        roles_claim_present=claimed_roles is not None,
+    )
 
 
 def _error_response(

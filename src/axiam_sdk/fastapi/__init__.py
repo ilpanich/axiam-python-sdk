@@ -103,6 +103,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from axiam_sdk._async_client import AsyncAxiamClient
+from axiam_sdk._claims import roles_from_claims, scopes_from_claims
 from axiam_sdk._errors import AuthError, AuthzError, NetworkError
 from axiam_sdk._jwks import JwksVerifier
 from axiam_sdk._mcp import (
@@ -113,6 +114,14 @@ from axiam_sdk._mcp import (
 )
 from axiam_sdk._models import OidcTokenSet, RequestedPermission
 from axiam_sdk._oidc import UmaChallenger, uma_challenge_header
+from axiam_sdk._oidc_binding import (
+    BINDING_COOKIE_MAX_AGE_SECONDS,
+    BindingCookieSpec,
+    binding_cookie_spec,
+    binding_matches,
+    new_binding,
+    resolve_return_to,
+)
 from axiam_sdk._oidc_state import MemoryOidcStateStore, OidcStateEntry, OidcStateStore
 from axiam_sdk.management._errors import FieldError, ValidationError
 
@@ -143,11 +152,24 @@ class AxiamUser:
 
     Mirrors the Go middleware's ``User`` struct (``user_id``, ``tenant_id``,
     ``roles``) — CONTRACT.md §10's minimum identity fields.
+
+    ``roles`` is the token's ``roles`` claim and nothing else (contract 1.68,
+    N15): empty when the token carries none (``roles_claim_present`` tells
+    "no claim" from an explicit ``[]``), which makes :func:`require_role`
+    refuse. The server emits ``roles`` only when the client requested — and is
+    allowed — the ``roles`` scope, so an application using :func:`require_role`
+    must request that scope. ``scopes`` is the token's granted ``scope`` claim,
+    which :func:`require_scope` checks; it says what the *client* asked for, not
+    what the user holds.
     """
 
     user_id: str
     tenant_id: str
     roles: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    #: ``True`` when the token carried a ``roles`` claim (possibly ``[]``: "no roles"),
+    #: ``False`` when it carried none — "ask for the ``roles`` scope" (§11.2 rule 11 (b)).
+    roles_claim_present: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,7 +244,7 @@ def _assert_csrf_valid(request: Request) -> None:
     """
     header = request.headers.get(_CSRF_HEADER_NAME)
     cookie = request.cookies.get(_CSRF_COOKIE_NAME)
-    if not header or not cookie or not hmac.compare_digest(header, cookie):
+    if not header or not cookie or not hmac.compare_digest(header.encode(), cookie.encode()):
         raise HTTPException(status_code=_CSRF_FAILED_STATUS, detail="CSRF validation failed")
 
 
@@ -288,16 +310,13 @@ async def _authenticate(
 
     tenant_id = claims["tenant_id"]
 
-    # WR-02: ``dict.get("scope", "")`` returns ``None`` (not ``""``) when
-    # the claim is PRESENT with an explicit JSON ``null`` value, and
-    # ``list(None)`` raises TypeError — which would propagate AFTER the
-    # verify() try/except above and surface as an unhandled 500 for an
-    # otherwise signature-valid token. ``claims.get("scope") or ""`` maps
-    # both absent AND null scope to empty roles, matching how an absent
-    # scope is already handled (CONTRACT.md §10: malformed claims must
-    # still degrade to a standardized 401, never a 500).
-    roles_claim = claims.get("scope") or ""
-    roles = roles_claim.split() if isinstance(roles_claim, str) else list(roles_claim)
+    # Contract 1.68 (N15, D-1): ``roles`` is the ``roles`` claim and nothing
+    # else; the ``scope`` claim is exposed separately as ``scopes``. Both
+    # degrade to an empty list for an absent, ``null`` or malformed claim
+    # (CONTRACT.md §10: never a 500), so ``require_role`` fails closed.
+    claimed_roles = roles_from_claims(claims)
+    roles = claimed_roles or []
+    scopes = scopes_from_claims(claims)
 
     subject = claims.get("sub")
     if not subject:
@@ -307,7 +326,13 @@ async def _authenticate(
             headers=_mcp_headers(challenges, credential_presented=True),
         )
 
-    return AxiamUser(user_id=subject, tenant_id=tenant_id, roles=roles)
+    return AxiamUser(
+        user_id=subject,
+        tenant_id=tenant_id,
+        roles=roles,
+        scopes=scopes,
+        roles_claim_present=claimed_roles is not None,
+    )
 
 
 def require_authenticated_user(
@@ -599,6 +624,14 @@ def require_role(
     requires the authenticated identity's verified ``roles`` to contain at
     least one of ``roles`` (CONTRACT.md §11).
 
+    **Reads the token's** ``roles`` **claim only, and fails closed when it is
+    absent** (contract 1.68, N15, D-1): the OAuth ``scope`` claim is never
+    mapped onto roles — it names what the *client* asked for, not what the user
+    holds. AXIAM emits ``roles`` (the names of the subject's global roles in
+    the tenant) only when the client requested, and is allowed, the ``roles``
+    scope, so the application must request that scope for this guard to admit
+    anyone. To check granted OAuth scopes use :func:`require_scope`.
+
     A **local** check only — reads the claims already verified by
     :func:`_authenticate`; it never calls the AXIAM server. Cheaper but
     coarser than :func:`require_access`, and documented (§11.2.9) as NOT a
@@ -629,6 +662,45 @@ def require_role(
                 detail={
                     "error": "authorization_denied",
                     "message": "caller lacks a required role",
+                },
+            )
+        return user
+
+    return _dependency
+
+
+def require_scope(
+    verifier: JwksVerifier, configured_tenant: str, *scopes: str
+) -> Callable[[Request], Awaitable[AxiamUser]]:
+    """Factory returning a ``Depends(...)``-compatible async dependency that
+    requires the verified token's granted ``scope`` to contain at least one of
+    ``scopes`` (CONTRACT.md §11.2 rule 11, contract 1.68).
+
+    The counterpart of :func:`require_role` for OAuth scopes: a **local** check
+    on the already-verified ``scope`` claim, never a server call. A scope is
+    what the *client* was granted, not something the user holds, so it
+    authorizes the client's access to an API and nothing about the user's own
+    roles.
+
+    Usage::
+
+        @app.get("/reports")
+        async def reports(
+            user: AxiamUser = Depends(require_scope(verifier, "acme", "reports:read")),
+        ):
+            ...
+    """
+    challenges = verifier.mcp_challenges("require_scope")
+
+    async def _dependency(request: Request) -> AxiamUser:
+        """Authenticate, then check the verified token's scopes locally."""
+        user = await _authenticate(request, verifier, configured_tenant, challenges)
+        if not any(scope in user.scopes for scope in scopes):
+            raise HTTPException(
+                status_code=_AUTHZ_DENIED_STATUS,
+                detail={
+                    "error": "authorization_denied",
+                    "message": "caller lacks a required scope",
                 },
             )
         return user
@@ -756,6 +828,30 @@ _OIDC_AUTH_FAILED_STATUS = 401
 _OIDC_UNAVAILABLE_STATUS = 503
 
 
+def _error_response(status_code: int, detail: dict[str, str]) -> JSONResponse:
+    """An error response in the shape ``HTTPException(status_code, detail)``
+    produces (``{"detail": ...}``), returned rather than raised so the caller
+    can still attach the binding-cookie clearing."""
+    return JSONResponse({"detail": detail}, status_code=status_code)
+
+
+def _set_binding_cookie(
+    response: Response, spec: BindingCookieSpec, value: str, max_age: int
+) -> None:
+    """Set (or, with an empty ``value`` and ``max_age=0``, clear) the binding
+    cookie: ``HttpOnly``, ``SameSite=Lax``, ``Path=/``, no ``Domain``, and
+    ``Secure`` unless the plain-HTTP loopback fallback name is in use."""
+    response.set_cookie(
+        spec.name,
+        value,
+        max_age=max_age,
+        path="/",
+        secure=spec.secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 def _oidc_unavailable_detail(message: str) -> dict[str, str]:
     """Standardized 503 ``{"error": "oidc_unavailable", ...}`` body
     (port-brief-addendum item 19)."""
@@ -779,6 +875,9 @@ def oidc_login_router(
     callback_path: str = "/callback",
     success_redirect: str | None = None,
     on_success: Callable[[OidcTokenSet, OidcStateEntry], Awaitable[None]] | None = None,
+    on_success_request: Callable[[OidcTokenSet, OidcStateEntry, Request], Awaitable[None]]
+    | None = None,
+    allow_return_to: Callable[[str], bool] | None = None,
 ) -> APIRouter:
     """Build a two-route "Login with AXIAM" :class:`~fastapi.APIRouter`
     (CONTRACT.md §12): ``GET {login_path}`` starts the authorization-code +
@@ -814,18 +913,41 @@ def oidc_login_router(
         callback_path: The callback route path, relative to the router.
         success_redirect: Where to send the browser after a successful
             login. Falls back to the ``return_to`` query parameter captured
-            at login time, then to a JSON summary.
+            at login time **when it is a same-origin relative path** (see
+            ``allow_return_to``), then to a JSON summary.
         on_success: Called with the validated token set and the consumed
             state entry once the exchange succeeds — the hook where an
             application establishes its OWN session (sign a cookie, write a
             session row, ...). The SDK deliberately does not do this: what a
             session means is the application's decision.
+        on_success_request: As ``on_success``, with the Starlette ``Request``
+            that completed the sign-in as a third argument, so the application
+            creates its session on that request without reaching for ambient
+            context (CONTRACT.md §12.8 rule 2; ``on_success`` keeps its
+            two-argument signature). When both are given, ``on_success`` runs
+            first. Either runs only after the browser binding and the §12.4
+            checks have both succeeded.
+        allow_return_to: Optional predicate that may **widen** the
+            ``return_to`` rule (CONTRACT.md §12.8 rule 3) — e.g. an allowlist
+            of the application's other origins. Consulted, when the entry is
+            stored and again before redirecting, only for a value the default
+            rule (a single leading ``/``; no ``//`` or ``/\\`` prefix; no
+            backslash or control character) refuses; a predicate that raises
+            accepts nothing. There is no default predicate.
+
+    **Browser binding (CONTRACT.md §12.8 rule 1, contract 1.68).** The login
+    route sets a ``__Host-axiam_oidc_bind`` cookie (``HttpOnly; Secure;
+    SameSite=Lax; Path=/``; ``axiam_oidc_bind`` without ``Secure`` on an
+    ``http://localhost`` ``redirect_uri``) and the callback completes only for
+    the browser that presents it; every callback response clears it. The
+    ``OidcStateStore`` you supply MUST persist ``OidcStateEntry.binding_digest``.
 
     Returns:
         An :class:`~fastapi.APIRouter` with the two routes, ready to
         ``app.include_router(...)``.
     """
     state_store: OidcStateStore = store if store is not None else MemoryOidcStateStore()
+    cookie_spec = binding_cookie_spec(redirect_uri)
     router = APIRouter()
 
     @router.get(login_path)
@@ -848,54 +970,84 @@ def oidc_login_router(
                 detail=_oidc_unavailable_detail("could not start the OIDC login flow"),
             ) from exc
 
+        # A new binding for every login; a cookie this request presents is never reused.
+        binding_value, digest = new_binding()
         state_store.save(
             OidcStateEntry(
                 state=request.state,
                 nonce=request.nonce,
                 code_verifier=request.code_verifier,
                 redirect_uri=redirect_uri,
-                return_to=return_to,
+                return_to=resolve_return_to(return_to, allow_return_to),
+                binding_digest=digest,
             )
         )
-        return RedirectResponse(url=request.url, status_code=302)
+        response = RedirectResponse(url=request.url, status_code=302)
+        _set_binding_cookie(response, cookie_spec, binding_value, BINDING_COOKIE_MAX_AGE_SECONDS)
+        return response
 
     @router.get(callback_path)
     async def callback(
+        request: Request,
         state: str | None = None,
         code: str | None = None,
         error: str | None = None,
         error_description: str | None = None,
     ) -> Response:
-        """Step 2 — validate the callback, consume the stored state,
-        exchange the code, and respond (CONTRACT.md §12.1 ``oidc_exchange``).
+        """Step 2 — validate the callback, consume the stored state, check
+        the browser binding, exchange the code, and respond (CONTRACT.md
+        §12.1 ``oidc_exchange``, §12.8).
 
         Failure mapping (port-brief-addendum item 19): IdP returned
         ``error=...`` -> 401; ``state``/``code`` missing -> 400; ``state``
-        unknown/expired/already-used -> 401; any §12.4 ID-token failure or
-        ``OAuthProtocolError`` -> 401; a transport failure -> 503.
+        unknown/expired/already-used, or no matching binding cookie -> the
+        same uniform 401; any §12.4 ID-token failure or ``OAuthProtocolError``
+        -> 401; a transport failure -> 503. Every response clears the binding
+        cookie, so the error bodies are returned (in ``HTTPException``'s
+        ``{"detail": ...}`` shape) rather than raised.
         """
+        response = await _complete(request, state, code, error, error_description)
+        _set_binding_cookie(response, cookie_spec, "", 0)
+        return response
+
+    async def _complete(
+        request: Request,
+        state: str | None,
+        code: str | None,
+        error: str | None,
+        error_description: str | None,
+    ) -> Response:
+        """The callback proper; :func:`callback` clears the binding cookie on
+        whatever this returns."""
         if error:
-            raise HTTPException(
-                status_code=_OIDC_AUTH_FAILED_STATUS,
-                detail=_oidc_auth_failed_detail(
+            return _error_response(
+                _OIDC_AUTH_FAILED_STATUS,
+                _oidc_auth_failed_detail(
                     f"{error}: {error_description}" if error_description else error
                 ),
             )
         if not state or not code:
-            raise HTTPException(
-                status_code=_OIDC_INVALID_REQUEST_STATUS,
-                detail={
+            return _error_response(
+                _OIDC_INVALID_REQUEST_STATUS,
+                {
                     "error": "invalid_request",
                     "message": "callback is missing the state or code query parameter",
                 },
             )
 
         # Single-use consume (§12.3 rule 1): a replayed callback finds nothing.
+        # ALWAYS before the binding comparison (§12.8 rule 1 (c)): the state is
+        # spent whatever happens next, so a refused callback cannot be retried.
         entry = state_store.consume(state)
-        if entry is None:
-            raise HTTPException(
-                status_code=_OIDC_AUTH_FAILED_STATUS,
-                detail=_oidc_auth_failed_detail("unknown, expired, or already-used login state"),
+        if entry is None or not binding_matches(
+            entry.binding_digest, request.cookies.get(cookie_spec.name)
+        ):
+            # One answer for "unknown state" and "wrong browser", so the
+            # refusal does not say which check failed. No token request, no
+            # success callback.
+            return _error_response(
+                _OIDC_AUTH_FAILED_STATUS,
+                _oidc_auth_failed_detail("unknown, expired, or already-used login state"),
             )
 
         try:
@@ -906,23 +1058,24 @@ def oidc_login_router(
                 nonce=entry.nonce,
                 tenant_id=tenant_id,
             )
-        except (NetworkError, httpx.HTTPError) as exc:
-            raise HTTPException(
-                status_code=_OIDC_UNAVAILABLE_STATUS,
-                detail=_oidc_unavailable_detail("the AXIAM token endpoint is unreachable"),
-            ) from exc
+        except (NetworkError, httpx.HTTPError):
+            return _error_response(
+                _OIDC_UNAVAILABLE_STATUS,
+                _oidc_unavailable_detail("the AXIAM token endpoint is unreachable"),
+            )
         except AuthError as exc:
             # AuthError (including OAuthProtocolError and every §12.4 reason
             # code): a login that cannot be proven is a failed login.
-            raise HTTPException(
-                status_code=_OIDC_AUTH_FAILED_STATUS,
-                detail=_oidc_auth_failed_detail(exc.message),
-            ) from exc
+            return _error_response(_OIDC_AUTH_FAILED_STATUS, _oidc_auth_failed_detail(exc.message))
 
         if on_success is not None:
             await on_success(tokens, entry)
+        if on_success_request is not None:
+            await on_success_request(tokens, entry, request)
 
-        destination = success_redirect or entry.return_to
+        # Checked again here (§12.8 rule 3): the store may be the integrator's
+        # and the entry older glue's.
+        destination = success_redirect or resolve_return_to(entry.return_to, allow_return_to)
         if destination:
             return RedirectResponse(url=destination, status_code=302)
 
@@ -942,5 +1095,6 @@ __all__ = [
     "require_access",
     "require_authenticated_user",
     "require_role",
+    "require_scope",
     "serve_protected_resource_metadata",
 ]

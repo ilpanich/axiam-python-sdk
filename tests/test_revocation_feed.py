@@ -61,7 +61,7 @@ def _sign(private_key: Ed25519PrivateKey, claims: dict[str, Any]) -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": _KID})
+    return jwt.encode(claims, pem, algorithm="EdDSA", headers={"kid": _KID, "typ": "at+jwt"})
 
 
 def _claims(sid: str | None) -> dict[str, Any]:

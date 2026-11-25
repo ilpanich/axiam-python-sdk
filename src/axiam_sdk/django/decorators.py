@@ -356,6 +356,14 @@ def require_role(*roles: str) -> Callable[[_View], _View]:
     verified ``roles`` to contain at least one of ``roles`` (CONTRACT.md
     §11).
 
+    **Reads the token's** ``roles`` **claim only, and fails closed when it is
+    absent** (contract 1.68, N15, D-1): the OAuth ``scope`` claim is never
+    mapped onto roles — it names what the *client* asked for, not what the user
+    holds. AXIAM emits ``roles`` only when the client requested, and is
+    allowed, the ``roles`` scope, so the application must request that scope
+    for this guard to admit anyone. To check granted OAuth scopes use
+    :func:`require_scope`.
+
     A **local** check only — reads ``request.axiam_user.roles`` already
     attached by the middleware; it never calls the AXIAM server. Cheaper but
     coarser than :func:`require_access`, and documented (§11.2.9) as NOT a
@@ -401,4 +409,46 @@ def require_role(*roles: str) -> Callable[[_View], _View]:
     return decorator
 
 
-__all__ = ["require_access", "require_auth", "require_role"]
+def require_scope(*scopes: str) -> Callable[[_View], _View]:
+    """View decorator factory requiring the verified token's granted ``scope``
+    to contain at least one of ``scopes`` (CONTRACT.md §11.2 rule 11, contract
+    1.68).
+
+    The counterpart of :func:`require_role` for OAuth scopes: a **local** check
+    on ``request.axiam_user.scopes`` already attached by the middleware. A
+    scope is what the *client* was granted, not something the user holds.
+
+    Usage::
+
+        @require_scope("reports:read")
+        def reports_view(request):
+            ...
+    """
+
+    challenges = _settings_mcp_challenges("require_scope")
+
+    def decorator(view: _View) -> _View:
+        """Bind ``scopes`` to a guard wrapping ``view``."""
+
+        def _guard(request: HttpRequest, *_args: Any, **_kwargs: Any) -> HttpResponse | None:
+            """Return a 403/401 JSON response on failure, else ``None`` to
+            let the view proceed."""
+            user = _authenticated_user(request)
+            if user is None:
+                return _missing_middleware_response(request, challenges)
+            if not any(scope in user.scopes for scope in scopes):
+                return JsonResponse(
+                    {
+                        "error": "authorization_denied",
+                        "message": "caller lacks a required scope",
+                    },
+                    status=_AUTHZ_DENIED_STATUS,
+                )
+            return None
+
+        return _wrap(view, _guard)
+
+    return decorator
+
+
+__all__ = ["require_access", "require_auth", "require_role", "require_scope"]
