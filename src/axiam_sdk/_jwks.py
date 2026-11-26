@@ -64,6 +64,7 @@ from jwt.exceptions import (
     ImmatureSignatureError,
     InvalidIssuedAtError,
     MissingRequiredClaimError,
+    PyJWKClientConnectionError,
     PyJWKClientError,
     PyJWTError,
 )
@@ -233,6 +234,9 @@ class JwksVerifier:
         # key indefinitely.
         self._client = PyJWKClient(resolved_jwks_url, cache_jwk_set=True, lifespan=lifespan)
         self._last_forced_refetch: float | None = None
+        #: When a normal fetch last failed with the cache cold (JWKS endpoint down); opens the
+        #: same 60 s window as a forced re-fetch.
+        self._fetch_failed_at: float | None = None
         self._refetch_lock = threading.Lock()
         # §13.4 observation 6 — latches the slug-vs-UUID diagnostic to one
         # emission, so a stream of bad tokens cannot turn it into a log flood.
@@ -453,10 +457,9 @@ class JwksVerifier:
             raise AuthError("token typ is not an access token (at+jwt)")
 
         # Rule 12 (contract 1.68): the key is selected by ``kid`` and by nothing
-        # else. ``PyJWKClient`` already refuses a header with no ``kid`` rather
-        # than falling back to "the only key in the set", so no explicit check
-        # is added here (SA-21: not reproduced); ``test_access_token_kind``
-        # pins that behaviour.
+        # else. ``_get_signing_key`` reads the ``kid`` from the header and refuses
+        # a token with none (no "only key in the set" fallback), so no explicit
+        # check is needed here; ``test_access_token_kind`` pins that behaviour.
         try:
             signing_key = self._get_signing_key(token)
         except PyJWTError as exc:
@@ -763,8 +766,22 @@ class JwksVerifier:
         with self._refetch_lock:
             # Looked up by hand: PyJWT's own ``get_signing_key`` re-fetches on EVERY miss, which
             # no cooldown bounds (§12.4 rule 2).
+            if self._fetch_failed_at is not None:
+                cache = self._client.jwk_set_cache
+                if cache is not None and cache.get() is not None:
+                    self._fetch_failed_at = None  # a later success filled it
+                elif (
+                    time.monotonic() - self._fetch_failed_at < _FORCED_REFETCH_MIN_INTERVAL_SECONDS
+                ):
+                    raise PyJWKClientError("the JWKS endpoint is unavailable")
             try:
                 cached = PyJWKClient.match_kid(self._client.get_signing_keys(), kid)
+            except PyJWKClientConnectionError:
+                # A cold cache with the endpoint down: the failed fetch opens a 60 s window
+                # (checked above), so an outage costs one fetch per window, not one per
+                # verification.
+                self._fetch_failed_at = time.monotonic()
+                raise PyJWKClientError("the JWKS endpoint is unavailable") from None
             except PyJWTError:
                 # An empty/malformed keyset (e.g. a rotation window where the new key has not
                 # propagated) reaches the forced path below like an unknown kid.

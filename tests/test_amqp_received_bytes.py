@@ -220,8 +220,10 @@ async def test_the_two_v2_layouts_are_dispatched(canonical: str) -> None:
 @pytest.mark.parametrize(
     "canonical",
     [
-        '{"tenant_id":"t","scope":"roles",' + _v2() + "}",  # a CacheInvalidationMessage shape
-        '{"correlation_id":"c","allowed":true,"tenant_id":"t",' + _v2() + "}",  # an AuthzResponse
+        # a CacheInvalidationMessage (origin_id, tenant_id, subject_id?, v2 fields, heartbeat?)
+        '{"origin_id":"o","tenant_id":"t","subject_id":"s",' + _v2() + ',"heartbeat":true}',
+        # an AuthzResponse (correlation_id, allowed, reason?, reason_code?, tenant_id, nonce)
+        '{"correlation_id":"c","allowed":true,"reason_code":"allowed","tenant_id":"t","nonce":"n"}',
         '{"tenant_id":"t","correlation_id":"c","subject_id":"s","action":"a","resource_id":"r",'
         + _v2()
         + "}",  # authz members, wrong order

@@ -99,3 +99,31 @@ def test_logout_reason_codes_are_never_none() -> None:
         with pytest.raises(AuthError) as excinfo:
             verifier.verify_logout_token_signature(token)
         assert excinfo.value.reason == reason, token
+
+
+def test_an_outage_on_a_cold_cache_costs_at_most_one_fetch_per_window() -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("good")
+    verifier = JwksVerifier(BASE_URL, jwks_url=f"{BASE_URL}/oauth2/jwks")
+    calls = 0
+    up = False
+
+    def fetch() -> dict:
+        nonlocal calls
+        calls += 1
+        if not up:
+            raise jwt.PyJWKClientConnectionError("endpoint down")
+        data = {"keys": [jwk]}
+        verifier._client.jwk_set_cache.put(data)  # type: ignore[union-attr]
+        return data
+
+    verifier._client.fetch_data = fetch  # type: ignore[method-assign]
+    token = _token(key, "good")
+
+    for _ in range(50):
+        with pytest.raises(jwt.PyJWTError):
+            verifier.get_signing_key(token)
+    assert calls <= 1, "fifty verifications during an outage: at most one fetch per window"
+
+    up = True
+    verifier._fetch_failed_at = None  # the window has passed
+    assert verifier.get_signing_key(token).key_id == "good"

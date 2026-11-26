@@ -1176,7 +1176,7 @@ with an `allow_return_to=` predicate (consulted only for values the default rule
 `MemoryOidcStateStore` is bounded (`max_entries`, 10 000, oldest evicted first).
 
 **The cookie clear wins over propagation (deviation, by design).** Because every callback response
-must clear the binding cookie (§12.8 rule 1 (d)) and neither framework lets an exception carry a
+must clear the binding cookie (§12.8 rule 1 (d)) and an unexpected exception cannot carry the clearing
 header, both glues answer every outcome themselves and *return* their error responses instead of raising them. A FastAPI
 `@app.exception_handler(HTTPException)` therefore does **not** see the callback's refusals (the
 uniform `401`, the `400`, the `503`), and an *unexpected* failure inside the callback (your

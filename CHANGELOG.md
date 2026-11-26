@@ -138,7 +138,10 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   server older than 1.67 — is refused until its holder refreshes (at most one access-token lifetime,
   15 minutes by default). Test fixtures that mint access tokens should set `typ: at+jwt` (or no
   `typ`). A token carrying a `purpose` claim is never an access token.
-- **AMQP.** Nothing changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
+- **AMQP `consume(...)`.** It now dispatches only the `AuthzRequest` and `AuditEventMessage` v2
+  layouts (members in the CONTRACT §8 order); any other validly signed shape (a
+  `CacheInvalidationMessage`, an `AuthzResponse`) is nacked without requeue.
+- **AMQP.** Nothing else changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
   `axiam.authz.response`, move to `AuthzRequester`; the shared queue is where another tenant's
   answers, and any principal's forgeries, arrive.
 
