@@ -59,7 +59,12 @@ from typing import Any
 
 import jwt
 from jwt import PyJWKClient
-from jwt.exceptions import MissingRequiredClaimError, PyJWTError
+from jwt.exceptions import (
+    ExpiredSignatureError,
+    InvalidSignatureError,
+    MissingRequiredClaimError,
+    PyJWTError,
+)
 from jwt.types import Options
 
 from axiam_sdk._errors import AuthError
@@ -324,27 +329,61 @@ class JwksVerifier:
             The decoded claims dict, once the signature has verified.
 
         Raises:
-            ValueError: if ``alg`` is not EdDSA or the header carries no ``kid``.
-            jwt.exceptions.PyJWTError: on any signature/key-resolution failure.
+            AuthError: with ``reason`` ``invalid_alg`` (``alg`` is not EdDSA), ``unknown_kid``
+                (no ``kid``, or no JWKS key matches it after at most one re-fetch per cooldown
+                window) or ``invalid_signature``.
         """
-        header = jwt.get_unverified_header(token)
+        try:
+            header = jwt.get_unverified_header(token)
+        except PyJWTError as exc:
+            raise AuthError(
+                "logout token validation failed (invalid_signature): malformed token header",
+                reason="invalid_signature",
+            ) from exc
         if header.get("alg") != "EdDSA":
-            raise ValueError(f"unexpected alg {header.get('alg')!r}: only EdDSA is accepted")
+            raise AuthError(
+                "logout token validation failed (invalid_alg): only EdDSA is accepted",
+                reason="invalid_alg",
+            )
+        # §12.7.3 rule 1 (contract 1.69): the key is selected by ``kid`` and by nothing else.
+        # A token with no ``kid`` (a pre-1.69 server's) is refused before any key lookup, so a
+        # one-key JWKS cannot make it verify.
         if not header.get("kid"):
-            raise ValueError("logout token carries no kid header")
+            raise AuthError(
+                "logout token validation failed (unknown_kid): the token carries no kid",
+                reason="unknown_kid",
+            )
 
-        signing_key = self._get_signing_key(token)
+        try:
+            signing_key = self._get_signing_key(token)
+        except PyJWTError as exc:
+            # Unknown kid, or an empty/malformed keyset after the verifier's one rate-limited
+            # forced re-fetch.
+            raise AuthError(
+                "logout token validation failed (unknown_kid): no JWKS key matches the token's kid",
+                reason="unknown_kid",
+            ) from exc
 
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["EdDSA"],
-            # No `require`: a logout token names `sid` OR `sub`, and which one
-            # is present is checked by the caller with its own message.
-            # `aud` is checked there too, so PyJWT's own audience check is off
-            # rather than duplicated under a less specific error.
-            options={"verify_aud": False},
-        )
+        try:
+            return jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["EdDSA"],
+                # No `require`: a logout token names `sid` OR `sub`, and which one
+                # is present is checked by the caller with its own message.
+                # `aud` is checked there too, so PyJWT's own audience check is off
+                # rather than duplicated under a less specific error.
+                options={"verify_aud": False},
+            )
+        except ExpiredSignatureError as exc:
+            raise AuthError("logout token has expired", reason="token_expired") from exc
+        except InvalidSignatureError as exc:
+            raise AuthError(
+                "logout token validation failed (invalid_signature): signature verification failed",
+                reason="invalid_signature",
+            ) from exc
+        except PyJWTError as exc:
+            raise AuthError(f"logout token is invalid: {type(exc).__name__}") from exc
 
     def _verify_claims(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
         """CONTRACT.md §10.1 rules **1-8** — everything except the sender

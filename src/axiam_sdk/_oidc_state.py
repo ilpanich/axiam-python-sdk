@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from pydantic import SecretStr
@@ -62,8 +62,9 @@ class OidcStateEntry:
     #: still works and an entry without it can be read -- the glue then refuses the callback.
     #: A caller-supplied store MUST persist this member and return it unchanged: one that
     #: rebuilds entries from a fixed column list refuses every sign-in after the upgrade, which
-    #: is the safe failure. Not secret, but not logged either.
-    binding_digest: str | None = None
+    #: is the safe failure. Not secret, but not logged either, which is why it is left out of
+    #: ``repr()`` (§12.8 rule 1 (e)): a store that logs ``repr(entry)`` must not emit it.
+    binding_digest: str | None = field(default=None, repr=False)
 
 
 class OidcStateStore(Protocol):

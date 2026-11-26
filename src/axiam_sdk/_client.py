@@ -2824,6 +2824,13 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         1. **Signature**, through the same §12.4 JWKS verifier the ID-token
            path uses — no second key-fetching path — with the same
            ``kid``-required discipline.
+           From contract 1.69 the server signs every logout token with the
+           header ``{"alg":"EdDSA","typ":"logout+jwt","kid":"<kid>"}``; the
+           key is selected by that ``kid`` and nothing else. A token with no
+           ``kid`` (a pre-1.69 server's) or an unknown one is refused with
+           ``AuthError.reason == "unknown_kid"`` — no single-key fallback.
+           §10.1 rules 10 and 11 (access-token ``typ`` / ``purpose``) do not
+           apply on this path.
         2. **``iss``/``aud``**: a token minted for another RP is not accepted.
         3. **``events`` carries the back-channel-logout key.** This is what
            distinguishes a logout token from an ID token; skipping it means

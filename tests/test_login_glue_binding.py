@@ -57,6 +57,7 @@ class Result:
     location: str | None
     body: dict[str, Any]
     set_cookies: list[str]
+    header_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -93,6 +94,8 @@ class Flow:
     private_key: Any
     jwk: dict[str, Any]
     success_calls: list[tuple[Any, ...]] = field(default_factory=list)
+    hook_order: list[str] = field(default_factory=list)
+    request_headers: list[Any] = field(default_factory=list)
     _login: Any = None
     _callback: Any = None
 
@@ -132,6 +135,8 @@ class Flow:
 def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Flow:
     redirect_uri = kwargs.pop("redirect_uri", HTTPS_REDIRECT)
     use_request_hook = kwargs.pop("request_hook", False)
+    both_hooks = kwargs.pop("both_hooks", False)
+    failing_hook = kwargs.pop("failing_hook", False)
     respx_mock.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
         return_value=httpx.Response(200, json=discovery_document())
     )
@@ -144,14 +149,20 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
         FakeJwksEndpoint([jwk]).bind_to_client(client)
 
         def on_success(tokens: object, entry: object) -> None:
+            flow.hook_order.append("on_success")
+            if failing_hook:
+                raise RuntimeError("SECRET-HOOK-FAILURE")
             flow.success_calls.append((tokens, entry))
 
         def on_success_request(tokens: object, entry: object, request: object) -> None:
+            flow.hook_order.append("on_success_request")
             flow.success_calls.append((tokens, entry, request))
 
         hooks: dict[str, Any] = {"on_success": on_success}
         if use_request_hook:
             hooks = {"on_success_request": on_success_request}
+        if both_hooks:
+            hooks = {"on_success": on_success, "on_success_request": on_success_request}
         login_view, callback_view = oidc_login_views(
             client,
             redirect_uri=redirect_uri,
@@ -176,13 +187,20 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
         def _callback(state: str, cookie: str | None, extra: dict[str, str]) -> Result:
             params = {"state": state, "code": "idp-code-1", **extra}
             extra_meta = {"HTTP_COOKIE": cookie} if cookie else {}
-            response = callback_view(RequestFactory().get("/oidc/callback", params, **extra_meta))
+            request = RequestFactory().get("/oidc/callback", params, **extra_meta)
+            try:
+                response = callback_view(request)
+            except Exception:
+                # What Django does with a view that raises: its own 500 page, which carries
+                # none of the view's headers or cookies.
+                return Result(500, None, {}, [], [])
             body = jsonlib.loads(response.content) if response.content else {}
             return Result(
                 response.status_code,
                 response.headers.get("Location"),
                 body,
                 [m.OutputString() for m in response.cookies.values()],
+                [name.lower() for name in response.headers],
             )
 
     else:
@@ -190,14 +208,20 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
         FakeJwksEndpoint([jwk]).bind_to_client(async_client)
 
         async def on_success(tokens: object, entry: object) -> None:
+            flow.hook_order.append("on_success")
+            if failing_hook:
+                raise RuntimeError("SECRET-HOOK-FAILURE")
             flow.success_calls.append((tokens, entry))
 
         async def on_success_request(tokens: object, entry: object, request: object) -> None:
+            flow.hook_order.append("on_success_request")
             flow.success_calls.append((tokens, entry, request))
 
         hooks = {"on_success": on_success}
         if use_request_hook:
             hooks = {"on_success_request": on_success_request}
+        if both_hooks:
+            hooks = {"on_success": on_success, "on_success_request": on_success_request}
         app = FastAPI()
         app.include_router(
             oidc_login_router(
@@ -209,7 +233,7 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
                 **kwargs,
             )
         )
-        http = TestClient(app, follow_redirects=False)
+        http = TestClient(app, follow_redirects=False, raise_server_exceptions=False)
 
         def _login(return_to: str | None) -> Login:
             params = {"return_to": return_to} if return_to is not None else {}
@@ -227,7 +251,10 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
             params = {"state": state, "code": "idp-code-1", **extra}
             headers = {"cookie": cookie} if cookie else {}
             response = http.get("/callback", params=params, headers=headers)
-            body = response.json() if response.content else {}
+            try:
+                body = response.json() if response.content else {}
+            except ValueError:  # Starlette's plain-text 500 for an unhandled exception
+                body = {}
             if "detail" in body:  # HTTPException-shaped error body
                 body = body["detail"]
             return Result(
@@ -235,6 +262,7 @@ def _build_flow(adapter: str, respx_mock: respx.MockRouter, **kwargs: Any) -> Fl
                 response.headers.get("location"),
                 body,
                 response.headers.get_list("set-cookie"),
+                [name.lower() for name in response.headers.keys()],
             )
 
     flow._login = _login
@@ -540,6 +568,242 @@ def test_a_throwing_predicate_accepts_nothing(adapter, respx_mock) -> None:
     entry = flow.store.consume(login.state)
     assert entry is not None
     assert entry.return_to is None
+
+
+# --- GLUE-R1-4: a refusal spends the state -------------------------------------------------
+
+
+def test_the_state_is_spent_by_a_refusal_with_another_browsers_cookie(adapter, respx_mock) -> None:
+    """The victim's own cookie, presented AFTER the attacker's refused attempt, no longer
+    completes the login: the entry was consumed before the cookie was compared (§12.8 rule 1
+    (c)), so a refused callback cannot be retried."""
+    flow = _build_flow(adapter, respx_mock)
+    victim_login = flow.login()
+    victim_cookie = _cookie_header(victim_login.set_cookies)
+    attacker_cookie = _cookie_header(flow.login().set_cookies)
+
+    refused = flow.callback(victim_login.state, attacker_cookie)
+    _assert_uniform_401(refused)
+    _assert_cleared(refused)
+
+    retry = flow.callback(victim_login.state, victim_cookie)
+    _assert_uniform_401(retry)
+    assert flow.token_requests == 0, "no token request, ever"
+    assert flow.success_calls == []
+    assert flow.store.consume(victim_login.state) is None, "the entry is gone"
+
+
+# --- GLUE-R1-5: the cookie is cleared on EVERY callback outcome, errors included ---------------
+
+
+def _assert_generic_500(result: Result) -> None:
+    assert result.status == 500
+    assert "SECRET" not in jsonlib.dumps(result.body)
+    assert result.body.get("error") == "server_error", result.body
+
+
+def test_a_throwing_success_hook_still_clears_the_cookie(adapter, respx_mock) -> None:
+    flow = _build_flow(adapter, respx_mock, failing_hook=True)
+    login = flow.login()
+
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert flow.hook_order == ["on_success"]
+    assert result.status == 500
+    _assert_cleared(result)
+    _assert_generic_500(result)
+
+
+def test_a_failing_state_store_still_clears_the_cookie(adapter, respx_mock, monkeypatch) -> None:
+    flow = _build_flow(adapter, respx_mock)
+    login = flow.login()
+
+    def outage(state: str) -> None:
+        raise ConnectionError("SECRET-redis-down")
+
+    monkeypatch.setattr(flow.store, "consume", outage)
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 500
+    _assert_cleared(result)
+    _assert_generic_500(result)
+    assert flow.token_requests == 0 and flow.success_calls == []
+
+
+def test_an_unexpected_error_in_the_exchange_still_clears_the_cookie(
+    adapter, respx_mock, monkeypatch
+) -> None:
+    flow = _build_flow(adapter, respx_mock)
+    login = flow.login()
+    target = AxiamClient if adapter == "django" else AsyncAxiamClient
+
+    if adapter == "django":
+
+        def boom(self: Any, **kwargs: Any) -> Any:
+            raise ValueError("SECRET-internal-bug")
+
+    else:
+
+        async def boom(self: Any, **kwargs: Any) -> Any:
+            raise ValueError("SECRET-internal-bug")
+
+    monkeypatch.setattr(target, "oidc_exchange", boom)
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 500
+    _assert_cleared(result)
+    _assert_generic_500(result)
+
+
+# --- PYT-R1-6: the success callback receives the callback request, in the documented order -----
+
+
+def test_the_success_callback_receives_the_callback_request(adapter, respx_mock) -> None:
+    from django.http import HttpRequest
+    from starlette.requests import Request
+
+    flow = _build_flow(adapter, respx_mock, request_hook=True)
+    login = flow.login()
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+    assert result.status == 200
+
+    _tokens, entry, request = flow.success_calls[0]
+    assert entry.state == login.state
+    if adapter == "django":
+        assert isinstance(request, HttpRequest)
+        assert request.GET["state"] == login.state, "the request that completed the sign-in"
+        assert request.path == "/oidc/callback"
+    else:
+        assert isinstance(request, Request)
+        assert request.query_params["state"] == login.state
+        assert request.url.path == "/callback"
+
+
+def test_both_success_hooks_run_in_the_documented_order(adapter, respx_mock) -> None:
+    flow = _build_flow(adapter, respx_mock, both_hooks=True)
+    login = flow.login()
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 200
+    assert flow.hook_order == ["on_success", "on_success_request"], "on_success runs first"
+    assert len(flow.success_calls) == 2
+    assert len(flow.success_calls[0]) == 2 and len(flow.success_calls[1]) == 3
+
+
+# --- Decision 7: the adapter writes the percent-encoded redirect target ------------------------
+
+
+def _location_cases() -> list[tuple[str, str, str]]:
+    return [
+        ("space", "/a b", "/a%20b"),
+        ("non-ASCII", "/caf\u00e9", "/caf%C3%A9"),
+        ("euro sign", "/\u20ac", "/%E2%82%AC"),
+        ("already encoded", "/a%20b", "/a%20b"),
+        ("stray percent", "/100%", "/100%25"),
+        ("malformed escape", "/a%zz", "/a%25zz"),
+        ("percent before an escape", "/%%41", "/%25%41"),
+        ("truncated escape", "/a%2", "/a%252"),
+        ("characters the rule leaves alone", "/x?a=b&c|d^e~f", "/x?a=b&c|d^e~f"),
+        ("quote and angle brackets", '/a"<b>', "/a%22%3Cb%3E"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "return_to", "expected"), _location_cases(), ids=[c[0] for c in _location_cases()]
+)
+def test_the_location_header_is_the_percent_encoded_return_to(
+    adapter, respx_mock, name, return_to, expected
+) -> None:
+    flow = _build_flow(adapter, respx_mock)
+    login = flow.login(return_to)
+
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 302
+    assert result.location == expected
+    assert result.location.isascii() and all(0x20 < ord(c) < 0x7F for c in result.location)
+    _assert_cleared(result)
+    assert len(flow.success_calls) == 1
+
+
+def test_a_crlf_value_admitted_by_the_predicate_cannot_split_the_header(
+    adapter, respx_mock
+) -> None:
+    flow = _build_flow(adapter, respx_mock, allow_return_to=lambda value: True)
+    login = flow.login("/a\r\nSet-Cookie: injected=1")
+
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 302
+    assert result.location == "/a%0D%0ASet-Cookie:%20injected=1"
+    cookie_names = [_parse(c)[0] for c in result.set_cookies]
+    assert "injected" not in cookie_names, "no header was injected"
+    _assert_cleared(result)
+    assert len(flow.success_calls) == 1
+
+
+def test_a_backslash_admitted_by_the_predicate_is_kept_unencoded(adapter, respx_mock) -> None:
+    flow = _build_flow(adapter, respx_mock, allow_return_to=lambda value: True)
+    login = flow.login("/a\\b")
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+    assert result.status == 302
+    assert result.location == "/a\\b"
+
+
+def test_a_non_ascii_success_redirect_is_encoded_too(adapter, respx_mock) -> None:
+    flow = _build_flow(adapter, respx_mock, success_redirect="/caf\u00e9/\u20ac")
+    login = flow.login()
+
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 302
+    assert result.location == "/caf%C3%A9/%E2%82%AC"
+    _assert_cleared(result)
+    assert len(flow.success_calls) == 1
+
+
+def test_adjacent_lone_surrogates_do_not_crash_the_encoder() -> None:
+    from axiam_sdk._oidc_binding import encode_redirect_location
+
+    assert encode_redirect_location("/\ud800\ud800") == "/%EF%BF%BD%EF%BF%BD"
+
+
+def test_a_lone_surrogate_in_a_stored_destination_does_not_make_the_encoder_throw(
+    adapter, respx_mock
+) -> None:
+    flow = _build_flow(adapter, respx_mock, allow_return_to=lambda value: True)
+    login = flow.login()
+    cookie = _cookie_header(login.set_cookies)
+    entry = flow.store.consume(login.state)
+    assert entry is not None
+    flow.store.save(dataclasses.replace(entry, return_to="/a\ud800b"))
+
+    result = flow.callback(login.state, cookie)
+
+    assert result.status == 302
+    assert result.location == "/a%EF%BF%BDb"
+    _assert_cleared(result)
+    assert len(flow.success_calls) == 1
+
+
+def test_the_binding_digest_stays_out_of_the_entry_repr() -> None:
+    """PYT-R1-5: §12.8 rule 1 (e) -- not secret, not logged either. A store that logs
+    ``repr(entry)`` must not emit it."""
+    from pydantic import SecretStr
+
+    from axiam_sdk import OidcStateEntry
+
+    digest = hashlib.sha256(b"binding").hexdigest()
+    entry = OidcStateEntry(
+        state="s",
+        nonce="n",
+        code_verifier=SecretStr("v" * 43),
+        redirect_uri=HTTPS_REDIRECT,
+        binding_digest=digest,
+    )
+    assert digest not in repr(entry) and digest not in str(entry)
+    assert entry.binding_digest == digest, "still readable and compared"
+    assert dataclasses.replace(entry, state="s2").binding_digest == digest
 
 
 # --- the in-memory store is bounded -------------------------------------------------------

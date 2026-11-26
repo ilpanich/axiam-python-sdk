@@ -5,17 +5,17 @@ Closure-handler consumer built on ``aio-pika`` (D-02, async-only). Ports
 and ``the Go SDK's amqp/errdrop.go``'s exported ``ErrDrop`` sentinel.
 
 Security invariant (T-19-16/T-19-17/T-19-18): every delivery's HMAC-SHA256
-signature is verified via :func:`axiam_sdk.amqp._hmac.verify_hmac` — proven
-byte-for-byte compatible with the Rust server in 19-01 — BEFORE the
-caller-supplied handler is ever invoked. An unverified message never reaches
-the handler. The SDK owns the ack/nack loop (``message.process(
+signature is verified via :func:`axiam_sdk.amqp._hmac.verify_and_decode` — over the
+received bytes, byte-for-byte compatible with the Rust server — BEFORE the
+caller-supplied handler is ever invoked, and the handler is given the value
+parsed from those verified bytes (server #882). An unverified message never
+reaches the handler. The SDK owns the ack/nack loop (``message.process(
 ignore_processed=True)``); ``aio-pika``'s automatic context-manager
 auto-acking is never used.
 
 Ack/nack decision matrix (§8):
 
 - HMAC verification fails                -> nack(requeue=False) + security log
-- Post-verify JSON/body parse fails       -> nack(requeue=False) + security log
 - NEW-4 replay-protection check fails     -> nack(requeue=False) + security log
 - handler(event) returns ``None``         -> ack()
 - handler(event) raises :class:`ErrDrop`  -> nack(requeue=False)
@@ -37,7 +37,6 @@ so nonce dedup actually persists across the consumer's lifetime.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -45,7 +44,7 @@ from typing import Any
 
 from aio_pika.abc import AbstractChannel, AbstractIncomingMessage
 
-from axiam_sdk.amqp._hmac import verify_hmac
+from axiam_sdk.amqp._hmac import verify_and_decode
 from axiam_sdk.amqp._replay import DEFAULT_SKEW_SECONDS, NonceStore, validate_freshness
 
 #: Default AMQP QoS prefetch count applied unless the caller overrides it
@@ -110,8 +109,12 @@ async def _on_message(
     async with message.process(ignore_processed=True):
         # HMAC verification MUST happen before anything else touches the
         # body — the handler must never see an unverified message
-        # (T-19-16). verify_hmac() never raises.
-        if not verify_hmac(signing_key, message.body):
+        # (T-19-16). The signature is checked over the RECEIVED bytes and the
+        # event handed on is parsed from those same verified bytes (server
+        # #882, D-5): the body is never parsed a second time, and never
+        # re-serialized. verify_and_decode() never raises.
+        event = verify_and_decode(signing_key, message.body)
+        if event is None:
             # Security event (§8.4): the fact of failure only. NEVER the
             # received or computed signature value (T-19-17).
             logger.warning(
@@ -120,21 +123,8 @@ async def _on_message(
             await message.nack(requeue=False)
             return
 
-        try:
-            event = json.loads(message.body)
-            if not isinstance(event, dict):
-                raise TypeError("AMQP message body is not a JSON object")
-            event.pop("hmac_signature", None)
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
-            logger.warning(
-                "axiam_sdk_security: AMQP message body failed to parse "
-                "after HMAC verification; nacking without requeue"
-            )
-            await message.nack(requeue=False)
-            return
-
         # NEW-4 replay protection: key_version/nonce/issued_at are already
-        # covered by the HMAC (verify_hmac is schema-agnostic and signs
+        # covered by the HMAC (verify_and_decode is schema-agnostic and signs
         # whatever keys arrived), but the signature alone can't express
         # "not too old" or "not seen before" — that's checked here, after
         # verification, never before (an attacker cannot forge these

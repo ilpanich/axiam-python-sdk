@@ -59,7 +59,7 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   trailing signature member cut out (never a re-serialization), the decision decoded from those same
   bytes, `tenant_id` the requester's own, `correlation_id` and `nonce` matching an outstanding
   request. Anything else is nacked without requeue, logged, never an allow. Unsigned responses are
-  refused unless `allow_unsigned_responses=True`. Also `AioPikaAuthzTransport`, `AuthzDecision`,
+  always discarded (there is no opt-out; see "Removed"). Also `AioPikaAuthzTransport`, `AuthzDecision`,
   `AuthzTransport`, `build_authz_request`. Tests pin all four §8 vectors.
 - `require_scope` — `axiam_sdk.fastapi.require_scope(verifier, tenant, *scopes)` and
   `axiam_sdk.django.decorators.require_scope(*scopes)`: a local check of the token's granted `scope`.
@@ -70,6 +70,44 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   `return_to` rule (consulted only for values the default rule refuses; a predicate that raises
   accepts nothing).
 - `OidcStateEntry.binding_digest` (optional) and `MemoryOidcStateStore(max_entries=...)`.
+
+### Fixed (follow-up review, OI-11; contract 1.69)
+
+- **Back-channel logout token `kid` (axiam#880).** `verify_logout_token` selects the key by `kid`
+  (CONTRACT §12.7.3 rule 1, 1.69): a token with no `kid`, or an unknown one, raises `AuthError` with
+  `reason == "unknown_kid"` (a bad signature `invalid_signature`, a wrong `alg` `invalid_alg`, an
+  expired token `token_expired`). Tests use a server-shaped token (header exactly
+  `alg`/`typ: logout+jwt`/`kid`) against a two-key JWKS, and pin that §10.1 rules 10 and 11 do not
+  apply to the logout and ID-token paths.
+- **The event consumer verifies the received bytes (axiam#882, D-5).** `verify_hmac` no longer
+  re-serializes (`json.dumps` escaped every non-ASCII character, so a genuine message containing one
+  failed). The HMAC is computed over the delivery body with its trailing `hmac_signature` member cut
+  out, and `consume(...)` hands the handler the object parsed from those same bytes. A duplicate or
+  case-variant key, trailing content or a signature that is not the last member is nacked without
+  requeue. New `axiam_sdk.amqp._hmac.verify_and_decode`.
+- **Discard event (axiam#883, PYT-R1-1).** Every discarded authorization response logs one warning
+  with `timestamp`, `exchange`, `routing_key` (the reply queue), `tenant_id` (the requester's own)
+  and `reason`; never a signature, nonce or body member.
+- **PYT-R1-2.** An unexpected exception while handling one reply delivery (a lone-surrogate `nonce`
+  used to raise `UnicodeEncodeError`) no longer ends the consumer loop and shuts the requester down
+  silently: it is logged by type, the delivery nacked, the requester keeps serving; the end of the
+  reply queue is logged once.
+- **GLUE-R1-5.** The binding cookie is cleared when the success hook, the state store or any
+  unexpected error fails: the callback answers a generic `500` instead of raising (PYT-R1-4: the
+  cookie clear wins over propagation to the application's exception handlers; see the README).
+- **`Location` encoding (TYP-R3-1, Decision 7).** Both glues write the percent-encoded form of the
+  redirect target themselves (`encode_redirect_location`): a stray `%` became `%25`, a lone
+  surrogate U+FFFD, instead of whatever the framework's redirect helper did.
+- **PYT-R1-5.** `OidcStateEntry.binding_digest` is excluded from `repr()`.
+- Tests: PYT-R1-3 (the "signature not trailing" case renamed, a real one added), PYT-R1-6 (request
+  type and both hooks in order), GLUE-R1-4 (state spent by a refusal; pinned, not a defect).
+
+### Removed
+
+- The AMQP authz requester no longer offers an opt-out for unsigned responses
+  (`allow_unsigned_responses` and `AuthzDecision.unsigned`, added earlier in 1.4.0 and never
+  released): no AXIAM server sends one to a reply queue, so the option could admit only a forged
+  response (CONTRACT 1.69 §8, server #881). The requester requires a 1.68 server.
 
 ### Migration notes
 

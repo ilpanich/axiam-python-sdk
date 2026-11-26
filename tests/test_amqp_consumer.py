@@ -211,44 +211,20 @@ async def test_handler_raises_other_exception_nacks_with_requeue(
     assert message.nacked is True  # requeue=True
 
 
-async def test_post_verify_parse_failure_nacks_without_requeue(
+async def test_validly_signed_unparseable_body_nacks_without_requeue(
     recording_logger: tuple[logging.Logger, _RecordingLogHandler],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Path 5: HMAC verifies, but the post-verify parse step fails (body is
-    not a usable JSON object once re-parsed) -> nack(requeue=False); handler
-    NOT invoked.
+    """Path 5: the HMAC verifies over the received bytes, but those bytes are not a usable JSON
+    object -> nack(requeue=False); handler NOT invoked.
 
-    Both ``verify_hmac`` and the consumer's own event-parsing step decode
-    the identical ``message.body`` bytes, so a body that fails to parse as a
-    JSON object structurally also fails HMAC verification first (the same
-    is true of the Go reference's ``verifyHMAC``, which also requires a
-    JSON-object body). This test proves the *independent* parse-failure
-    branch in ``_on_message`` — reached only after HMAC verification has
-    already succeeded — behaves identically to the HMAC-failure path
-    (nack-without-requeue, handler never invoked, no signature in the log)
-    by making ``json.loads`` fail on the SECOND (post-verify) call only,
-    isolating the parse-failure branch from the HMAC-failure branch.
-    """
-    import axiam_sdk.amqp._consumer as consumer_module
-
+    The SDK parses the verified bytes once (server #882: verify the received bytes, dispatch
+    what was parsed from them), so this refusal is part of verification and needs no separate
+    "post-verify parse" branch. The body here is correctly signed over ``{not json}``: the
+    scenario an attacker holding the signing key could still produce."""
     logger, handler_records = recording_logger
-    message = RecordingMessage(VALID_BODY)  # a body that DOES pass verify_hmac
-
-    real_loads = json.loads
-    call_count = 0
-
-    def _loads_fail_second_call(*args: object, **kwargs: object) -> object:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            # First call is inside verify_hmac() — let it succeed normally.
-            return real_loads(*args, **kwargs)
-        # Second call is _on_message's own post-verify parse — force it to
-        # fail, isolating the parse-failure branch.
-        raise json.JSONDecodeError("forced parse failure", "{}", 0)
-
-    monkeypatch.setattr(consumer_module.json, "loads", _loads_fail_second_call)
+    canonical = '{"action":"update","resource_id":[}'
+    mac = hmac.new(VALID_SIGNING_KEY, canonical.encode(), hashlib.sha256).hexdigest()
+    message = RecordingMessage((canonical[:-1] + ',"hmac_signature":"' + mac + '"}').encode())
 
     handler_calls = 0
 

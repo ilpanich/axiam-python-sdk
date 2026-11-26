@@ -17,9 +17,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
-
-import axiam_sdk.amqp._consumer as consumer_module
 from axiam_sdk.amqp._consumer import CONSUMER_TAG, DEFAULT_PREFETCH, _on_message, consume
 
 VALID_SIGNING_KEY = b"axiam-sdk-test-signing-key"
@@ -137,26 +134,14 @@ async def test_consume_uses_default_logger_when_none() -> None:
     assert channel.queue.callback is not None
 
 
-async def test_on_message_non_object_body_nacks_without_requeue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A body that verifies via HMAC but re-parses to a non-dict (e.g. a
-    JSON array) hits the ``raise TypeError`` guard, which is caught and
-    nacked without requeue exactly like a parse failure."""
-    body = _sign(VALID_SIGNING_KEY, {"action": "read", "resource_id": "r", **_v2_fields()})
-    message = RecordingMessage(body)
-
-    real_loads = json.loads
-    calls = 0
-
-    def _loads(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return real_loads(*args, **kwargs)  # inside verify_hmac
-        return [1, 2, 3]  # post-verify parse yields a non-object
-
-    monkeypatch.setattr(consumer_module.json, "loads", _loads)
+async def test_on_message_validly_signed_non_object_body_nacks_without_requeue() -> None:
+    """A body whose signature verifies over the received bytes but which is not one JSON object
+    (here: valid HMAC over ``{not json}``) is nacked without requeue and never dispatched. The
+    SDK parses the verified bytes exactly once (server #882), so there is no separate
+    "re-parse" step left to fail: the refusal is part of verification."""
+    canonical = '{"action":"read","resource_id":["r",}'
+    mac = hmac.new(VALID_SIGNING_KEY, canonical.encode(), hashlib.sha256).hexdigest()
+    message = RecordingMessage((canonical[:-1] + ',"hmac_signature":"' + mac + '"}').encode())
 
     handler_calls = 0
 

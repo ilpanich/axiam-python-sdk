@@ -94,6 +94,7 @@ CONTRACT.md §28.3 rule 2 describes applies to :mod:`axiam_sdk.django`, whose
 from __future__ import annotations
 
 import hmac
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -119,6 +120,7 @@ from axiam_sdk._oidc_binding import (
     BindingCookieSpec,
     binding_cookie_spec,
     binding_matches,
+    encode_redirect_location,
     new_binding,
     resolve_return_to,
 )
@@ -826,6 +828,9 @@ def serve_protected_resource_metadata(
 _OIDC_INVALID_REQUEST_STATUS = 400
 _OIDC_AUTH_FAILED_STATUS = 401
 _OIDC_UNAVAILABLE_STATUS = 503
+_OIDC_SERVER_ERROR_STATUS = 500
+
+_LOGGER = logging.getLogger("axiam_sdk")
 
 
 def _error_response(status_code: int, detail: dict[str, str]) -> JSONResponse:
@@ -1002,11 +1007,32 @@ def oidc_login_router(
         ``error=...`` -> 401; ``state``/``code`` missing -> 400; ``state``
         unknown/expired/already-used, or no matching binding cookie -> the
         same uniform 401; any §12.4 ID-token failure or ``OAuthProtocolError``
-        -> 401; a transport failure -> 503. Every response clears the binding
-        cookie, so the error bodies are returned (in ``HTTPException``'s
-        ``{"detail": ...}`` shape) rather than raised.
+        -> 401; a transport failure -> 503; an unexpected failure (the state
+        store is down, an ``on_success*`` hook raised) -> a generic 500 with no
+        detail. Every response clears the binding cookie, so the error bodies
+        are returned (in ``HTTPException``'s ``{"detail": ...}`` shape) rather
+        than raised: **an application ``exception_handler`` therefore does not
+        see these errors** (CONTRACT.md §12.8 rule 1 (d) puts the cookie clear
+        first).
         """
-        response = await _complete(request, state, code, error, error_description)
+        try:
+            response = await _complete(request, state, code, error, error_description)
+        except Exception as exc:  # noqa: BLE001 -- see below: the cookie is cleared on EVERY outcome
+            # §12.8 rule 1 (d): the state is already consumed by now, and the browser's binding
+            # cookie must not outlive it. An exception that left this function would reach
+            # Starlette's error handling with no way to attach a header, so an unexpected
+            # failure (the state store is down, ``on_success`` raised, a bug) is answered here
+            # with a generic 500 that clears the cookie. Only the exception's type is logged,
+            # never its message. This is the documented deviation from propagating to the
+            # application's exception handlers (README, "Login glue").
+            _LOGGER.error(
+                "axiam_sdk: the OIDC login callback failed unexpectedly (%s)",
+                type(exc).__qualname__,
+            )
+            response = _error_response(
+                _OIDC_SERVER_ERROR_STATUS,
+                {"error": "server_error", "message": "the login callback failed"},
+            )
         _set_binding_cookie(response, cookie_spec, "", 0)
         return response
 
@@ -1077,7 +1103,12 @@ def oidc_login_router(
         # and the entry older glue's.
         destination = success_redirect or resolve_return_to(entry.return_to, allow_return_to)
         if destination:
-            return RedirectResponse(url=destination, status_code=302)
+            # Decision 7: the adapter writes the percent-encoded form, itself, at this point --
+            # not left to RedirectResponse, whose quoting keeps a stray ``%`` and encodes ``^``
+            # and ``|``.
+            return Response(
+                status_code=302, headers={"location": encode_redirect_location(destination)}
+            )
 
         body: dict[str, object] = {"authenticated": True, "expires_in": tokens.expires_in}
         if tokens.id_claims is not None:
