@@ -71,6 +71,52 @@ class ErrDrop(Exception):
     """
 
 
+#: The top-level members of the two signed layouts a consumer queue carries (CONTRACT §8 v2), in
+#: wire order, with whether each is required. Any other shape signed with the tenant subkey
+#: (a ``CacheInvalidationMessage``, an ``AuthzResponse``) is not an event for this consumer.
+_AUTHZ_REQUEST_LAYOUT: tuple[tuple[str, bool], ...] = (
+    ("correlation_id", True),
+    ("tenant_id", True),
+    ("subject_id", True),
+    ("action", True),
+    ("resource_id", True),
+    ("scope", False),
+    ("key_version", True),
+    ("nonce", True),
+    ("issued_at", True),
+)
+_AUDIT_EVENT_LAYOUT: tuple[tuple[str, bool], ...] = (
+    ("tenant_id", True),
+    ("actor_id", True),
+    ("actor_type", True),
+    ("action", True),
+    ("resource_id", False),
+    ("outcome", True),
+    ("ip_address", False),
+    ("metadata", False),
+    ("key_version", True),
+    ("nonce", True),
+    ("issued_at", True),
+)
+
+
+def _has_layout(event: dict[str, Any], layout: tuple[tuple[str, bool], ...]) -> bool:
+    keys = list(event)
+    position = 0
+    for name, required in layout:
+        if position < len(keys) and keys[position] == name:
+            position += 1
+        elif required:
+            return False
+    return position == len(keys)
+
+
+def _is_event_layout(event: dict[str, Any]) -> bool:
+    """Whether the verified object's members are, in order, exactly an ``AuthzRequest`` or an
+    ``AuditEventMessage`` (optional members may be absent)."""
+    return _has_layout(event, _AUTHZ_REQUEST_LAYOUT) or _has_layout(event, _AUDIT_EVENT_LAYOUT)
+
+
 async def _on_message(
     message: AbstractIncomingMessage,
     signing_key: bytes,
@@ -114,6 +160,15 @@ async def _on_message(
         # #882, D-5): the body is never parsed a second time, and never
         # re-serialized. verify_and_decode() never raises.
         event = verify_and_decode(signing_key, message.body)
+        if event is not None and not _is_event_layout(event):
+            # Validly signed under the tenant subkey, but another message type (e.g. a
+            # CacheInvalidationMessage replayed onto this queue): not an event.
+            logger.warning(
+                "axiam_sdk_security: AMQP message is not an AuthzRequest or AuditEventMessage; "
+                "nacking without requeue"
+            )
+            await message.nack(requeue=False)
+            return
         if event is None:
             # Security event (§8.4): the fact of failure only. NEVER the
             # received or computed signature value (T-19-17).

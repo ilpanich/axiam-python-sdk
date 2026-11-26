@@ -30,6 +30,18 @@ def _v2_fields() -> dict[str, Any]:
     }
 
 
+def _authz(action: str, resource_id: str) -> dict[str, Any]:
+    """A genuine ``AuthzRequest`` layout (CONTRACT §8 v2): the consumer refuses other shapes."""
+    return {
+        "correlation_id": "11111111-1111-1111-1111-111111111111",
+        "tenant_id": "22222222-2222-2222-2222-222222222222",
+        "subject_id": "33333333-3333-3333-3333-333333333333",
+        "action": action,
+        "resource_id": resource_id,
+        **_v2_fields(),
+    }
+
+
 def _sign(signing_key: bytes, message: dict[str, Any]) -> bytes:
     canonical = json.dumps(message, separators=(",", ":")).encode("utf-8")
     sig = hmac.new(signing_key, canonical, hashlib.sha256).hexdigest()
@@ -113,7 +125,7 @@ async def test_consume_callback_dispatches_to_on_message() -> None:
     await consume(channel, "q", VALID_SIGNING_KEY, handler, prefetch=3)
     assert channel.qos == {"prefetch_count": 3}
 
-    body = _sign(VALID_SIGNING_KEY, {"action": "read", "resource_id": "r", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("read", "r"))
     message = RecordingMessage(body)
 
     # Invoke the registered per-delivery callback -> _on_message -> handler.

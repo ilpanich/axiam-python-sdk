@@ -645,6 +645,7 @@ async def test_a_failing_ack_after_acceptance_leaves_the_decision_and_the_reques
             AckFails(_signed_response(published["correlation_id"], nonce))
         )
         assert (await asyncio.wait_for(task, 2)).allowed is True
+        assert discard_events(log) == [], "an accepted answer is not a discard"
 
         task2 = asyncio.create_task(requester.check(SUBJECT, "b", RESOURCE))
         published2 = await _next_published(transport, 2)
@@ -653,6 +654,27 @@ async def test_a_failing_ack_after_acceptance_leaves_the_decision_and_the_reques
             RecordingDelivery(_signed_response(published2["correlation_id"], nonce2))
         )
         assert (await asyncio.wait_for(task2, 2)).allowed is True
+    finally:
+        await requester.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_nack_after_a_discard_emits_no_second_event() -> None:
+    class NackFails(RecordingDelivery):
+        async def nack(self) -> None:
+            raise ConnectionError("channel closed")
+
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
+    try:
+        await transport.deliveries.put(NackFails(b"not json"))
+        await asyncio.sleep(0.05)
+        events = discard_events(log)
+        assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
+        assert not requester._closed
     finally:
         await requester.close()
 

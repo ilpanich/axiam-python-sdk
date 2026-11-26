@@ -71,7 +71,15 @@ class _Message:
 
 
 def _canonical_with(action: str) -> str:
-    body = _serde_style({"tenant_id": "t-1", "action": action})
+    body = _serde_style(
+        {
+            "correlation_id": "c",
+            "tenant_id": "t-1",
+            "subject_id": "s",
+            "action": action,
+            "resource_id": "r",
+        }
+    )
     return body[:-1] + "," + _v2() + "}"
 
 
@@ -103,21 +111,25 @@ def _duplicate_key_attack() -> bytes:
     with a first, different value: the old verifier re-serialized, so it accepted this, and the
     handler saw ``read`` while a decoder keeping the first duplicate would read ``admin``."""
     fields = _v2()
-    reserialized = '{"tenant_id":"t-1","action":"read",' + fields + "}"
+    reserialized = (
+        '{"correlation_id":"c","tenant_id":"t-1","subject_id":"s","action":"read","resource_id":"r",'
+        + fields
+        + "}"
+    )
     mac = hmac.new(KEY, reserialized.encode(), hashlib.sha256).hexdigest()
     sent = (
-        '{"tenant_id":"t-1","action":"admin","action":"read",'
-        + fields
-        + ',"hmac_signature":"'
-        + mac
-        + '"}'
+        '{"correlation_id":"c","tenant_id":"t-1","subject_id":"s","action":"admin",'
+        '"action":"read","resource_id":"r",' + fields + ',"hmac_signature":"' + mac + '"}'
     )
     return sent.encode("utf-8")
 
 
 def _signed_duplicate_key() -> bytes:
     """A duplicate key, validly signed over the received bytes."""
-    return _signed('{"tenant_id":"t-1","action":"a","action":"b",' + _v2() + "}")
+    return _signed(
+        '{"correlation_id":"c","tenant_id":"t-1","subject_id":"s","action":"a","action":"b",'
+        '"resource_id":"r",' + _v2() + "}"
+    )
 
 
 def _signed_with_trailing_content() -> bytes:
@@ -164,3 +176,68 @@ async def test_a_body_with_a_duplicate_key_or_trailing_content_is_nacked_and_nev
     assert handled == [], "the handler must never run"
     assert message.nacked is False, "nacked without requeue"
     assert message.acked is False
+
+
+# --- the verified object must be one of the two §8 v2 layouts ----------------------------------
+
+
+def _authz_layout() -> str:
+    return (
+        '{"correlation_id":"c","tenant_id":"t","subject_id":"s","action":"a","resource_id":"r",'
+        + _v2()
+        + "}"
+    )
+
+
+def _audit_layout(optional: bool) -> str:
+    extra = '"resource_id":"r",' if optional else ""
+    return (
+        '{"tenant_id":"t","actor_id":"a","actor_type":"User","action":"x",'
+        + extra
+        + '"outcome":"Success",'
+        + _v2()
+        + "}"
+    )
+
+
+@pytest.mark.parametrize(
+    "canonical",
+    [_authz_layout(), _audit_layout(True), _audit_layout(False)],
+    ids=["authz request", "audit event", "audit event without optionals"],
+)
+@pytest.mark.asyncio
+async def test_the_two_v2_layouts_are_dispatched(canonical: str) -> None:
+    handled: list[dict[str, Any]] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        handled.append(event)
+
+    message = _Message(_signed(canonical))
+    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    assert len(handled) == 1 and message.acked is True
+
+
+@pytest.mark.parametrize(
+    "canonical",
+    [
+        '{"tenant_id":"t","scope":"roles",' + _v2() + "}",  # a CacheInvalidationMessage shape
+        '{"correlation_id":"c","allowed":true,"tenant_id":"t",' + _v2() + "}",  # an AuthzResponse
+        '{"tenant_id":"t","correlation_id":"c","subject_id":"s","action":"a","resource_id":"r",'
+        + _v2()
+        + "}",  # authz members, wrong order
+        _authz_layout()[:-1] + ',"extra":1}',
+    ],
+    ids=["cache invalidation", "authz response", "wrong order", "extra member"],
+)
+@pytest.mark.asyncio
+async def test_a_validly_signed_message_of_another_shape_is_nacked_and_never_dispatched(
+    canonical: str,
+) -> None:
+    handled: list[dict[str, Any]] = []
+
+    async def handler(event: dict[str, Any]) -> None:
+        handled.append(event)
+
+    message = _Message(_signed(canonical))
+    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    assert handled == [] and message.nacked is False and message.acked is False

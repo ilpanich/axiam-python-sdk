@@ -499,13 +499,15 @@ class AuthzRequester:
             decision, correlation_id = self._verify_response(body)
         except _Discard as exc:
             self._log_discard(str(exc))
-            await delivery.nack()
+            with contextlib.suppress(Exception):
+                await delivery.nack()
             return
 
         pending = self._pending.get(correlation_id)
         if pending is None or pending.future.done():
             self._log_discard("unknown_request")
-            await delivery.nack()
+            with contextlib.suppress(Exception):
+                await delivery.nack()
             return
         # Retire on acceptance: a second response for it is dropped.
         del self._pending[correlation_id]

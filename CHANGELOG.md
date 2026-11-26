@@ -102,6 +102,12 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
 - Tests: PYT-R1-3 (the "signature not trailing" case renamed, a real one added), PYT-R1-6 (request
   type and both hooks in order), GLUE-R1-4 (state spent by a refusal; pinned, not a defect).
 
+- **Unknown-`kid` cooldown (review round 1).** The JWKS verifier no longer disables PyJWT's cache on
+  a forced re-fetch: the `kid` is looked up by hand, an unknown one costs at most one re-fetch per
+  60 s window (the cache is refilled, not dropped), on the access-, ID- and logout-token paths
+  (§12.4 rule 2, §12.7.3 rule 1). Logout reason codes are never `None`. The event consumer also
+  refuses a validly signed message that is not an `AuthzRequest` or `AuditEventMessage` layout.
+
 ### Removed
 
 - The AMQP authz requester no longer offers an opt-out for unsigned responses

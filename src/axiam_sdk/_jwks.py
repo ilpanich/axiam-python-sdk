@@ -61,8 +61,10 @@ import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import (
     ExpiredSignatureError,
-    InvalidSignatureError,
+    ImmatureSignatureError,
+    InvalidIssuedAtError,
     MissingRequiredClaimError,
+    PyJWKClientError,
     PyJWTError,
 )
 from jwt.types import Options
@@ -330,15 +332,15 @@ class JwksVerifier:
 
         Raises:
             AuthError: with ``reason`` ``invalid_alg`` (``alg`` is not EdDSA), ``unknown_kid``
-                (no ``kid``, or no JWKS key matches it after at most one re-fetch per cooldown
-                window) or ``invalid_signature``.
+                (no ``kid``, or no JWKS key matches it; at most one re-fetch per 60 s window,
+                the cache survives it) ``token_expired`` or ``invalid_signature``.
         """
         try:
             header = jwt.get_unverified_header(token)
         except PyJWTError as exc:
             raise AuthError(
-                "logout token validation failed (invalid_signature): malformed token header",
-                reason="invalid_signature",
+                "logout token validation failed (invalid_alg): malformed token header",
+                reason="invalid_alg",
             ) from exc
         if header.get("alg") != "EdDSA":
             raise AuthError(
@@ -375,15 +377,16 @@ class JwksVerifier:
                 # rather than duplicated under a less specific error.
                 options={"verify_aud": False},
             )
-        except ExpiredSignatureError as exc:
-            raise AuthError("logout token has expired", reason="token_expired") from exc
-        except InvalidSignatureError as exc:
+        except (ExpiredSignatureError, ImmatureSignatureError, InvalidIssuedAtError) as exc:
             raise AuthError(
-                "logout token validation failed (invalid_signature): signature verification failed",
-                reason="invalid_signature",
+                "logout token validation failed (token_expired): outside its validity window",
+                reason="token_expired",
             ) from exc
         except PyJWTError as exc:
-            raise AuthError(f"logout token is invalid: {type(exc).__name__}") from exc
+            raise AuthError(
+                "logout token validation failed (invalid_signature): the token is not valid",
+                reason="invalid_signature",
+            ) from exc
 
     def _verify_claims(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
         """CONTRACT.md §10.1 rules **1-8** — everything except the sender
@@ -753,35 +756,37 @@ class JwksVerifier:
         against whatever a prior lock-holder may have already
         fetched/repaired before ever triggering another fetch itself.
         """
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not kid:
+            raise PyJWKClientError("the token carries no kid")
         with self._refetch_lock:
+            # Looked up by hand: PyJWT's own ``get_signing_key`` re-fetches on EVERY miss, which
+            # no cooldown bounds (§12.4 rule 2).
             try:
-                return self._client.get_signing_key_from_jwt(token)
+                cached = PyJWKClient.match_kid(self._client.get_signing_keys(), kid)
             except PyJWTError:
-                # Unknown kid, a stale in-TTL cache after key rotation, or
-                # an empty/malformed keyset response (e.g. a rotation
-                # window where the new key has not yet propagated).
-                # PyJWTError is the common base of both PyJWKClientError
-                # (unknown kid) and PyJWKSetError (empty/invalid keyset) —
-                # both failure modes warrant the same forced-refetch
-                # response below.
-                pass
+                # An empty/malformed keyset (e.g. a rotation window where the new key has not
+                # propagated) reaches the forced path below like an unknown kid.
+                cached = None
+            if cached is not None:
+                return cached
 
             now = time.monotonic()
             if (
                 self._last_forced_refetch is not None
                 and now - self._last_forced_refetch < _FORCED_REFETCH_MIN_INTERVAL_SECONDS
             ):
-                # Rate-limited: another caller already forced a refetch
-                # recently (while we waited for the lock, or just before
-                # us) — surface whatever the current cache yields rather
-                # than hammering the endpoint again.
-                return self._client.get_signing_key_from_jwt(token)
+                # Inside the cooldown window: no fetch, the kid is unknown.
+                raise PyJWKClientError("no JWKS key matches the token's kid")
 
-            # Force exactly one rate-limited refetch, then retry once. A
-            # second failure propagates to the caller.
-            self._client.jwk_set_cache = None
+            # One re-fetch per window. ``refresh=True`` refills the cache (it does not disable
+            # it), so valid tokens afterwards cost no fetch.
             self._last_forced_refetch = now
-            return self._client.get_signing_key_from_jwt(token)
+            fresh = PyJWKClient.match_kid(self._client.get_signing_keys(refresh=True), kid)
+            if fresh is None:
+                raise PyJWKClientError("no JWKS key matches the token's kid")
+            return fresh
 
 
 def verify_certificate_binding(

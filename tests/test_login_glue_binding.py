@@ -750,6 +750,19 @@ def test_a_backslash_admitted_by_the_predicate_is_kept_unencoded(adapter, respx_
     assert result.location == "/a\\b"
 
 
+def test_a_scheme_django_refuses_is_not_followed_even_when_the_predicate_admits_it(
+    respx_mock,
+) -> None:
+    flow = _build_flow("django", respx_mock, allow_return_to=lambda value: True)
+    login = flow.login("javascript:alert(1)")
+
+    result = flow.callback(login.state, _cookie_header(login.set_cookies))
+
+    assert result.status == 200, "falls back to the JSON summary, as for any refused return_to"
+    assert result.location is None
+    _assert_cleared(result)
+
+
 def test_a_non_ascii_success_redirect_is_encoded_too(adapter, respx_mock) -> None:
     flow = _build_flow(adapter, respx_mock, success_redirect="/caf\u00e9/\u20ac")
     login = flow.login()

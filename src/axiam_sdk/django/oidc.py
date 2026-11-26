@@ -26,6 +26,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+from django.core.exceptions import DisallowedRedirect
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 
 from axiam_sdk._client import AxiamClient
@@ -302,9 +303,16 @@ def oidc_login_views(
             # Decision 7: the adapter writes the percent-encoded form, itself, at this point --
             # not left to HttpResponseRedirect, which would re-encode ``^`` and ``|`` and keep a
             # stray ``%``.
-            redirect = HttpResponseRedirect("/")
-            redirect["Location"] = encode_redirect_location(destination)
-            return redirect
+            try:
+                # Django's own scheme allow-list (``allowed_schemes``) still applies: a target it
+                # refuses (``javascript:`` admitted by a predicate) is treated as refused.
+                location = encode_redirect_location(destination)
+                redirect = HttpResponseRedirect(location)
+            except DisallowedRedirect:
+                redirect = None
+            if redirect is not None:
+                redirect["Location"] = location
+                return redirect
 
         body: dict[str, Any] = {"authenticated": True, "expires_in": tokens.expires_in}
         if tokens.id_claims is not None:

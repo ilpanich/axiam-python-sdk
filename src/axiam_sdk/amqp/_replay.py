@@ -5,10 +5,10 @@ fields to the signed body of ``AuthzRequest``/``AuditEventMessage``, in
 declaration order after the existing fields and before ``hmac_signature``:
 ``key_version``, ``nonce``, ``issued_at``.
 
-The consumer's HMAC canonicalization (:func:`axiam_sdk.amqp._hmac.verify_hmac`)
-is schema-agnostic — it re-serializes whatever keys arrived (minus
-``hmac_signature``) in their received order, so these three fields are
-*already* covered by the signature with no canonicalization change. What
+The consumer's HMAC canonicalization (:func:`axiam_sdk.amqp._hmac.verify_and_decode`)
+is schema-agnostic — it verifies the received bytes (minus the trailing
+``hmac_signature`` member), so these three fields are *already* covered by
+the signature with no canonicalization change. What
 the signature alone cannot express is the semantic replay-protection
 policy, which this module adds as a POST-HMAC-verification step:
 
@@ -124,7 +124,7 @@ def validate_freshness(
 ) -> str | None:
     """Run the NEW-4 post-HMAC-verification checks on a parsed message.
 
-    MUST only be called after :func:`axiam_sdk.amqp._hmac.verify_hmac` has
+    MUST only be called after :func:`axiam_sdk.amqp._hmac.verify_and_decode` has
     already succeeded for this exact delivery — ``key_version``, ``nonce``,
     and ``issued_at`` are part of the signed body, so an attacker cannot
     forge or strip them without also forging the HMAC signature.

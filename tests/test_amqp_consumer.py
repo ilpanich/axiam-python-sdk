@@ -51,6 +51,18 @@ def _v2_fields(now: datetime | None = None) -> dict[str, Any]:
     }
 
 
+def _authz(action: str, resource_id: str) -> dict[str, Any]:
+    """A genuine ``AuthzRequest`` layout (CONTRACT §8 v2): the consumer refuses other shapes."""
+    return {
+        "correlation_id": "11111111-1111-1111-1111-111111111111",
+        "tenant_id": "22222222-2222-2222-2222-222222222222",
+        "subject_id": "33333333-3333-3333-3333-333333333333",
+        "action": action,
+        "resource_id": resource_id,
+        **_v2_fields(),
+    }
+
+
 def _sign(signing_key: bytes, message: dict[str, Any]) -> bytes:
     """Build a wire body with a real HMAC-SHA256 signature for arbitrary
     message content, reusing the exact canonicalization axiam_sdk.amqp._hmac
@@ -62,11 +74,7 @@ def _sign(signing_key: bytes, message: dict[str, Any]) -> bytes:
     return json.dumps(signed, separators=(",", ":")).encode("utf-8")
 
 
-VALID_MESSAGE: dict[str, Any] = {
-    "action": "read",
-    "resource_id": "44444444-4444-4444-4444-444444444444",
-    **_v2_fields(),
-}
+VALID_MESSAGE: dict[str, Any] = _authz("read", "44444444-4444-4444-4444-444444444444")
 VALID_BODY = _sign(VALID_SIGNING_KEY, VALID_MESSAGE)
 VALID_SIGNATURE_HEX = json.loads(VALID_BODY)["hmac_signature"]
 
@@ -182,7 +190,7 @@ async def test_handler_raises_errdrop_nacks_without_requeue(
 ) -> None:
     """Path 3: valid HMAC + handler raises ErrDrop -> nack(requeue=False)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, {"action": "delete", "resource_id": "x", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("delete", "x"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:
@@ -199,7 +207,7 @@ async def test_handler_raises_other_exception_nacks_with_requeue(
 ) -> None:
     """Path 4: valid HMAC + handler raises a plain exception -> nack(requeue=True)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, {"action": "update", "resource_id": "y", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("update", "y"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:
