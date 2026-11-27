@@ -147,7 +147,9 @@ async def test_valid_hmac_and_none_handler_acks(
     async def handler(event: dict[str, Any]) -> None:
         handler_called_with.append(event)
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is True
     assert message.nacked is None
@@ -173,7 +175,9 @@ async def test_invalid_hmac_nacks_without_requeue_and_handler_never_called(
         nonlocal handler_calls
         handler_calls += 1
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False
@@ -196,7 +200,9 @@ async def test_handler_raises_errdrop_nacks_without_requeue(
     async def handler(event: dict[str, Any]) -> None:
         raise ErrDrop("poison message")
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False
@@ -213,7 +219,9 @@ async def test_handler_raises_other_exception_nacks_with_requeue(
     async def handler(event: dict[str, Any]) -> None:
         raise RuntimeError("transient downstream failure")
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is True  # requeue=True
@@ -240,7 +248,9 @@ async def test_validly_signed_unparseable_body_nacks_without_requeue(
         nonlocal handler_calls
         handler_calls += 1
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False

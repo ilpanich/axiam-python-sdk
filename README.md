@@ -470,11 +470,27 @@ async def handler(event: dict) -> None:
     ...  # None return -> ack; any other exception -> nack with requeue
 
 
-await consume(channel, "axiam.authz.request", signing_key, handler, prefetch=10)
+await consume(
+    channel,
+    "axiam.authz.request",
+    signing_key,
+    handler,
+    tenant_id=tenant_id,  # the tenant whose subkey `signing_key` is
+    message_type="authz_request",  # the ONE signed type this consumer accepts
+    prefetch=10,
+)
 ```
 
 Every delivery's HMAC-SHA256 signature is verified BEFORE the handler is
-ever invoked — an unverified message never reaches your code. See
+ever invoked — an unverified message never reaches your code. The consumer is
+**typed** (contract 1.69): `message_type` is `"authz_request"` or `"audit_event"`,
+and a body with any other signed layout (the other event type included) is refused
+as `malformed` before the HMAC is computed; an application consuming both types
+runs two consumers. Every discard (including a body that starts with a byte-order
+mark, which is refused and never stripped) logs one warning on the `axiam_sdk.amqp`
+logger carrying `timestamp`, `exchange`, `routing_key`, `tenant_id` (the `tenant_id`
+you configured, never one read from the body) and `reason` (`malformed`, `unsigned`,
+`signature`, `key_version`, `stale`, `replay`) — never a signature, nonce or key. See
 [`examples/amqp_consumer.py`](./examples/amqp_consumer.py).
 
 **A broker confirm is not evidence that AXIAM saw a message** (§8, contract
@@ -795,6 +811,15 @@ verifier = JwksVerifier(
 primitive §10.1 permits for integrators implementing their own policy. Its
 name states the omission: it checks **no** claims at all, and the SDK's own
 guards never call it.
+
+**JWKS cache (§12.4 rule 2, contract 1.69).** The verifier keeps the key set for its TTL (`lifespan=`
+or the response's `Cache-Control: max-age`; 300 s by default, never more than 300 s: a larger
+`lifespan=` is clamped and reported once as a `config_clamped` event through `telemetry_hook=`). A
+refresh that fails (transport error, any other status, a body that is not a JWKS, an empty key set)
+keeps the held keys and never moves the cache's age, so a short JWKS outage does not refuse every
+token; the held keys verify until exactly TTL + 300 s after the last successful fetch (a `200` with
+a key, or a `304` to the conditional request), then every token is refused until a fetch succeeds.
+An unknown `kid` costs at most one refresh per 60 s window, failed attempts included.
 
 ### The session-revocation feed (contract 1.44, CONTRACT.md §10.4, opt-in)
 

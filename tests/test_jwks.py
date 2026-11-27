@@ -21,7 +21,6 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from jwt.exceptions import PyJWKSetError
 
 from axiam_sdk._jwks import JWKS_PATH, JwksVerifier
 
@@ -188,7 +187,7 @@ def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
 
     # Now "rotate" the key into the server-side keyset and retry — the
     # verifier's forced-refetch-once path (rate-limited) should pick it up.
-    verifier._last_forced_refetch = None  # bypass the 60s rate limit for this test
+    verifier._last_attempt = None  # bypass the 60s rate limit for this test
     endpoint.jwk_dicts = [jwk_dict]
 
     claims = verifier.verify_signature_only_unchecked(token)
@@ -200,8 +199,9 @@ def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
 
 def test_empty_keyset_triggers_forced_refetch(eddsa_keypair) -> None:
     """An entirely empty keyset (e.g. a rotation window where the new key
-    has not yet propagated at all) also routes through the same
-    forced-refetch-once path, via the broader PyJWTError catch."""
+    has not yet propagated at all) is a FAILED refresh (CONTRACT.md §12.4 rule 2, contract 1.69):
+    nothing is held, so the token is refused; the failed attempt opens the refresh window, and
+    once it has passed a successful fetch is accepted."""
     private_key, jwk_dict = eddsa_keypair
     verifier, endpoint = _make_verifier([])
 
@@ -209,12 +209,12 @@ def test_empty_keyset_triggers_forced_refetch(eddsa_keypair) -> None:
         private_key, "test-kid-1", {"sub": "user-1", "tenant_id": "t1", "exp": 9999999999}
     )
 
-    with pytest.raises(PyJWKSetError):
+    with pytest.raises(jwt.PyJWKClientError):
         verifier.verify_signature_only_unchecked(token)
     calls_after_first_attempt = endpoint.call_count
     assert calls_after_first_attempt >= 1
 
-    verifier._last_forced_refetch = None  # bypass the 60s rate limit for this test
+    verifier._last_attempt = None  # bypass the 60s rate limit for this test
     endpoint.jwk_dicts = [jwk_dict]
 
     claims = verifier.verify_signature_only_unchecked(token)

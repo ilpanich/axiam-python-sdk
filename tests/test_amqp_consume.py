@@ -107,7 +107,14 @@ async def test_consume_sets_qos_declares_passive_and_registers_callback() -> Non
     async def handler(event: dict[str, Any]) -> None:
         handled.append(event)
 
-    await consume(channel, "tenant-queue", VALID_SIGNING_KEY, handler)
+    await consume(
+        channel,
+        "tenant-queue",
+        VALID_SIGNING_KEY,
+        handler,
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
 
     assert channel.qos == {"prefetch_count": DEFAULT_PREFETCH}
     assert channel.declare_args == {"name": "tenant-queue", "durable": True, "passive": True}
@@ -122,7 +129,15 @@ async def test_consume_callback_dispatches_to_on_message() -> None:
     async def handler(event: dict[str, Any]) -> None:
         handled.append(event)
 
-    await consume(channel, "q", VALID_SIGNING_KEY, handler, prefetch=3)
+    await consume(
+        channel,
+        "q",
+        VALID_SIGNING_KEY,
+        handler,
+        tenant_id="t-1",
+        message_type="authz_request",
+        prefetch=3,
+    )
     assert channel.qos == {"prefetch_count": 3}
 
     body = _sign(VALID_SIGNING_KEY, _authz("read", "r"))
@@ -142,7 +157,9 @@ async def test_consume_uses_default_logger_when_none() -> None:
         return None
 
     # logger omitted -> the module NullHandler logger is used; must not raise.
-    await consume(channel, "q", VALID_SIGNING_KEY, handler)
+    await consume(
+        channel, "q", VALID_SIGNING_KEY, handler, tenant_id="t-1", message_type="authz_request"
+    )
     assert channel.queue.callback is not None
 
 
@@ -162,7 +179,9 @@ async def test_on_message_validly_signed_non_object_body_nacks_without_requeue()
         handler_calls += 1
 
     logger = logging.getLogger("test.axiam_sdk.amqp.consume")
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False

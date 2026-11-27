@@ -113,7 +113,6 @@ def test_an_outage_on_a_cold_cache_costs_at_most_one_fetch_per_window() -> None:
         if not up:
             raise jwt.PyJWKClientConnectionError("endpoint down")
         data = {"keys": [jwk]}
-        verifier._client.jwk_set_cache.put(data)  # type: ignore[union-attr]
         return data
 
     verifier._client.fetch_data = fetch  # type: ignore[method-assign]
@@ -125,5 +124,5 @@ def test_an_outage_on_a_cold_cache_costs_at_most_one_fetch_per_window() -> None:
     assert calls <= 1, "fifty verifications during an outage: at most one fetch per window"
 
     up = True
-    verifier._fetch_failed_at = None  # the window has passed
+    verifier._last_attempt = None  # the window has passed
     assert verifier.get_signing_key(token).key_id == "good"

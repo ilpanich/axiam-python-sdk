@@ -116,6 +116,37 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   (§12.4 rule 2, §12.7.3 rule 1). Logout reason codes are never `None`. The event consumer also
   refuses a validly signed message that is not an `AuthzRequest` or `AuditEventMessage` layout.
 
+- **Typed consume (axiam#883, D-9, OI-33).** `consume(...)` takes the ONE signed type it consumes,
+  `message_type="authz_request"` or `"audit_event"`, and checks the canonical bytes against that
+  type's layout only: the other type's genuine, validly signed message is refused as `malformed`
+  before the HMAC and before anything is decoded (also with a signature digit changed), and never
+  reaches the handler. It no longer matches either layout. A verified body that does not decode
+  (a member of the wrong JSON type, an `issued_at` that is not RFC 3339, a `nonce` that is not a
+  UUID) is `malformed`; the nonce is recorded only after the decode and every gate pass.
+- **Event-consumer discard event (axiam#883, D-8, OI-33).** For every discard `consume(...)` logs
+  exactly one warning on its logger with `timestamp`, `exchange`, `routing_key`, `tenant_id` and
+  `reason` (`malformed`, `unsigned`, `signature`, `key_version`, `stale`, `replay`, first that
+  applies in CONTRACT §8 rule 4's order), as `extra` members and in the message; never a signature,
+  nonce, key or body member. **API change (1.4.0 is unreleased): `consume(...)` gains the required
+  keyword-only `tenant_id`** (the tenant whose subkey the key is; what the event reports, never a
+  value read from a body) beside `message_type`. `exchange`/`routing_key` are the delivery's own
+  (the queue name when the transport reports none).
+- **Byte-order mark and no escape (D-10, OI-33).** The first byte of a body must be `{`: a UTF-8
+  byte-order mark (or whitespace, or any prefix) is `malformed`, never stripped, in the event
+  consumer and in `AuthzRequester` (which previously accepted a validly signed body with a leading
+  space and reported a prefixed unsigned one as `signature`). The consume callback catches anything
+  an unexpected body could raise (the exception's type is logged), so the delivery loop continues.
+- **JWKS stale-if-error, bounded (D-10, OI-33; CONTRACT §12.4 rule 2).** The `JwksVerifier` cache is
+  its own instead of PyJWT's: the age runs from the last successful fetch (a `200` with at least
+  one key, or a `304` to the conditional `If-None-Match` request); the TTL is `lifespan` or the
+  response's `Cache-Control: max-age`, 300 s by default and **at most 300 s** (`lifespan=` above
+  300 is clamped and emits one `config_clamped` event through the new `telemetry_hook=`; an
+  advertised `max-age` is clamped silently). A failed refresh (transport error, other status,
+  non-JWKS body, an empty key set) keeps the held keys and never moves the age; they verify until
+  exactly TTL + 300 s, then every token is refused until a fetch succeeds. An unknown-`kid` refresh
+  that fails refuses that token only; every failed attempt counts toward the 60 s window. Before, a
+  refresh failure past the TTL refused every token at once and an empty set was adopted. A `keys` array with no JWK object (`[{}]`, `[0]`), a non-`200` 2xx and a clock that moved backwards are handled as a failed refresh / refresh due; an `ETag` with control characters or over 256 bytes is never stored; a failed first fetch also opens the 60 s window. The discard event reports the broker's `exchange` and `routing_key` as given (`""` included); the queue name stands in only when the transport reports none. JWKS entries are parsed individually: a well-formed JWK this SDK cannot use counts and is skipped.
+
 ### Removed
 
 - The AMQP authz requester no longer offers an opt-out for unsigned responses
@@ -149,6 +180,12 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
 - **AMQP `consume(...)`.** It now dispatches only the `AuthzRequest` and `AuditEventMessage` v2
   layouts (members in the CONTRACT §8 order); any other validly signed shape (a
   `CacheInvalidationMessage`, an `AuthzResponse`) is nacked without requeue.
+- **AMQP `consume(...)` signature.** Pass `tenant_id=` and `message_type=` (`"authz_request"` or
+  `"audit_event"`); run two consumers to read both types. A body with the other type's layout, or
+  one that starts with anything but `{`, is nacked as `malformed` and logged (see Fixed).
+- **`JwksVerifier(lifespan=...)`.** The default is now "the response's `max-age`, else 300 s" and
+  the value is capped at 300 s (it was passed to PyJWT uncapped). The refreshed keys are no longer
+  kept in `verifier._client.jwk_set_cache` (private; the cache is `JwksVerifier`'s own).
 - **AMQP.** Nothing else changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
   `axiam.authz.response`, move to `AuthzRequester`; the shared queue is where another tenant's
   answers, and any principal's forgeries, arrive.

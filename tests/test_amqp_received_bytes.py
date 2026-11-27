@@ -98,7 +98,14 @@ async def test_handler_receives_the_value_parsed_from_the_verified_bytes() -> No
         handled.append(event)
 
     message = _Message(body)
-    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    await _on_message(
+        message,
+        KEY,
+        handler,
+        logging.getLogger("test.received"),
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
 
     assert message.acked is True and message.nacked is None
     assert len(handled) == 1
@@ -171,7 +178,14 @@ async def test_a_body_with_a_duplicate_key_or_trailing_content_is_nacked_and_nev
         handled.append(event)
 
     message = _Message(REFUSED[name]())
-    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    await _on_message(
+        message,
+        KEY,
+        handler,
+        logging.getLogger("test.received"),
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
 
     assert handled == [], "the handler must never run"
     assert message.nacked is False, "nacked without requeue"
@@ -201,19 +215,30 @@ def _audit_layout(optional: bool) -> str:
 
 
 @pytest.mark.parametrize(
-    "canonical",
-    [_authz_layout(), _audit_layout(True), _audit_layout(False)],
+    ("canonical", "kind"),
+    [
+        (_authz_layout(), "authz_request"),
+        (_audit_layout(True), "audit_event"),
+        (_audit_layout(False), "audit_event"),
+    ],
     ids=["authz request", "audit event", "audit event without optionals"],
 )
 @pytest.mark.asyncio
-async def test_the_two_v2_layouts_are_dispatched(canonical: str) -> None:
+async def test_the_two_v2_layouts_are_dispatched(canonical: str, kind: str) -> None:
     handled: list[dict[str, Any]] = []
 
     async def handler(event: dict[str, Any]) -> None:
         handled.append(event)
 
     message = _Message(_signed(canonical))
-    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    await _on_message(
+        message,
+        KEY,
+        handler,
+        logging.getLogger("test.received"),
+        tenant_id="t-1",
+        message_type=kind,
+    )
     assert len(handled) == 1 and message.acked is True
 
 
@@ -241,5 +266,12 @@ async def test_a_validly_signed_message_of_another_shape_is_nacked_and_never_dis
         handled.append(event)
 
     message = _Message(_signed(canonical))
-    await _on_message(message, KEY, handler, logging.getLogger("test.received"))
+    await _on_message(
+        message,
+        KEY,
+        handler,
+        logging.getLogger("test.received"),
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
     assert handled == [] and message.nacked is False and message.acked is False

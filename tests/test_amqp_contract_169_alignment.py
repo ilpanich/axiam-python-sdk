@@ -66,7 +66,9 @@ class _Message:
         self.nacked = requeue
 
 
-async def _consume(body: bytes, key: bytes = SUBKEY) -> tuple[_Message, list[dict[str, Any]]]:
+async def _consume(
+    body: bytes, key: bytes = SUBKEY, kind: str = "audit_event"
+) -> tuple[_Message, list[dict[str, Any]]]:
     handled: list[dict[str, Any]] = []
 
     async def handler(event: dict[str, Any]) -> None:
@@ -78,6 +80,8 @@ async def _consume(body: bytes, key: bytes = SUBKEY) -> tuple[_Message, list[dic
         key,
         handler,
         logging.getLogger("test.contract169"),
+        tenant_id="t-1",
+        message_type=kind,  # type: ignore[arg-type]
         nonce_store=NonceStore(ttl_seconds=600),
         now=ISSUED,
     )
@@ -113,7 +117,7 @@ def test_wire_json_cuts_to_exactly_canonical_signed_json_and_verifies(kind: str)
 @pytest.mark.asyncio
 async def test_wire_json_passes_the_layout_check_and_is_dispatched(kind: str) -> None:
     wire = REFERENCE[kind]["wire_json"].encode("utf-8")
-    message, handled = await _consume(wire)
+    message, handled = await _consume(wire, kind=kind)
     assert message.acked is True and message.nacked is None
     assert len(handled) == 1 and "hmac_signature" not in handled[0]
     assert handled[0] == json.loads(REFERENCE[kind]["canonical_signed_json"])
@@ -123,7 +127,7 @@ async def test_wire_json_passes_the_layout_check_and_is_dispatched(kind: str) ->
 @pytest.mark.asyncio
 async def test_the_vectors_message_member_is_not_wire_bytes_and_is_refused(kind: str) -> None:
     sorted_object = json.dumps(REFERENCE[kind]["message"], separators=(",", ":")).encode()
-    message, handled = await _consume(sorted_object)
+    message, handled = await _consume(sorted_object, kind=kind)
     assert handled == [] and message.nacked is False
 
 
@@ -366,3 +370,36 @@ async def test_the_requester_discards_a_validly_signed_body_that_is_not_strict_u
         assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
     finally:
         await requester.close()
+
+
+# --- D-10: a byte-order mark or any prefix, on the requester ------------------------------------
+
+
+@pytest.mark.parametrize("prefix", [b"\xef\xbb\xbf", b" ", b"\n", b"\x00"])
+@pytest.mark.asyncio
+async def test_the_requester_refuses_a_prefixed_answer_as_malformed_and_serves_the_next(
+    prefix: bytes,
+) -> None:
+    logger, log = make_logger()
+    requester, future = await vector_requester(logger=logger)
+    try:
+        decision, delivery = await offer(requester, future, prefix + vector_wire(0))
+        assert decision is None and delivery.nacked == 1 and not future.done()
+        events = discard_events(log)
+        assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
+        # The prefixed copy neither completed nor retired the request: the genuine one still does.
+        decision, delivery = await offer(requester, future, vector_wire(0))
+        assert decision is not None and delivery.acked == 1
+    finally:
+        await requester.close()
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.asyncio
+async def test_a_validly_signed_body_with_a_leading_space_is_refused_by_the_event_consumer(
+    kind: str,
+) -> None:
+    message, handled = await _consume(
+        _sign_bytes(b" " + REFERENCE[kind]["canonical_signed_json"].encode()), kind=kind
+    )
+    assert handled == [] and message.nacked is False
