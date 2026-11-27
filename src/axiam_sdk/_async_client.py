@@ -94,6 +94,7 @@ from axiam_sdk._oidc import (
     SSO_START_PATH,
     PollSchedule,
     _expose_secret,
+    _refresh_flight_key,
 )
 from axiam_sdk._registration import (
     ClientRegistration,
@@ -710,7 +711,10 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             )
             return token_set
 
-        result: OidcTokenSet = await self._oidc_refresh_single_flight_async.run(under_guard)
+        result: OidcTokenSet = await self._oidc_refresh_single_flight_async.run(
+            _refresh_flight_key(refresh_token, self._resolve_oauth2_tenant_id(tenant_id)),
+            under_guard,
+        )
         return result
 
     async def login_client_credentials(

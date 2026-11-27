@@ -202,6 +202,18 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   identity, send it only to a `jwks_uri` on the client's own origin; the Django middleware reads
   `settings.AXIAM_CUSTOM_CA`. Server and hostname
   verification stay on; a verifier given no CA still refuses a private-CA endpoint.
+- **`oidc_refresh` joined a refresh of a different token (#115).** The §12 `oidc_refresh`
+  single-flight (`AxiamClient` and `AsyncAxiamClient`) held one slot per client, so a call with
+  refresh token B made while token A was refreshing (or inside A's publish-before-vacate window)
+  joined A's burst and returned A's token set; B was never sent. The coalescers are now keyed by a
+  SHA-256 digest of the resolved tenant UUID in lower-case hyphenated form (the argument or the client's default, so an explicit
+  tenant equal to the default and an omitted one are one flight) plus the refresh token
+  (CONTRACT.md §9, §12.3 rule 4); `scope` is not part of the key: callers of the same token
+  still collapse into one wire call and keep rules 6a-6d per key, a different token gets its own
+  wire call and its own result, a key's slot is removed once vacated, and the raw token is never a
+  map key, logged or placed in an error. `refresh()` (the session's own token) is unchanged.
+  Wire calls of different tokens still run one at a time, since each runs inside the shared §9
+  refresh guard.
 
 ### Migration notes
 

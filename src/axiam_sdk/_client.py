@@ -86,6 +86,7 @@ from axiam_sdk._oidc import (
     PollSchedule,
     _expose_secret,
     _OidcMixin,
+    _refresh_flight_key,
 )
 from axiam_sdk._registration import (
     ClientRegistration,
@@ -1876,7 +1877,10 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
             token_set: OidcTokenSet = self._session.refresh_guard.run_exclusive_sync(do_refresh)
             return token_set
 
-        result: OidcTokenSet = self._oidc_refresh_single_flight_sync.run(under_guard)
+        result: OidcTokenSet = self._oidc_refresh_single_flight_sync.run(
+            _refresh_flight_key(refresh_token, self._resolve_oauth2_tenant_id(tenant_id)),
+            under_guard,
+        )
         return result
 
     def login_client_credentials(
