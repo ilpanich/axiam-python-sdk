@@ -171,6 +171,8 @@ class _Session:
         # `load_cert_chain`. Server-trust and client-identity code stay in
         # separate methods so the CI TLS-bypass lint gate is never tripped.
         validate_client_identity(client_cert, client_key)
+        #: The raw server-trust override, kept so a JWKS fetch can trust it without the identity.
+        self.custom_ca = custom_ca
         self._verify: bool | str | ssl.SSLContext
         if client_cert is not None and client_key is not None:
             self._verify = self._build_mtls_context(custom_ca, client_cert, client_key)
@@ -323,15 +325,16 @@ class _Session:
                 ) from exc
         return context
 
-    def jwks_tls_options(self) -> dict[str, Any]:
-        """The ``JwksVerifier`` keyword arguments that make a JWKS fetch trust what this session
-        trusts: its ``custom_ca`` (CONTRACT.md §6) and, when it presents one, its §6.1 client
-        identity (as the ready-built ``ssl_context``). Empty for the default system trust."""
-        if isinstance(self._verify, ssl.SSLContext):
-            return {"ssl_context": self._verify}
-        if isinstance(self._verify, str):
-            return {"custom_ca": self._verify}
-        return {}
+    def jwks_mtls_context(self, jwks_uri: str) -> ssl.SSLContext | None:
+        """The context carrying this session's §6.1 client identity, but only for a ``jwks_uri``
+        on the same origin as ``base_url``: a discovery document may name another host
+        (§12.3 rule 6), which must not receive the identity. ``None`` otherwise."""
+        if not isinstance(self._verify, ssl.SSLContext):
+            return None
+        own, other = httpx.URL(self.base_url), httpx.URL(jwks_uri)
+        if (own.scheme, own.host, own.port) != (other.scheme, other.host, other.port):
+            return None
+        return self._verify
 
     @property
     def sync_client(self) -> httpx.Client:

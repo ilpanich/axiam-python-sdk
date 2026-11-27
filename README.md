@@ -2404,6 +2404,8 @@ regeneration from `proto/axiam/v1/`.
 escape hatch is an explicit `custom_ca` parameter (a CA bundle path or
 `ssl.SSLContext`) — there is no boolean bypass anywhere in this SDK,
 including the examples. CI enforces this with a dedicated grep gate.
+The JWKS fetch behind local token verification honours `custom_ca` too
+(`JwksVerifier(custom_ca=...)`; the Django middleware reads `AXIAM_CUSTOM_CA`).
 
 ### mTLS / client certificates (§6.1)
 

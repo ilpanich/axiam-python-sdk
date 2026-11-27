@@ -1390,8 +1390,12 @@ class _OidcMixin:
             return existing
         # Atomic under threads (the async client validates in worker threads): a racing loser's
         # verifier is discarded, so every caller shares the one that is stored.
-        # The JWKS fetch trusts what the REST session trusts (custom_ca, mTLS identity).
-        verifier = JwksVerifier(jwks_uri, jwks_url=jwks_uri, **self._session.jwks_tls_options())
+        # The JWKS fetch trusts what the REST session trusts (custom_ca); the mTLS identity goes
+        # only to a jwks_uri on the client's own origin.
+        verifier = JwksVerifier(jwks_uri, jwks_url=jwks_uri, custom_ca=self._session.custom_ca)
+        mtls = self._session.jwks_mtls_context(jwks_uri)
+        if mtls is not None:
+            verifier._client.ssl_context = mtls
         return self._jwks_verifiers.setdefault(jwks_uri, verifier)
 
     # ------------------------------------------------------------------

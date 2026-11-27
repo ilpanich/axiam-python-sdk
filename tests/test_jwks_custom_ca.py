@@ -21,7 +21,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from axiam_sdk import AxiamClient
+from axiam_sdk import AsyncAxiamClient, AxiamClient
 from axiam_sdk._errors import AuthError
 from axiam_sdk._jwks import JwksVerifier
 from tests.test_jwks import _make_ed25519_keypair_and_jwk
@@ -165,17 +165,62 @@ def test_axiam_client_verifier_without_custom_ca_fails_closed(
         _verify(client._verifier_for(server.jwks_url), token)
 
 
-def test_axiam_client_presents_its_mtls_identity_to_the_jwks_endpoint(
-    pki: _MtlsPki, mtls_server: _JwksHttpsServer, token: str
-) -> None:
-    client = AxiamClient(
-        base_url=mtls_server.base_url,
+def _mtls_client(pki: _MtlsPki, base_url: str) -> AxiamClient:
+    return AxiamClient(
+        base_url=base_url,
         tenant_slug="acme",
         custom_ca=str(pki.ca_path),
         client_cert=pki.client_cert_pem,
         client_key=pki.client_key_pem,
     )
+
+
+def test_axiam_client_presents_its_mtls_identity_to_a_same_origin_jwks_endpoint(
+    pki: _MtlsPki, mtls_server: _JwksHttpsServer, token: str
+) -> None:
+    client = _mtls_client(pki, mtls_server.base_url)
     assert _verify(client._verifier_for(mtls_server.jwks_url), token)["sub"] == "u1"
+
+
+def test_mtls_identity_is_not_sent_to_another_origin(
+    pki: _MtlsPki, mtls_server: _JwksHttpsServer, token: str
+) -> None:
+    """The identity goes only to base_url's origin; the CA trust still applies elsewhere."""
+    client = _mtls_client(pki, "https://localhost:1")
+    assert client._session.jwks_mtls_context(mtls_server.jwks_url) is None
+    with pytest.raises(AuthError):  # the server demands the identity, which was withheld
+        _verify(client._verifier_for(mtls_server.jwks_url), token)
+
+
+def test_other_origin_still_trusts_custom_ca(
+    pki: _MtlsPki, server: _JwksHttpsServer, token: str
+) -> None:
+    client = _mtls_client(pki, "https://localhost:1")
+    assert _verify(client._verifier_for(server.jwks_url), token)["sub"] == "u1"
+
+
+def test_hostname_mismatch_is_refused_even_with_the_ca_trusted(
+    pki: _MtlsPki, server: _JwksHttpsServer, token: str
+) -> None:
+    verifier = JwksVerifier(
+        f"https://127.0.0.1:{server.port}", custom_ca=str(pki.ca_path)
+    )  # the certificate's only SAN is localhost
+    with pytest.raises(AuthError):
+        _verify(verifier, token)
+
+
+def test_async_client_reaches_the_custom_ca(
+    pki: _MtlsPki, server: _JwksHttpsServer, token: str
+) -> None:
+    client = AsyncAxiamClient(
+        base_url=server.base_url, tenant_slug="acme", custom_ca=str(pki.ca_path)
+    )
+    assert _verify(client._verifier_for(server.jwks_url), token)["sub"] == "u1"
+
+
+def test_jwks_verifier_has_no_public_context_parameter() -> None:
+    with pytest.raises(TypeError):
+        JwksVerifier("https://x.example", ssl_context=ssl.create_default_context())  # type: ignore[call-arg]
 
 
 def test_mtls_jwks_endpoint_rejects_a_client_without_identity(
