@@ -410,33 +410,24 @@ async def test_oidc_refresh_single_flight_collapses_five_concurrent_async_caller
     assert all(r.access_token.get_secret_value() == "one-refresh-token" for r in results)
 
 
-def test_oidc_refresh_runs_inside_the_shared_refresh_guard_lock(
+def test_oidc_refresh_does_not_take_the_cookie_session_refresh_guard(
     respx_mock: respx.MockRouter,
 ) -> None:
-    """Port-brief-addendum item 14/17: an oidc_refresh must not interleave
-    with a concurrent cookie-session refresh — both serialize on the SAME
-    §9 guard lock."""
+    """§9 rule 7: ``oidc_refresh`` has its own (per-token keyed) guard; it must
+    not run under the cookie-session ``RefreshGuard`` lock, which would make a
+    different token wait on another's flight."""
     _mock_discovery(respx_mock)
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
         return_value=httpx.Response(200, json=_token_response())
     )
     client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
 
-    order: list[str] = []
-    real_run_exclusive_sync = client._session.refresh_guard.run_exclusive_sync
+    def forbidden(fn: object) -> object:
+        raise AssertionError("oidc_refresh must not use the cookie-session guard")
 
-    def tracking_run_exclusive_sync(fn: object) -> object:
-        order.append("enter")
-        try:
-            return real_run_exclusive_sync(fn)  # type: ignore[arg-type]
-        finally:
-            order.append("exit")
+    client._session.refresh_guard.run_exclusive_sync = forbidden  # type: ignore[method-assign]
 
-    client._session.refresh_guard.run_exclusive_sync = tracking_run_exclusive_sync  # type: ignore[method-assign]
-
-    client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID)
-
-    assert order == ["enter", "exit"]
+    assert client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID).access_token
 
 
 # ---------------------------------------------------------------------

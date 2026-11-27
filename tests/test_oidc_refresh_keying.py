@@ -13,6 +13,7 @@ Every test asserts the wire-call count, not only the returned values. The
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import threading
 import time
@@ -24,7 +25,7 @@ import pytest
 import respx
 
 from axiam_sdk import AsyncAxiamClient, AxiamClient
-from axiam_sdk._errors import OAuthProtocolError
+from axiam_sdk._errors import AuthError, OAuthProtocolError
 from axiam_sdk._oidc import _AsyncSingleFlight, _refresh_flight_key, _SyncSingleFlight
 from tests._oidc_testkit import BASE_URL, CLIENT_ID, discovery_document
 
@@ -90,7 +91,10 @@ def test_flight_key_is_a_sha256_digest_scoped_by_tenant_and_never_the_token() ->
     assert key == _refresh_flight_key(TOKEN_A, TENANT_ID), "deterministic per (token, tenant)"
     assert key != _refresh_flight_key(TOKEN_B, TENANT_ID), "different token, different key"
     assert key != _refresh_flight_key(TOKEN_A, OTHER_TENANT), "tenant is part of the key"
-    assert key == _refresh_flight_key(TOKEN_A, TENANT_ID.upper()), "tenant is case-folded"
+    hexy = "abcdef01-2345-6789-abcd-ef0123456789"
+    assert _refresh_flight_key(TOKEN_A, hexy) == _refresh_flight_key(TOKEN_A, hexy.upper()), (
+        "tenant is case-folded"
+    )
     assert key != hashlib.sha256(TOKEN_A.encode()).hexdigest(), "tenant is mixed in, not bare"
 
 
@@ -128,8 +132,9 @@ def test_sync_different_token_during_a_live_flight_gets_its_own_wire_call(
     tb = threading.Thread(target=call, args=("b", TOKEN_B))
     tb.start()
     # B must have claimed its own slot (it is not parked on A's publication).
-    _poll(lambda: len(coalescer._in_flight) == 2, "B to claim its own slot")
     _assert_no_raw_token(coalescer._in_flight.keys())
+    _poll(lambda: TOKEN_B in seen, "B's WIRE call while A is still held on the wire")
+    assert not release.is_set()
     release.set()
     ta.join(5)
     tb.join(5)
@@ -263,8 +268,9 @@ async def test_async_different_token_during_a_live_flight_gets_its_own_wire_call
     await _apoll(lambda: seen == [TOKEN_A], "A's wire call to start")
     _assert_no_raw_token(coalescer._pending.keys())
     b = asyncio.create_task(client.oidc_refresh(refresh_token=TOKEN_B, tenant_id=TENANT_ID))
-    await _apoll(lambda: len(coalescer._pending) == 2, "B to claim its own slot")
     _assert_no_raw_token(coalescer._pending.keys())
+    await _apoll(lambda: TOKEN_B in seen, "B's WIRE call while A is still held on the wire")
+    assert not release.is_set()
     release.set()
     a_set = await a
     b_set = await b
@@ -579,3 +585,86 @@ async def test_async_tenant_spelling_upper_lower_and_omitted_default_is_one_flig
 
     assert seen == [TOKEN_A]
     assert len(results) == 4
+
+
+# --------------------------------------------------------------------
+# No thread is ever parked on a lock; one tenant resolution
+# --------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_many_distinct_tokens_complete_with_a_small_default_executor(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Twice the executor size of distinct tokens must all complete: no leader
+    may park an executor thread on a lock while the holder needs one."""
+    workers = 4
+    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(workers))
+    _mock_discovery(respx_mock)
+
+    async def responder(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.02)
+        return _answer_for(_presented(request))
+
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    await client.oidc_discover()
+    tokens = [f"distinct-{i}" for i in range(workers * 5)]
+
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            *[client.oidc_refresh(refresh_token=t, tenant_id=TENANT_ID) for t in tokens]
+        ),
+        timeout=10,
+    )
+
+    assert [r.access_token.get_secret_value() for r in results] == [
+        f"access-for-{t}" for t in tokens
+    ]
+
+
+def test_sync_default_tenant_change_between_calls_is_two_flights_with_canonical_wire_tenant(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """The key and the wire request use the same canonical tenant: one wire
+    call per (token, tenant), and the wire ``tenant_id`` is the lower-case
+    hyphenated form whatever the caller's spelling."""
+    _mock_discovery(respx_mock)
+    release = threading.Event()
+    seen: list[tuple[str, str]] = []
+    x = "aaaaaaaa-0000-0000-0000-000000000001"
+    y = "bbbbbbbb-0000-0000-0000-000000000002"
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        token = _presented(request)
+        seen.append((token, _tenant_of(request)))
+        if token == TOKEN_A:
+            release.wait(5)
+        return _answer_for(token)
+
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    client._resolved_tenant_id = x
+    holder = threading.Thread(
+        target=client.oidc_refresh, kwargs={"refresh_token": TOKEN_A, "tenant_id": x.upper()}
+    )
+    holder.start()
+    _poll(lambda: len(seen) == 1, "A's wire call")
+    t1 = threading.Thread(target=client.oidc_refresh, kwargs={"refresh_token": TOKEN_B})
+    t1.start()
+    _poll(lambda: len(seen) == 2, "B's wire call for tenant x")
+    client._resolved_tenant_id = y
+    t2 = threading.Thread(target=client.oidc_refresh, kwargs={"refresh_token": TOKEN_B})
+    t2.start()
+    _poll(lambda: len(seen) == 3, "B's wire call for tenant y")
+    release.set()
+    for t in (holder, t1, t2):
+        t.join(5)
+
+    assert sorted(seen) == sorted([(TOKEN_A, x), (TOKEN_B, x), (TOKEN_B, y)])
+
+
+def test_oidc_refresh_rejects_a_tenant_with_a_trailing_newline_as_auth_error() -> None:
+    client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    with pytest.raises(AuthError):
+        client.oidc_refresh(refresh_token=TOKEN_A, tenant_id=TENANT_ID + "\n")

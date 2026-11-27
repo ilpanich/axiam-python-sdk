@@ -18,8 +18,8 @@ Reuse, not reimplementation:
   + §6 TLS -> the existing ``_Session`` (``_session.py``);
 * §7/§12.5 redaction -> ``pydantic.SecretStr`` (already this SDK's
   ``Sensitive`` equivalent);
-* §9 single-flight refresh -> ``RefreshGuard.run_exclusive_sync/async``
-  (``token/refresh_guard.py``), extended (never forked) for §12;
+* §9 single-flight refresh -> ``RefreshGuard`` for the cookie session;
+  ``oidc_refresh`` has its own guard, the per-token keyed coalescers below;
 * §12.4 signature verification -> ``_jwks.JwksVerifier``, extended (never
   forked) via its new public ``get_signing_key`` method.
 """
@@ -422,7 +422,7 @@ _RESERVED_AUTHORIZE_PARAMS = frozenset(
 
 #: Shape of a UUID, used to reject a slug where §12.3 rule 4 requires a UUID.
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.IGNORECASE
 )
 
 
@@ -657,15 +657,12 @@ class _SyncFlight:
 
 class _SyncSingleFlight:
     """Collapse N concurrent sync callers of an operation into exactly one
-    real invocation, all sharing its result/exception — the request-
-    coalescing half of ``oidc_refresh``'s two-part single-flight behavior
-    (port-brief-addendum item 14): "de-duplicates its own concurrent
-    callers AND runs the wire call inside the existing §9 guard." This
-    class provides the de-duplication; :meth:`RefreshGuard.run_exclusive_sync
-    <axiam_sdk.token.refresh_guard.RefreshGuard.run_exclusive_sync>` (called
-    by the ONE selected caller's ``fn``) provides the "inside the existing
-    §9 guard" half, so an ``oidc_refresh`` and a concurrent cookie-session
-    ``refresh()`` still cannot interleave.
+    real invocation, all sharing its result/exception — ``oidc_refresh``'s
+    single-flight guard (CONTRACT.md §9). It is deliberately **not** the
+    cookie-session :class:`~axiam_sdk.token.refresh_guard.RefreshGuard`: the
+    token namespaces differ (a caller-supplied OAuth2 refresh token vs the
+    session's own), and one shared lock would make a different token wait on
+    another's flight (§9 rule 7). Nothing here holds a lock across the call.
 
     **Keyed.** The coalescer holds one slot *per key* (:func:`_refresh_flight_key`,
     a digest of the refresh token): callers of one key form a burst, a caller of
@@ -1776,6 +1773,13 @@ class _OidcMixin:
                 "with client_secret (CONTRACT.md §12.1 note 4)."
             )
         return _expose_secret(self._oidc_client_secret)
+
+    def _canonical_oauth2_tenant_id(self, explicit: str | None) -> str:
+        """The effective tenant of an ``/oauth2/*`` call, resolved **once** and
+        canonicalised to the lower-case hyphenated UUID form. The single-flight
+        key and the wire ``tenant_id`` both use this value, so what is coalesced
+        is exactly what is sent, whatever the spelling the caller passed."""
+        return str(uuid.UUID(self._resolve_oauth2_tenant_id(explicit)))
 
     def _resolve_oauth2_tenant_id(self, explicit: str | None) -> str:
         """Resolve the tenant UUID for the ``/oauth2/*`` ``tenant_id`` query
