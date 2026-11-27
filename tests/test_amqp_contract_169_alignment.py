@@ -89,6 +89,11 @@ def _sign(canonical: str) -> bytes:
     return (canonical[:-1] + ',"hmac_signature":"' + mac + '"}').encode("utf-8")
 
 
+def _sign_bytes(canonical: bytes, key: bytes = SUBKEY) -> bytes:
+    mac = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    return canonical[:-1] + b',"hmac_signature":"' + mac.encode() + b'"}'
+
+
 # --- 3: the vectors' wire_json -----------------------------------------------------------------
 
 
@@ -157,6 +162,12 @@ def _negatives() -> dict[str, bytes]:
         # U+212A KELVIN SIGN and "k" fold together; so do "ss" and U+00DF.
         "unicode-folded top-level names, validly signed": _sign(
             canonical.replace('"outcome":"Success"', '"outcome":"Success","K":1,"k":2')
+        ),
+        "validly signed, prefixed with a UTF-8 byte order mark": _sign_bytes(
+            b"\xef\xbb\xbf" + canonical.encode()
+        ),
+        "validly signed, a string value holding the raw bytes of a surrogate": _sign_bytes(
+            canonical.encode().replace(b"user.login", b"user.\xed\xa0\x80")
         ),
         "validly signed AuthzResponse": sign_with(SUBKEY, VECTORS[0][1]),
         "validly signed cache invalidation shape": _sign(
@@ -329,3 +340,29 @@ async def test_after_close_the_body_is_not_even_parsed(monkeypatch: pytest.Monke
     delivery = RecordingDelivery(vector_wire(0))
     await requester._handle(delivery)
     assert delivery.nacked == 1
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: b"\xef\xbb\xbf" + c,
+        lambda c: c.replace(b"allowed", b"allow\xed\xa0\x80ed", 1).replace(
+            b'"allow\xed\xa0\x80ed":true', b'"allowed":true,"x":"\xed\xa0\x80"'
+        ),
+    ],
+    ids=["byte order mark", "raw surrogate bytes"],
+)
+@pytest.mark.asyncio
+async def test_the_requester_discards_a_validly_signed_body_that_is_not_strict_utf8(
+    mutate: Any,
+) -> None:
+    logger, log = make_logger()
+    requester, future = await vector_requester(logger=logger)
+    try:
+        body = _sign_bytes(mutate(VECTORS[0][1].encode()), VEC_SUBKEY)
+        decision, delivery = await offer(requester, future, body)
+        assert decision is None and delivery.nacked == 1
+        events = discard_events(log)
+        assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
+    finally:
+        await requester.close()

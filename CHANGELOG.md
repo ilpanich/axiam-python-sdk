@@ -5,21 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Security
-
-- **AMQP — contract 1.69 §8 alignment (axiam#882, axiam#883).** `CONTRACT.md` and
-  `testdata/v2_reference_vectors.json` (which gains `wire_json`) re-vendored. The `AuthzResponse`
-  requester now reports the discard reason in the contract's normative order: a response with a bad
-  signature that also lacks or mistypes `tenant_id`, `nonce`, `correlation_id` or `allowed` is
-  `malformed` (it was `signature`), and a body with trailing whitespace is `malformed`, not
-  `unsigned`. A delivery that arrives after `close()` is nacked without requeue, not decoded, and
-  logs no event. The strict JSON parser refuses any trailing whitespace after `}` and invalid UTF-8
-  before parsing. New tests feed the vectors' `wire_json` through the consumer and assert the
-  producer emits it byte for byte. There is no lenient (unsigned-accepting) mode in this SDK, and
-  none was removed here.
-
 ## [1.4.0] - 2026-11-22
 
 Contract 1.68 (security audit 2026-11-14, wave 3). `CONTRACT.md`, `openapi.json` and
@@ -61,6 +46,16 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   header or cookie, turning a 403 into a 500.
 - `MemoryOidcStateStore` is bounded (`max_entries`, default 10 000, oldest evicted first): the login
   route is unauthenticated and every call saves an entry.
+- **AMQP — contract 1.69 §8 alignment (axiam#882, axiam#883).** `CONTRACT.md` and
+  `testdata/v2_reference_vectors.json` (which gains `wire_json`) re-vendored. The `AuthzResponse`
+  requester now reports the discard reason in the contract's normative order: a response with a bad
+  signature that also lacks or mistypes `tenant_id`, `nonce`, `correlation_id` or `allowed` is
+  `malformed` (it was `signature`), and a body with trailing whitespace is `malformed`, not
+  `unsigned`. A delivery that arrives after `close()` is nacked without requeue, not decoded, and
+  logs no event. The strict JSON parser refuses any trailing whitespace after `}` and invalid UTF-8
+  before parsing. New tests feed the vectors' `wire_json` through the consumer and assert the
+  producer emits it byte for byte. There is no lenient (unsigned-accepting) mode in this SDK, and
+  none was removed here.
 
 ### Added
 
