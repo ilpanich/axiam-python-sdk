@@ -56,6 +56,7 @@ import logging
 import math
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -79,6 +80,7 @@ from jwt.types import Options
 from axiam_sdk._errors import AuthError
 from axiam_sdk._mcp import McpGuardChallenges, mcp_guard_challenges
 from axiam_sdk._revocation_feed import RevocationFeed
+from axiam_sdk._session import build_trust_context
 from axiam_sdk._telemetry import ConfigClamped, TelemetryDispatcher, TelemetryHook
 
 _LOGGER = logging.getLogger(__name__)
@@ -304,9 +306,15 @@ class _JwksFetcher(PyJWKClient):
     attributes that :meth:`JwksVerifier._refresh` reads after each call.
     """
 
-    def __init__(self, uri: str) -> None:
-        """Build a fetcher for ``uri`` with no PyJWT-side cache."""
-        super().__init__(uri, cache_jwk_set=False, timeout=_JWKS_FETCH_TIMEOUT_SECONDS)
+    def __init__(self, uri: str, ssl_context: ssl.SSLContext | None = None) -> None:
+        """Build a fetcher for ``uri`` with no PyJWT-side cache, over ``ssl_context`` (the system
+        trust store when ``None``)."""
+        super().__init__(
+            uri,
+            cache_jwk_set=False,
+            timeout=_JWKS_FETCH_TIMEOUT_SECONDS,
+            ssl_context=ssl_context,
+        )
         #: ``ETag`` of the held set, sent as ``If-None-Match``.
         self.etag: str | None = None
         #: Set by the last ``fetch_data``: the response's ``ETag`` / ``max-age``, and whether the
@@ -415,6 +423,8 @@ class JwksVerifier:
         revocation_feed: RevocationFeed | None = None,
         resource_metadata_url: str | None = None,
         telemetry_hook: TelemetryHook | None = None,
+        custom_ca: str | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -475,8 +485,15 @@ class JwksVerifier:
                 this ``aud``" and does not check ``aud`` has published a
                 claim it does not honour.
 
+            custom_ca: A private CA to trust for the JWKS fetch, exactly as the REST client's
+                ``custom_ca`` (CONTRACT.md §6): a CA-bundle path or inline PEM, added to the
+                system trust store. Server and hostname verification stay on. Unset by default.
+            ssl_context: A ready-built TLS context for the JWKS fetch (for instance one that also
+                carries a §6.1 client identity); mutually exclusive with ``custom_ca``.
+
         Raises:
-            ValueError: if ``clock_skew_seconds`` is negative or exceeds
+            ValueError: if ``custom_ca`` and ``ssl_context`` are both given, or if
+                ``clock_skew_seconds`` is negative or exceeds
                 :data:`MAX_CLOCK_SKEW_SECONDS` — §10.1 rule 7 forbids an
                 operator-settable unbounded leeway.
             ValidationError: if ``resource_metadata_url`` is set without
@@ -501,11 +518,15 @@ class JwksVerifier:
         # — pure string operations, no network I/O) with their own operation
         # name and, where relevant, their route's own `scope`.
         mcp_guard_challenges(expected_audience, resource_metadata_url, "JwksVerifier")
+        if custom_ca is not None and ssl_context is not None:
+            raise ValueError("pass custom_ca or ssl_context, not both")
+        if ssl_context is None and custom_ca:
+            ssl_context = build_trust_context(custom_ca)
         resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
         # The fetcher is only the HTTP transport. The cache lives below, because PyJWT's cache
         # drops the held set at its TTL and cannot keep it through a failed refresh, which is
         # exactly what §12.4 rule 2 (stale-if-error, bounded) requires.
-        self._client = _JwksFetcher(resolved_jwks_url)
+        self._client = _JwksFetcher(resolved_jwks_url, ssl_context)
         #: A configured TTL, clamped to the contract's 300 s; ``None`` = use the advertised one.
         self._configured_ttl: float | None = None
         if lifespan is not None:

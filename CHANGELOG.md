@@ -182,6 +182,14 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   that fails refuses that token only; every failed attempt counts toward the 60 s window. Before, a
   refresh failure past the TTL refused every token at once and an empty set was adopted. A `keys` array with no JWK object (`[{}]`, `[0]`), a non-`200` 2xx and a clock that moved backwards are handled as a failed refresh / refresh due; an `ETag` with control characters or over 256 bytes is never stored; a failed first fetch also opens the 60 s window. The discard event reports the broker's `exchange` and `routing_key` as given (`""` included); the queue name stands in only when the transport reports none. JWKS entries are parsed individually: a well-formed JWK this SDK cannot use counts and is skipped.
 
+- **JWKS fetch ignored `custom_ca` and the mTLS identity (#114).** `JwksVerifier` fetched the key
+  set over the system trust store only, so a private-CA deployment could log in and call the API
+  but every local token verification failed closed. `JwksVerifier` now takes `custom_ca=` (bundle
+  path or inline PEM, as the REST client's `custom_ca`, CONTRACT.md §6) and `ssl_context=` (mutually
+  exclusive); the client's OIDC verifiers pass the session's trust and, when it presents one, its
+  §6.1 client identity; the Django middleware reads `settings.AXIAM_CUSTOM_CA`. Server and hostname
+  verification stay on; a verifier given no CA still refuses a private-CA endpoint.
+
 ### Migration notes
 
 - **`require_role` (N15).** Add the **`roles` scope** to what you request (`oidc_begin(scope="openid

@@ -41,6 +41,19 @@ if TYPE_CHECKING:
     from axiam_sdk._client import _PrincipalScope
 
 
+def build_trust_context(custom_ca: str | None) -> ssl.SSLContext:
+    """A strict client-side ``ssl.SSLContext`` (``check_hostname`` on, ``CERT_REQUIRED``) that
+    trusts the system store plus ``custom_ca`` — an inline PEM via ``cadata=``, anything else as
+    a CA-bundle path via ``cafile=`` (CONTRACT.md §6). Never weakens server verification."""
+    context = ssl.create_default_context()
+    if custom_ca:
+        if _looks_like_pem(custom_ca):
+            context.load_verify_locations(cadata=custom_ca)
+        else:
+            context.load_verify_locations(cafile=custom_ca)
+    return context
+
+
 def _looks_like_pem(value: str) -> bool:
     """Heuristically decide whether ``custom_ca`` is inline PEM text rather
     than a filesystem path.
@@ -288,12 +301,7 @@ class _Session:
         Raises:
             ValueError: if the supplied client identity is not valid PEM.
         """
-        context = ssl.create_default_context()
-        if custom_ca:
-            if _looks_like_pem(custom_ca):
-                context.load_verify_locations(cadata=custom_ca)
-            else:
-                context.load_verify_locations(cafile=custom_ca)
+        context = build_trust_context(custom_ca)
 
         cert_pem = normalize_pem(client_cert)
         key_pem = normalize_pem(client_key)
@@ -314,6 +322,16 @@ class _Session:
                     "client_cert/client_key is not a valid PEM client identity (CONTRACT.md §6.1)"
                 ) from exc
         return context
+
+    def jwks_tls_options(self) -> dict[str, Any]:
+        """The ``JwksVerifier`` keyword arguments that make a JWKS fetch trust what this session
+        trusts: its ``custom_ca`` (CONTRACT.md §6) and, when it presents one, its §6.1 client
+        identity (as the ready-built ``ssl_context``). Empty for the default system trust."""
+        if isinstance(self._verify, ssl.SSLContext):
+            return {"ssl_context": self._verify}
+        if isinstance(self._verify, str):
+            return {"custom_ca": self._verify}
+        return {}
 
     @property
     def sync_client(self) -> httpx.Client:

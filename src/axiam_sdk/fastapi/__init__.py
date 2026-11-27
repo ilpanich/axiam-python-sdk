@@ -363,6 +363,7 @@ def require_authenticated_user(
             expected_issuer="https://axiam.example.com",   # optional, unset by default
             expected_audience=RECOMMENDED_RESOURCE_SERVER_AUDIENCE,  # optional
             clock_skew_seconds=DEFAULT_CLOCK_SKEW_SECONDS,  # bounded, named
+            custom_ca="/etc/ssl/private-ca.pem",           # optional: private CA for the JWKS fetch
         )
 
     The returned dependency delegates to :func:`_authenticate` for the full
