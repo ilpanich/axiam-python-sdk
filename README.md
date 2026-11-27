@@ -535,7 +535,12 @@ and `reason` (`malformed`, `unsigned`, `signature`, `tenant` or `unknown_request
 members and in the message text. It never carries a signature value, a nonce or any member of the
 body. An unexpected exception while handling one delivery is logged (its type only), the delivery
 is nacked and the requester keeps serving; if the reply queue itself ends, that is logged once and
-every outstanding and later `check` raises `AuthzRequesterClosedError`.
+every outstanding and later `check` raises `AuthzRequesterClosedError`. The `reason` is the first
+that applies, in the contract's order: not one JSON object (`malformed`); no `hmac_signature`
+member (`unsigned`, whatever else is missing); a bad signature member or a missing or ill-typed
+`allowed`, `tenant_id`, `nonce` or `correlation_id` (`malformed`); a failing HMAC (`signature`);
+another tenant (`tenant`); no outstanding request (`unknown_request`). After `close()` a late
+answer is not decoded or dispatched: it is nacked without requeue and logs no event.
 
 The reply queue name must not be empty or start with `axiam.`. Where more than one service of a
 tenant publishes authorization requests, the exclusive `reply_to` is what keeps them apart; deny SDK
@@ -545,8 +550,11 @@ in the minimal profile (AMQP off) use REST or gRPC.
 **`consume(...)` verifies the received bytes too (server #882).** The event consumer checks the
 HMAC over the delivery body with its trailing `hmac_signature` member cut out, and your handler
 receives the object parsed from those same verified bytes. A genuine message containing `<`, `>`,
-`&`, non-ASCII or a `\u` escape verifies; a body with a duplicate key, trailing content or a
-signature that is not the last member is nacked without requeue and never reaches the handler.
+`&`, non-ASCII or a `\u` escape verifies; a body with a duplicate key (at any depth), anything after
+the closing `}` (whitespace included), a `hmac_signature` that is `null` or not the last member,
+members in another order or of another message type (a validly signed `AuthzResponse` or
+cache-invalidation message) is nacked without requeue and never reaches the handler. An unsigned
+message is always refused: there is no lenient mode.
 
 ### Reactors — AMQP extension actors (§22)
 

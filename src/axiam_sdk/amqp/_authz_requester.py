@@ -494,6 +494,12 @@ class AuthzRequester:
     async def _handle(self, delivery: AuthzDelivery) -> None:
         """Verify one delivery and complete the matching request, or discard it (nack without
         requeue plus a security event)."""
+        if self._closed:
+            # After Close nothing can be answered: the body is not decoded or dispatched, it is
+            # refused without requeue, and no discard event is required.
+            with contextlib.suppress(Exception):
+                await delivery.nack()
+            return
         body = delivery.body
         try:
             decision, correlation_id = self._verify_response(body)
@@ -537,9 +543,14 @@ class AuthzRequester:
         if "hmac_signature" not in members:
             raise _Discard("unsigned")
 
-        # Rule 1 (strict parse) for the member every response carries.
+        # Reason (3), before the HMAC: the signature member must be a trailing 64-hex string and
+        # ``allowed``, ``tenant_id``, ``nonce`` and ``correlation_id`` present and well-typed. The
+        # values are read only to classify the discard; nothing here is trusted until step 2.
         if type(members.get("allowed")) is not bool:
             raise _Discard("malformed")
+        for name in ("tenant_id", "nonce", "correlation_id"):
+            if not _is_json_string(members.get(name)):
+                raise _Discard("malformed")
 
         cut = _cut_trailing_signature(body)
         if cut is None:

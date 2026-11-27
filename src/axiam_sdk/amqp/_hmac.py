@@ -67,15 +67,19 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def strict_json_object(raw: bytes) -> dict[str, Any]:
     """Parse ``raw`` as exactly one JSON object with unambiguous keys.
 
-    Refuses trailing content, a duplicate key at any depth, and two top-level keys that are equal
-    under case folding (a decoder that matches keys case-insensitively would otherwise read a
-    different message from the same bytes).
+    Refuses trailing content (whitespace included: nothing may follow the closing brace), a
+    duplicate key at any depth, and two top-level keys that are equal under Unicode case folding
+    (a decoder that matches keys case-insensitively would otherwise read a different message from
+    the same bytes).
 
     Raises:
         ValueError: ``raw`` is not such an object. The message names the fact, never a value.
     """
     try:
-        parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        text = raw.decode("utf-8")
+        if text[-1:] in (" ", "\t", "\n", "\r"):
+            raise ValueError("trailing whitespace")
+        parsed = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except RecursionError as exc:
         raise ValueError("the body is not a JSON object") from exc
     except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, the duplicate-key refusal
