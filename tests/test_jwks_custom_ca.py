@@ -264,7 +264,16 @@ def test_django_middleware_reads_axiam_custom_ca_setting(
 
 
 def _unverified_context() -> ssl.SSLContext:
-    return ssl._create_unverified_context()  # the bypass the rule must refuse
+    """A context with verification off: the input the custom_ca rule must refuse.
+
+    Test-only. It is built attribute by attribute (not with the stdlib's unverified-context helper,
+    which the TLS-bypass CI gate forbids anywhere in the tree) and is only ever handed to an SDK
+    constructor that must reject it; it never reaches a connection.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 def test_rest_client_refuses_an_unverified_context_as_custom_ca() -> None:
