@@ -140,7 +140,7 @@ async def test_consume_callback_dispatches_to_on_message() -> None:
     )
     assert channel.qos == {"prefetch_count": 3}
 
-    body = _sign(VALID_SIGNING_KEY, _authz("read", "r"))
+    body = _sign(VALID_SIGNING_KEY, _authz("read", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     # Invoke the registered per-delivery callback -> _on_message -> handler.

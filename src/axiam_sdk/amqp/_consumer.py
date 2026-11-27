@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -115,27 +116,29 @@ _LAYOUTS: dict[str, tuple[tuple[str, bool], ...]] = {
         ("issued_at", True),
     ),
 }
-#: The string-typed members of each type (step 2f's decode).
-_STRING_MEMBERS: dict[str, tuple[str, ...]] = {
-    "authz_request": (
-        "correlation_id",
-        "tenant_id",
-        "subject_id",
-        "action",
-        "resource_id",
-        "scope",
-    ),
-    "audit_event": (
-        "tenant_id",
-        "actor_id",
-        "actor_type",
-        "action",
-        "resource_id",
-        "outcome",
-        "ip_address",
-    ),
+#: Step 2f's decode, per type: the members that must be present and strings, those that may be
+#: absent but are strings when present, and those of them that are UUIDs (the server's ``Uuid``
+#: fields; ``crates/axiam-amqp/src/messages.rs``).
+_REQUIRED_STRINGS: dict[str, tuple[str, ...]] = {
+    "authz_request": ("correlation_id", "tenant_id", "subject_id", "action", "resource_id"),
+    "audit_event": ("tenant_id", "actor_id", "actor_type", "action", "outcome"),
 }
-_MAX_KEY_VERSION = 2**32 - 1
+_OPTIONAL_STRINGS: dict[str, tuple[str, ...]] = {
+    "authz_request": ("scope",),
+    "audit_event": ("resource_id", "ip_address"),
+}
+_UUID_MEMBERS: dict[str, tuple[str, ...]] = {
+    "authz_request": ("correlation_id", "tenant_id", "subject_id", "resource_id"),
+    "audit_event": ("tenant_id", "actor_id", "resource_id"),
+}
+_MAX_KEY_VERSION = 255  # the server's ``u8``
+#: RFC 3339 ``date-time``: ``T`` separator, a seconds field and an explicit offset.
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
+
+
+def _refuse_constant(name: str) -> Any:
+    """``json.loads`` ``parse_constant`` hook: ``NaN`` and ``Infinity`` are not JSON."""
+    raise ValueError("a non-finite JSON constant")
 
 
 def _has_layout(names: list[str], layout: tuple[tuple[str, bool], ...]) -> bool:
@@ -161,7 +164,7 @@ def _shape_reason(body: bytes) -> str | None:
         text = body.decode("utf-8")
         if text[-1:] in (" ", "\t", "\n", "\r"):
             return "malformed"
-        parsed = json.loads(text)
+        parsed = json.loads(text, parse_constant=_refuse_constant)
     except (ValueError, RecursionError):
         return "malformed"
     if not isinstance(parsed, dict):
@@ -172,16 +175,18 @@ def _shape_reason(body: bytes) -> str | None:
 
 
 def _decodes(event: dict[str, Any], message_type: str) -> bool:
-    """Step 2f's decode of the verified bytes into the configured type: every member of the JSON
-    type the struct gives it, ``key_version`` an unsigned 32-bit integer, ``issued_at`` an RFC 3339
-    timestamp and ``nonce`` a UUID. Reads only; never returns a value."""
-    for name in _STRING_MEMBERS[message_type]:
-        value = event.get(name)
-        if value is not None and not isinstance(value, str):
+    """Step 2f's decode of the verified bytes into the configured type: required members present
+    and of the JSON type the struct gives them, optional ones absent or of that type, the server's
+    ``Uuid`` members UUIDs, ``key_version`` an integer in ``u8`` range, ``issued_at`` an RFC 3339
+    ``date-time`` with an offset and ``nonce`` a UUID. Reads only; never returns a value."""
+    for name in _REQUIRED_STRINGS[message_type]:
+        if not isinstance(event.get(name), str):
             return False
-    if message_type == "audit_event":
-        metadata = event.get("metadata")
-        if metadata is not None and not isinstance(metadata, dict):
+    for name in _OPTIONAL_STRINGS[message_type]:
+        if name in event and not isinstance(event[name], str):
+            return False
+    if message_type == "audit_event" and "metadata" in event:
+        if not isinstance(event["metadata"], dict):
             return False
     key_version = event.get("key_version")
     if (
@@ -194,10 +199,15 @@ def _decodes(event: dict[str, Any], message_type: str) -> bool:
     issued_at = event.get("issued_at")
     if not isinstance(nonce, str) or not isinstance(issued_at, str):
         return False
+    if _RFC3339.fullmatch(issued_at) is None:
+        return False
     try:
         uuid.UUID(nonce)
+        for name in _UUID_MEMBERS[message_type]:
+            if name in event:
+                uuid.UUID(event[name])
         _parse_rfc3339(issued_at)
-    except ValueError:
+    except (ValueError, OverflowError):
         return False
     return True
 
@@ -254,8 +264,8 @@ def _log_discard(
     reported_key = getattr(message, "routing_key", None)
     routing_key = reported_key if isinstance(reported_key, str) else queue_name
     logger.warning(
-        "axiam_sdk_security: AMQP event discarded: timestamp=%s exchange=%r routing_key=%s "
-        "tenant_id=%s reason=%s",
+        "axiam_sdk_security: AMQP event discarded: timestamp=%s exchange=%r routing_key=%r "
+        "tenant_id=%r reason=%s",
         timestamp,
         exchange,
         routing_key,

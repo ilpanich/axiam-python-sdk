@@ -194,7 +194,7 @@ async def test_handler_raises_errdrop_nacks_without_requeue(
 ) -> None:
     """Path 3: valid HMAC + handler raises ErrDrop -> nack(requeue=False)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, _authz("delete", "x"))
+    body = _sign(VALID_SIGNING_KEY, _authz("delete", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:
@@ -213,7 +213,7 @@ async def test_handler_raises_other_exception_nacks_with_requeue(
 ) -> None:
     """Path 4: valid HMAC + handler raises a plain exception -> nack(requeue=True)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, _authz("update", "y"))
+    body = _sign(VALID_SIGNING_KEY, _authz("update", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:

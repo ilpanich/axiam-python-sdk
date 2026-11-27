@@ -73,11 +73,11 @@ class _Message:
 def _canonical_with(action: str) -> str:
     body = _serde_style(
         {
-            "correlation_id": "c",
-            "tenant_id": "t-1",
-            "subject_id": "s",
+            "correlation_id": "11111111-1111-1111-1111-111111111111",
+            "tenant_id": "22222222-2222-2222-2222-222222222222",
+            "subject_id": "33333333-3333-3333-3333-333333333333",
             "action": action,
-            "resource_id": "r",
+            "resource_id": "44444444-4444-4444-4444-444444444444",
         }
     )
     return body[:-1] + "," + _v2() + "}"
@@ -197,16 +197,16 @@ async def test_a_body_with_a_duplicate_key_or_trailing_content_is_nacked_and_nev
 
 def _authz_layout() -> str:
     return (
-        '{"correlation_id":"c","tenant_id":"t","subject_id":"s","action":"a","resource_id":"r",'
+        '{"correlation_id":"11111111-1111-1111-1111-111111111111","tenant_id":"22222222-2222-2222-2222-222222222222","subject_id":"33333333-3333-3333-3333-333333333333","action":"a","resource_id":"44444444-4444-4444-4444-444444444444",'
         + _v2()
         + "}"
     )
 
 
 def _audit_layout(optional: bool) -> str:
-    extra = '"resource_id":"r",' if optional else ""
+    extra = '"resource_id":"44444444-4444-4444-4444-444444444444",' if optional else ""
     return (
-        '{"tenant_id":"t","actor_id":"a","actor_type":"User","action":"x",'
+        '{"tenant_id":"22222222-2222-2222-2222-222222222222","actor_id":"55555555-5555-5555-5555-555555555555","actor_type":"User","action":"x",'
         + extra
         + '"outcome":"Success",'
         + _v2()

@@ -147,6 +147,21 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   that fails refuses that token only; every failed attempt counts toward the 60 s window. Before, a
   refresh failure past the TTL refused every token at once and an empty set was adopted. A `keys` array with no JWK object (`[{}]`, `[0]`), a non-`200` 2xx and a clock that moved backwards are handled as a failed refresh / refresh due; an `ETag` with control characters or over 256 bytes is never stored; a failed first fetch also opens the 60 s window. The discard event reports the broker's `exchange` and `routing_key` as given (`""` included); the queue name stands in only when the transport reports none. JWKS entries are parsed individually: a well-formed JWK this SDK cannot use counts and is skipped.
 
+### Changed
+
+- **JWKS fetch (OI-33 review round 1).** `JwksVerifier` no longer follows redirects when it fetches
+  the JWKS: a `3xx` is a failed refresh (the URL is used as configured). The fetch is bounded by the
+  SDK's own 10 s timeout and runs on a single detached thread, never under the cache's lock: a
+  verification whose held set is usable returns at once while a refresh is in flight, and only a
+  caller with no usable key (cold cache, past TTL + 300 s, unknown `kid`) waits for it. Every
+  TTL-driven refresh, successful or not, respects the 60 s window, so an advertised `max-age=0`
+  costs one fetch per window, not one per verification; a clock that stepped back ends the window.
+- **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
+  (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
+  3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON
+  (also in `AuthzRequester`). The discard event's text renders `routing_key` and `tenant_id` with
+  `%r`, so a control character cannot forge a log line.
+
 ### Removed
 
 - The AMQP authz requester no longer offers an opt-out for unsigned responses

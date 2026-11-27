@@ -64,6 +64,11 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return seen
 
 
+def _refuse_constant(name: str) -> Any:
+    """``parse_constant`` hook: ``NaN``/``Infinity`` are not JSON."""
+    raise ValueError("a non-finite JSON constant")
+
+
 def strict_json_object(raw: bytes) -> dict[str, Any]:
     """Parse ``raw`` as exactly one JSON object with unambiguous keys.
 
@@ -83,7 +88,9 @@ def strict_json_object(raw: bytes) -> dict[str, Any]:
         text = raw.decode("utf-8")
         if text[-1:] in (" ", "\t", "\n", "\r"):
             raise ValueError("trailing whitespace")
-        parsed = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        parsed = json.loads(
+            text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_refuse_constant
+        )
     except RecursionError as exc:
         raise ValueError("the body is not a JSON object") from exc
     except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, the duplicate-key refusal

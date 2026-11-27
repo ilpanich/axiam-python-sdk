@@ -79,7 +79,16 @@ def _accepted(verifier: JwksVerifier, token: str) -> bool:
         verifier.get_signing_key(token)
     except jwt.PyJWTError:
         return False
+    finally:
+        _settle(verifier)
     return True
+
+
+def _settle(verifier: JwksVerifier) -> None:
+    """Wait for a background refresh the call started (none on code that fetches inline)."""
+    settle = getattr(verifier, "_settle", None)
+    if settle is not None:
+        settle()
 
 
 def test_conformance_failing_refresh_keeps_held_keys_until_ttl_plus_300(clock: Clock) -> None:
@@ -237,6 +246,7 @@ class _Server:
         self.max_age: str | None = "900"
         self.requests: list[dict[str, str | None]] = []
         self.status_override: int | None = None
+        self.override_with_body = False
         self.etag = '"v1"'
 
         class Handler(BaseHTTPRequestHandler):
@@ -244,7 +254,12 @@ class _Server:
                 outer.requests.append({"if_none_match": self.headers.get("If-None-Match")})
                 if outer.status_override is not None:
                     self.send_response(outer.status_override)
+                    self.send_header(
+                        "Content-Length", str(len(outer.body) if outer.override_with_body else 0)
+                    )
                     self.end_headers()
+                    if outer.override_with_body:
+                        self.wfile.write(outer.body)
                     return
                 if self.headers.get("If-None-Match") == '"v1"':
                     self.send_response(304)
@@ -317,6 +332,9 @@ def test_a_smaller_advertised_max_age_is_honoured(
     held = _token(key, "held")
     assert _accepted(verifier, held)
     clock.at(31)
+    assert _accepted(verifier, held)
+    assert len(srv.requests) == 1, "a TTL-driven refresh waits for the 60 s window"
+    clock.at(61)
     assert _accepted(verifier, held)
     assert len(srv.requests) == 2
 
@@ -427,4 +445,153 @@ def test_an_unusable_but_well_formed_jwk_counts_and_is_skipped(clock: Clock) -> 
     rsa_only = {"keys": [{"kty": "RSA", "kid": "r", "n": "AQAB", "e": "AQAB"}, {}]}
     verifier._client.fetch_data = lambda: rsa_only  # type: ignore[method-assign]
     clock.at(TTL + 1)
+    assert _accepted(verifier, held)  # answered at once; the refresh runs behind it
     assert not _accepted(verifier, held), "a set of well-formed JWKs is a success: it replaces"
+
+
+# --- review round 1 -------------------------------------------------------------------------------
+
+
+def test_negative_age_with_a_failed_refresh_refuses_the_held_keys(clock: Clock) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    endpoint = Endpoint([jwk])
+    verifier = _verifier(endpoint)
+    held = _token(key, "held")
+    clock.at(100)
+    assert _accepted(verifier, held)
+    endpoint.mode = "fail"
+    clock.at(50)
+    assert not _accepted(verifier, held), "a clock step back never extends the held keys' life"
+
+
+def test_keys_as_an_object_is_a_failed_refresh(clock: Clock) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    endpoint = Endpoint([jwk])
+    verifier = _verifier(endpoint)
+    held = _token(key, "held")
+    assert _accepted(verifier, held)
+    verifier._client.fetch_data = lambda: {"keys": {"kty": "OKP"}}  # type: ignore[method-assign]
+    clock.at(TTL + 301)
+    assert not _accepted(verifier, held)
+
+
+def test_a_203_with_keys_is_a_failed_refresh(
+    clock: Clock, server: Callable[[dict[str, Any]], _Server]
+) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    srv = server(jwk)
+    srv.status_override = 203
+    srv.override_with_body = True
+    verifier = JwksVerifier(BASE_URL, jwks_url=srv.url)
+    assert not _accepted(verifier, _token(key, "held"))
+
+
+def test_a_304_re_reads_its_max_age_and_without_one_keeps_the_previous_ttl(
+    clock: Clock, server: Callable[[dict[str, Any]], _Server]
+) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    srv = server(jwk)
+    srv.max_age = "30"
+    verifier = JwksVerifier(BASE_URL, jwks_url=srv.url)
+    held = _token(key, "held")
+    assert _accepted(verifier, held)  # TTL 30
+    srv.max_age = "200"
+    clock.at(61)
+    assert _accepted(verifier, held)  # 304 carrying max-age=200
+    assert len(srv.requests) == 2
+    clock.at(61 + 150)
+    assert _accepted(verifier, held)
+    assert len(srv.requests) == 2, "the 304's max-age=200 is the TTL now"
+
+    srv.max_age = None
+    clock.at(61 + 201)
+    assert _accepted(verifier, held)  # 304 without max-age
+    assert len(srv.requests) == 3
+    clock.at(61 + 201 + 150)
+    assert _accepted(verifier, held)
+    assert len(srv.requests) == 3, "age 150 < the kept TTL of 200"
+    clock.at(61 + 201 + 201)
+    assert _accepted(verifier, held)
+    assert len(srv.requests) == 4, "the previous TTL (200) is kept, not reset to 300"
+
+
+def test_max_age_zero_costs_one_fetch_per_window_not_one_per_verification(
+    clock: Clock, server: Callable[[dict[str, Any]], _Server]
+) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    srv = server(jwk)
+    srv.max_age = "0"
+    verifier = JwksVerifier(BASE_URL, jwks_url=srv.url)
+    held = _token(key, "held")
+    for _ in range(100):
+        assert _accepted(verifier, held)
+    assert len(srv.requests) == 1
+    clock.at(61)
+    for _ in range(100):
+        assert _accepted(verifier, held)
+    assert len(srv.requests) == 2, "at most one TTL-driven fetch per 60 s window"
+
+
+def test_a_hanging_endpoint_does_not_block_a_verification_with_a_usable_held_set() -> None:
+    import time as real_time
+
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    gate = threading.Event()
+    started = threading.Event()
+
+    class Hanging(Endpoint):
+        def fetch_data(self) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls > 1:
+                started.set()
+                gate.wait(10)
+                raise PyJWKClientConnectionError("down")
+            return {"keys": self.jwks}
+
+    endpoint = Hanging([jwk])
+    verifier = _verifier(endpoint)
+    held = _token(key, "held")
+    assert _accepted(verifier, held)
+    verifier._anchor -= TTL + 1  # the TTL has passed: a refresh is due
+    verifier._last_ttl_attempt = None  # and the fill is outside the window
+    begun = real_time.perf_counter()
+    verifier.get_signing_key(held)
+    verifier.get_signing_key(_token(key, "held"))
+    assert real_time.perf_counter() - begun < 2.0, "held-kid verification never waits for a fetch"
+    assert started.wait(5), "the refresh is in flight"
+    assert endpoint.calls == 2
+    gate.set()
+    _settle(verifier)
+
+
+def test_concurrent_callers_on_a_cold_cache_cause_one_fetch() -> None:
+    import time as real_time
+
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+
+    class Slow(Endpoint):
+        def fetch_data(self) -> dict[str, Any]:
+            self.calls += 1
+            real_time.sleep(0.2)
+            return {"keys": self.jwks}
+
+    endpoint = Slow([jwk])
+    verifier = _verifier(endpoint)
+    token = _token(key, "held")
+    barrier = threading.Barrier(8)
+    results: list[bool] = []
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            verifier.get_signing_key(token)
+            results.append(True)
+        except jwt.PyJWTError:
+            results.append(False)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [True] * 8 and endpoint.calls == 1

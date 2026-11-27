@@ -187,7 +187,9 @@ def test_unknown_kid_triggers_exactly_one_forced_refetch(eddsa_keypair) -> None:
 
     # Now "rotate" the key into the server-side keyset and retry — the
     # verifier's forced-refetch-once path (rate-limited) should pick it up.
-    verifier._last_attempt = None  # bypass the 60s rate limit for this test
+    verifier._last_attempt = verifier._last_ttl_attempt = (
+        None  # bypass the 60s rate limit for this test
+    )
     endpoint.jwk_dicts = [jwk_dict]
 
     claims = verifier.verify_signature_only_unchecked(token)
@@ -214,7 +216,9 @@ def test_empty_keyset_triggers_forced_refetch(eddsa_keypair) -> None:
     calls_after_first_attempt = endpoint.call_count
     assert calls_after_first_attempt >= 1
 
-    verifier._last_attempt = None  # bypass the 60s rate limit for this test
+    verifier._last_attempt = verifier._last_ttl_attempt = (
+        None  # bypass the 60s rate limit for this test
+    )
     endpoint.jwk_dicts = [jwk_dict]
 
     claims = verifier.verify_signature_only_unchecked(token)

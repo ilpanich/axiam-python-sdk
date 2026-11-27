@@ -384,3 +384,69 @@ async def test_an_empty_routing_key_and_exchange_are_reported_as_the_broker_gave
     )
     (event,) = _events(log)
     assert event.exchange == "" and event.routing_key == ""  # type: ignore[attr-defined]
+
+
+def _with_member(canonical: str, old: str, new: str) -> bytes:
+    assert old in canonical
+    return _sign(canonical.replace(old, new))
+
+
+@pytest.mark.parametrize(
+    ("name", "old", "new"),
+    [
+        ("required string null", '"action":"user.login"', '"action":null'),
+        (
+            "required uuid not a uuid",
+            '"actor_id":"66666666-6666-6666-6666-666666666666"',
+            '"actor_id":"x"',
+        ),
+        (
+            "tenant not a uuid",
+            '"tenant_id":"11111111-1111-1111-1111-111111111111"',
+            '"tenant_id":"t"',
+        ),
+        ("issued_at without offset", "2026-07-10T12:00:00Z", "2026-07-10T12:00:00"),
+        ("issued_at date only", "2026-07-10T12:00:00Z", "2026-07-10"),
+        ("issued_at space separator", "2026-07-10T12:00:00Z", "2026-07-10 12:00:00Z"),
+        ("key_version above u8", '"key_version":2', '"key_version":300'),
+        (
+            "optional ip_address wrong type",
+            '"ip_address":"203.0.113.7"',
+            '"ip_address":5',
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_decode_refuses_each_case_as_malformed(name: str, old: str, new: str) -> None:
+    canonical = _canonical_audit()
+    message, handled, log = await _deliver(_with_member(canonical, old, new), "audit_event")
+    assert handled == [] and message.nacked is False, name
+    assert [e.reason for e in _events(log)] == ["malformed"], name  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_routing_key_with_a_newline_cannot_forge_a_log_line() -> None:
+    async def handler(event: dict[str, Any]) -> None:
+        return None
+
+    logger, log = _logger()
+    message = _Message(b"[]", routing_key="a\nFORGED reason=ok")
+    await _on_message(
+        message,
+        SUBKEY,
+        handler,
+        logger,
+        tenant_id="t\nx",
+        message_type="audit_event",
+    )
+    (event,) = _events(log)
+    assert "\n" not in event.getMessage()
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.asyncio
+async def test_non_finite_json_constants_are_malformed(constant: str) -> None:
+    canonical = _canonical_audit().replace('"method":"password"', '"method":' + constant)
+    message, handled, log = await _deliver(_sign(canonical), "audit_event")
+    assert handled == [] and message.nacked is False
+    assert [e.reason for e in _events(log)] == ["malformed"]  # type: ignore[attr-defined]

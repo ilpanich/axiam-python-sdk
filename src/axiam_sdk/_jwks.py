@@ -99,6 +99,10 @@ _DEFAULT_LIFESPAN_SECONDS = 300
 #: advertised by ``Cache-Control: max-age``; a larger value is clamped down, never honoured.
 MAX_JWKS_TTL_SECONDS = 300
 
+#: The SDK's own bound on one JWKS fetch, in seconds (a hanging endpoint costs one detached
+#: refresh this long, never a blocked verification that has a usable key).
+_JWKS_FETCH_TIMEOUT_SECONDS = 10.0
+
 #: CONTRACT.md §12.4 rule 2: how long past the TTL, measured from the last SUCCESSFUL fetch, the
 #: held keys keep verifying while every refresh fails. After TTL + this, every token is refused
 #: until a fetch succeeds.
@@ -147,6 +151,13 @@ def _is_access_token_typ(typ: object) -> bool:
     return lowered == "at+jwt"
 
 
+def _window_open(last: float | None, now: float) -> bool:
+    """Whether the 60 s refresh window that started at ``last`` is over. A start in the future
+    (``now < last``: the clock stepped back) means the window is over, so the refresh a negative
+    age makes due can happen."""
+    return last is None or not 0 <= now - last < _FORCED_REFETCH_MIN_INTERVAL_SECONDS
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Refuses every redirect: a JWKS URL is used as configured."""
 
@@ -178,7 +189,7 @@ class _JwksFetcher(PyJWKClient):
 
     def __init__(self, uri: str) -> None:
         """Build a fetcher for ``uri`` with no PyJWT-side cache."""
-        super().__init__(uri, cache_jwk_set=False)
+        super().__init__(uri, cache_jwk_set=False, timeout=_JWKS_FETCH_TIMEOUT_SECONDS)
         #: ``ETag`` of the held set, sent as ``If-None-Match``.
         self.etag: str | None = None
         #: Set by the last ``fetch_data``: the response's ``ETag`` / ``max-age``, and whether the
@@ -369,6 +380,12 @@ class JwksVerifier:
         #: When a refresh was last attempted and either failed or was forced by an unknown
         #: ``kid``; opens the 60 s window in which no further refresh is attempted.
         self._last_attempt: float | None = None
+        #: When a TTL-driven (non-forced) refresh was last attempted, successful or not: at most
+        #: one such fetch per 60 s window, whatever TTL the endpoint advertises (``max-age=0``).
+        self._last_ttl_attempt: float | None = None
+        #: The refresh in flight, if any: set while one runs OUTSIDE the state lock.
+        self._inflight: threading.Event | None = None
+        self._refresh_thread: threading.Thread | None = None
         #: ``ETag`` of the held set, for the conditional refresh.
         self._etag_of_held: str | None = None
         self._refetch_lock = threading.Lock()
@@ -882,103 +899,139 @@ class JwksVerifier:
         return self._get_signing_key(token)
 
     def _get_signing_key(self, token: str) -> Any:
-        """Resolve the signing key for *token*, single-flighted through
-        ``_refetch_lock`` so a burst of concurrent callers against a cold
-        or stale cache — forced-refetch or not — collapses to exactly one
-        network fetch (D-08/D-09, PERF-03).
+        """Resolve the signing key for *token* (CONTRACT.md §12.4 rule 2, contract 1.69).
 
-        CONTRACT.md §12.4 rule 2 (contract 1.69): within the TTL the held set answers with no
-        fetch; past it a refresh is due, at most one attempt per 60 s window, a failed attempt
-        included. A failed refresh keeps the held keys, which verify until exactly TTL + 300 s
-        after the last successful fetch; then every token is refused until a fetch succeeds. An
-        unknown ``kid`` is one forced refresh per window, and when it fails the token is refused
-        and the held set and the age are untouched.
+        Within the TTL the held set answers with no fetch. Past it a refresh is due: at most one
+        TTL-driven fetch per 60 s window (a failed one, or an advertised ``max-age=0``, included),
+        run by a single detached thread, so the state lock is never held across network I/O. A
+        verification whose held set is usable (the key is in it and TTL + 300 s since the last
+        successful fetch has not passed) returns at once, whether or not a fetch is in flight.
+        Only a caller with no usable key (a cold cache, a stale set, an unknown ``kid``) waits for
+        the in-flight fetch, bounded by the SDK's own timeout. An unknown ``kid`` forces one
+        refresh per window; a failed refresh keeps the held set and the age and counts toward the
+        window.
         """
         header = jwt.get_unverified_header(token)
         kid = header.get("kid")
         if not kid:
             raise PyJWKClientError("the token carries no kid")
+        for settled in (False, True):
+            with self._refetch_lock:
+                now = time.monotonic()
+                held = self._held
+                age = now - self._anchor
+                usable = held is not None and 0 <= age <= self._ttl + JWKS_MAX_STALE_SECONDS
+                due = held is None or age < 0 or age >= self._ttl  # age < 0: the clock moved back
+                if not settled and self._inflight is None and due and self._may_ttl(now):
+                    self._start_refresh(now, forced=False)
+                match = PyJWKClient.match_kid(held, kid) if usable and held is not None else None
+                if match is not None:
+                    return match
+                if settled:
+                    break
+                if usable and self._inflight is None and self._may_forced(now):
+                    self._start_refresh(now, forced=True)
+                waiting = self._inflight
+            if waiting is None:
+                break
+            # No usable key: wait (outside the lock) for the one fetch, then look once more.
+            waiting.wait(self._client.timeout + 5)
         with self._refetch_lock:
-            now = time.monotonic()
-            refreshed = False
-            age = now - self._anchor
-            if self._held is None or age < 0 or age >= self._ttl:  # age < 0: the clock moved back
-                if self._may_attempt(now):
-                    refreshed = self._refresh(now, forced=False)
             if self._held is None:
                 raise PyJWKClientError("the JWKS endpoint is unavailable")
-            age = now - self._anchor
-            if age < 0 or age > self._ttl + JWKS_MAX_STALE_SECONDS:
+            if not 0 <= time.monotonic() - self._anchor <= self._ttl + JWKS_MAX_STALE_SECONDS:
                 # Past the bound: held keys are never used, whatever the cause.
                 raise PyJWKClientError("the JWKS is stale and could not be refreshed")
+        raise PyJWKClientError("no JWKS key matches the token's kid")
 
-            cached = PyJWKClient.match_kid(self._held, kid)
-            if cached is not None:
-                return cached
-            if refreshed or not self._may_attempt(now):
-                # The set was just fetched, or the window is closed: the kid is unknown.
-                raise PyJWKClientError("no JWKS key matches the token's kid")
+    def _may_ttl(self, now: float) -> bool:
+        """Whether a TTL-driven refresh may start: no attempt of any kind inside the 60 s window."""
+        return self._may_forced(now) and _window_open(self._last_ttl_attempt, now)
 
-            # One re-fetch per window; its failure counts toward that window and changes nothing
-            # else.
-            if self._refresh(now, forced=True) and self._held is not None:
-                fresh = PyJWKClient.match_kid(self._held, kid)
-                if fresh is not None:
-                    return fresh
-            raise PyJWKClientError("no JWKS key matches the token's kid")
+    def _may_forced(self, now: float) -> bool:
+        """Whether a forced (unknown ``kid``) refresh may start: no failed or forced attempt inside
+        the 60 s window."""
+        return _window_open(self._last_attempt, now)
 
-    def _may_attempt(self, now: float) -> bool:
-        """Whether the 60 s refresh window is open (no failed or forced attempt inside it)."""
-        return (
-            self._last_attempt is None
-            or now - self._last_attempt >= _FORCED_REFETCH_MIN_INTERVAL_SECONDS
-        )
-
-    def _refresh(self, now: float, *, forced: bool) -> bool:
-        """Fetch the JWKS and report whether it SUCCEEDED (§12.4 rule 2): a ``200`` holding at
-        least one signing key, or a ``304`` to the conditional request. Only a success replaces the
-        held keys and moves the anchor; anything else (transport error, other status, a body that
-        is not a JWKS, an empty key set) leaves both alone and opens the refresh window."""
-        client = self._client
-        client.reset_response()
-        client.etag = self._etag_of_held
-        try:
-            data = client.fetch_data()
-            if data is None:
-                if not client.not_modified or self._held is None:
-                    raise PyJWKClientError("no JWKS document")
-                keys = self._held
-            else:
-                entries = data.get("keys")
-                if not isinstance(entries, list):
-                    raise PyJWKClientError("not a JWKS document")
-                jwks = [e for e in entries if isinstance(e, dict) and isinstance(e.get("kty"), str)]
-                if not jwks:
-                    raise PyJWKClientError("not a JWKS document")
-                keys = []
-                for entry in jwks:  # an unusable but well-formed JWK counts, and is skipped
-                    try:
-                        key = PyJWK.from_dict(entry)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if key.public_key_use in ("sig", None) and key.key_id:
-                        keys.append(key)
-        except Exception:  # noqa: BLE001 -- every failure is a failed refresh, never an escape
-            self._last_attempt = now
-            return False
+    def _start_refresh(self, now: float, *, forced: bool) -> None:
+        """Start the single detached refresh. Caller holds the state lock."""
+        done = threading.Event()
+        self._inflight = done
         if forced:
             self._last_attempt = now
-        self._held = keys
-        self._anchor = now
-        self._etag_of_held = client.response_etag if data is not None else self._etag_of_held
-        advertised = client.response_max_age
-        if self._configured_ttl is not None:
-            self._ttl = self._configured_ttl
-        elif advertised is not None:
-            self._ttl = float(min(advertised, MAX_JWKS_TTL_SECONDS))
-        elif data is not None:
-            self._ttl = float(_DEFAULT_LIFESPAN_SECONDS)
-        return True
+        else:
+            self._last_ttl_attempt = now
+        etag = self._etag_of_held
+        held = self._held
+        thread = threading.Thread(
+            target=self._run_refresh, args=(now, etag, held, done), daemon=True
+        )
+        self._refresh_thread = thread
+        thread.start()
+
+    def _settle(self) -> None:
+        """Wait for the refresh in flight, if any (tests; production callers never need it)."""
+        thread = self._refresh_thread
+        if thread is not None:
+            thread.join()
+
+    def _run_refresh(
+        self, now: float, etag: str | None, held: list[PyJWK] | None, done: threading.Event
+    ) -> None:
+        """Fetch the JWKS outside the state lock, then apply the result under it."""
+        outcome: tuple[list[PyJWK], bool, str | None, int | None] | None = None
+        try:
+            outcome = self._fetch(etag, held)
+        except Exception:  # noqa: BLE001 -- every failure is a failed refresh, never an escape
+            outcome = None
+        finally:
+            with self._refetch_lock:
+                if outcome is None:
+                    self._last_attempt = now
+                else:
+                    keys, from_body, response_etag, advertised = outcome
+                    self._held = keys
+                    self._anchor = now
+                    if from_body:
+                        self._etag_of_held = response_etag
+                    if self._configured_ttl is not None:
+                        self._ttl = self._configured_ttl
+                    elif advertised is not None:
+                        self._ttl = float(min(advertised, MAX_JWKS_TTL_SECONDS))
+                    elif from_body:
+                        self._ttl = float(_DEFAULT_LIFESPAN_SECONDS)
+                self._inflight = None
+            done.set()
+
+    def _fetch(
+        self, etag: str | None, held: list[PyJWK] | None
+    ) -> tuple[list[PyJWK], bool, str | None, int | None]:
+        """One fetch. Returns ``(keys, from_body, etag, max_age)`` for a SUCCESS (§12.4 rule 2): a
+        ``200`` whose ``keys`` array holds at least one JWK object (an entry with a string
+        ``kty``), or a ``304`` to the conditional request. Raises for anything else."""
+        client = self._client
+        client.reset_response()
+        client.etag = etag
+        data = client.fetch_data()
+        if data is None:
+            if not client.not_modified or held is None:
+                raise PyJWKClientError("no JWKS document")
+            return held, False, None, client.response_max_age
+        entries = data.get("keys")
+        if not isinstance(entries, list):
+            raise PyJWKClientError("not a JWKS document")
+        jwks = [e for e in entries if isinstance(e, dict) and isinstance(e.get("kty"), str)]
+        if not jwks:
+            raise PyJWKClientError("not a JWKS document")
+        keys: list[PyJWK] = []
+        for entry in jwks:  # an unusable but well-formed JWK counts, and is skipped
+            try:
+                key = PyJWK.from_dict(entry)
+            except Exception:  # noqa: BLE001
+                continue
+            if key.public_key_use in ("sig", None) and key.key_id:
+                keys.append(key)
+        return keys, True, client.response_etag, client.response_max_age
 
 
 def verify_certificate_binding(

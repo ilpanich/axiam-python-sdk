@@ -124,5 +124,5 @@ def test_an_outage_on_a_cold_cache_costs_at_most_one_fetch_per_window() -> None:
     assert calls <= 1, "fifty verifications during an outage: at most one fetch per window"
 
     up = True
-    verifier._last_attempt = None  # the window has passed
+    verifier._last_attempt = verifier._last_ttl_attempt = None  # the window has passed
     assert verifier.get_signing_key(token).key_id == "good"
