@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.0] - 2026-11-22
+## [Unreleased]
 
 Contract 1.68 (security audit 2026-11-14, wave 3). `CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from `ilpanich/axiam`; `proto/` is unchanged
@@ -79,6 +79,41 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   accepts nothing).
 - `OidcStateEntry.binding_digest` (optional) and `MemoryOidcStateStore(max_entries=...)`.
 
+### Changed
+
+- **JWKS fetch (OI-33 review round 1).** `JwksVerifier` no longer follows redirects when it fetches
+  the JWKS: a `3xx` is a failed refresh (the URL is used as configured). The fetch is bounded by the
+  SDK's own 10 s timeout and runs on a single detached thread, never under the cache's lock: a
+  verification whose held set is usable returns at once while a refresh is in flight, and only a
+  caller with no usable key (cold cache, past TTL + 300 s, unknown `kid`) waits for it. Every
+  TTL-driven refresh, successful or not, respects the 60 s window, so an advertised `max-age=0`
+  costs one fetch per window, not one per verification; a clock that stepped back ends the window.
+- **No blocking on the event loop (OI-33 review round 2).** The FastAPI dependency
+  (`run_in_threadpool`), the Django async middleware path (`sync_to_async(thread_sensitive=False)`)
+  and the async client's `verify_logout_token` and ID-token validation (`asyncio.to_thread`) run the
+  synchronous JWKS verifier in a worker thread: an unknown-`kid` token or a cold cache on a slow
+  endpoint no longer freezes the loop. The JWKS body is read against one overall 10 s deadline and
+  capped at 1 MiB (a dripping or endless endpoint can no longer hold a refresh); UUID members must
+  be in canonical 8-4-4-4-12 form.
+- **JWKS fetch deadline (OI-33 review round 3).** The 10 s overall deadline now starts with the
+  request and a timer closes the socket at it, so a server dripping response headers is abandoned
+  too; `device_poll` validates off the event loop like the other token paths; the client's
+  per-`jwks_uri` verifier cache is race-free under threads.
+- **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
+  (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
+  3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON
+  (also in `AuthzRequester`). The discard event's text renders `routing_key` and `tenant_id` with
+  `%r`, so a control character cannot forge a log line.
+- Vendored `CONTRACT.md` re-synced to 1.69 (typed event consumer, byte-order-mark refusal, bounded JWKS
+  stale-if-error and the wire-form clarification; axiam#883).
+
+### Removed
+
+- The AMQP authz requester no longer offers an opt-out for unsigned responses
+  (`allow_unsigned_responses` and `AuthzDecision.unsigned`, added earlier in this unreleased cycle and never
+  released): no AXIAM server sends one to a reply queue, so the option could admit only a forged
+  response (CONTRACT 1.69 §8, server #881). The requester requires a 1.68 server.
+
 ### Fixed (follow-up review, OI-11; contract 1.69)
 
 - **Back-channel logout token `kid` (axiam#880).** `verify_logout_token` selects the key by `kid`
@@ -127,7 +162,7 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   exactly one warning on its logger with `timestamp`, `exchange`, `routing_key`, `tenant_id` and
   `reason` (`malformed`, `unsigned`, `signature`, `key_version`, `stale`, `replay`, first that
   applies in CONTRACT §8 rule 4's order), as `extra` members and in the message; never a signature,
-  nonce, key or body member. **API change (1.4.0 is unreleased): `consume(...)` gains the required
+  nonce, key or body member. **API change (within the unreleased changes): `consume(...)` gains the required
   keyword-only `tenant_id`** (the tenant whose subkey the key is; what the event reports, never a
   value read from a body) beside `message_type`. `exchange`/`routing_key` are the delivery's own
   (the queue name when the transport reports none).
@@ -146,39 +181,6 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   exactly TTL + 300 s, then every token is refused until a fetch succeeds. An unknown-`kid` refresh
   that fails refuses that token only; every failed attempt counts toward the 60 s window. Before, a
   refresh failure past the TTL refused every token at once and an empty set was adopted. A `keys` array with no JWK object (`[{}]`, `[0]`), a non-`200` 2xx and a clock that moved backwards are handled as a failed refresh / refresh due; an `ETag` with control characters or over 256 bytes is never stored; a failed first fetch also opens the 60 s window. The discard event reports the broker's `exchange` and `routing_key` as given (`""` included); the queue name stands in only when the transport reports none. JWKS entries are parsed individually: a well-formed JWK this SDK cannot use counts and is skipped.
-
-### Changed
-
-- **JWKS fetch (OI-33 review round 1).** `JwksVerifier` no longer follows redirects when it fetches
-  the JWKS: a `3xx` is a failed refresh (the URL is used as configured). The fetch is bounded by the
-  SDK's own 10 s timeout and runs on a single detached thread, never under the cache's lock: a
-  verification whose held set is usable returns at once while a refresh is in flight, and only a
-  caller with no usable key (cold cache, past TTL + 300 s, unknown `kid`) waits for it. Every
-  TTL-driven refresh, successful or not, respects the 60 s window, so an advertised `max-age=0`
-  costs one fetch per window, not one per verification; a clock that stepped back ends the window.
-- **No blocking on the event loop (OI-33 review round 2).** The FastAPI dependency
-  (`run_in_threadpool`), the Django async middleware path (`sync_to_async(thread_sensitive=False)`)
-  and the async client's `verify_logout_token` and ID-token validation (`asyncio.to_thread`) run the
-  synchronous JWKS verifier in a worker thread: an unknown-`kid` token or a cold cache on a slow
-  endpoint no longer freezes the loop. The JWKS body is read against one overall 10 s deadline and
-  capped at 1 MiB (a dripping or endless endpoint can no longer hold a refresh); UUID members must
-  be in canonical 8-4-4-4-12 form.
-- **JWKS fetch deadline (OI-33 review round 3).** The 10 s overall deadline now starts with the
-  request and a timer closes the socket at it, so a server dripping response headers is abandoned
-  too; `device_poll` validates off the event loop like the other token paths; the client's
-  per-`jwks_uri` verifier cache is race-free under threads.
-- **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
-  (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
-  3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON
-  (also in `AuthzRequester`). The discard event's text renders `routing_key` and `tenant_id` with
-  `%r`, so a control character cannot forge a log line.
-
-### Removed
-
-- The AMQP authz requester no longer offers an opt-out for unsigned responses
-  (`allow_unsigned_responses` and `AuthzDecision.unsigned`, added earlier in 1.4.0 and never
-  released): no AXIAM server sends one to a reply queue, so the option could admit only a forged
-  response (CONTRACT 1.69 §8, server #881). The requester requires a 1.68 server.
 
 ### Migration notes
 
