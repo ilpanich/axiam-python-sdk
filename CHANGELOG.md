@@ -14,6 +14,14 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
 
 ### Security
 
+- **`custom_ca` accepted an unverified `ssl.SSLContext` (#114).** `custom_ca` was documented as a
+  path or an `ssl.SSLContext` but never checked, so `AxiamClient(custom_ca=ssl._create_unverified_context())`
+  built REST clients with verification off, a bypass CONTRACT.md §6 forbids. One rule now applies at
+  construction (`AxiamClient`, `AsyncAxiamClient`, `JwksVerifier`, the Django `AXIAM_CUSTOM_CA`
+  setting): `custom_ca` is a string (path or inline PEM) or an `ssl.SSLContext` with
+  `verify_mode == CERT_REQUIRED` and `check_hostname` on; anything else is a `ValueError` that does
+  not echo the value. A context cannot be combined with `client_cert`/`client_key` (the identity
+  would land on the caller's own context).
 - **C7 — login CSRF in the "Login with AXIAM" glue.** `oidc_login_views` (Django) and
   `oidc_login_router` (FastAPI) kept the in-flight login keyed by `state` alone, so a callback
   loaded in a browser *other* than the one that started the login completed it and called
@@ -185,7 +193,7 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
 - **JWKS fetch ignored `custom_ca` and the mTLS identity (#114).** `JwksVerifier` fetched the key
   set over the system trust store only, so a private-CA deployment could log in and call the API
   but every local token verification failed closed. `JwksVerifier` now takes `custom_ca=` (bundle
-  path or inline PEM, as the REST client's `custom_ca`, CONTRACT.md §6; the only public TLS input);
+  path, inline PEM or a strict context, as the REST client's `custom_ca`, CONTRACT.md §6; the only public TLS input);
   the client's OIDC verifiers trust the session's `custom_ca` and, when it presents a §6.1 client
   identity, send it only to a `jwks_uri` on the client's own origin; the Django middleware reads
   `settings.AXIAM_CUSTOM_CA`. Server and hostname

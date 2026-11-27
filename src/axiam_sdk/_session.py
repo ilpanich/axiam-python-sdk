@@ -41,10 +41,34 @@ if TYPE_CHECKING:
     from axiam_sdk._client import _PrincipalScope
 
 
-def build_trust_context(custom_ca: str | None) -> ssl.SSLContext:
+def validate_custom_ca(custom_ca: object) -> str | ssl.SSLContext | None:
+    """The one ``custom_ca`` rule (CONTRACT.md §6): a CA-bundle path or inline PEM ``str``, or an
+    ``ssl.SSLContext`` that keeps server verification on (``verify_mode == CERT_REQUIRED`` and
+    ``check_hostname``). ``None`` and ``""`` mean unset. Anything else is a ``ValueError`` that
+    never echoes the value."""
+    if custom_ca is None or custom_ca == "":
+        return None
+    if isinstance(custom_ca, str):
+        return custom_ca
+    if (
+        isinstance(custom_ca, ssl.SSLContext)
+        and custom_ca.verify_mode == ssl.CERT_REQUIRED
+        and custom_ca.check_hostname is True
+    ):
+        return custom_ca
+    raise ValueError(
+        "custom_ca must be a CA-bundle path, inline PEM, or an ssl.SSLContext with "
+        "verify_mode=CERT_REQUIRED and check_hostname=True (CONTRACT.md §6)"
+    )
+
+
+def build_trust_context(custom_ca: str | ssl.SSLContext | None) -> ssl.SSLContext:
     """A strict client-side ``ssl.SSLContext`` (``check_hostname`` on, ``CERT_REQUIRED``) that
     trusts the system store plus ``custom_ca`` — an inline PEM via ``cadata=``, anything else as
-    a CA-bundle path via ``cafile=`` (CONTRACT.md §6). Never weakens server verification."""
+    a CA-bundle path via ``cafile=`` (CONTRACT.md §6). A validated ``SSLContext`` is used as-is.
+    Never weakens server verification."""
+    if isinstance(custom_ca, ssl.SSLContext):
+        return custom_ca
     context = ssl.create_default_context()
     if custom_ca:
         if _looks_like_pem(custom_ca):
@@ -112,7 +136,7 @@ class _Session:
         base_url: str,
         tenant_slug: str,
         *,
-        custom_ca: str | None = None,
+        custom_ca: str | ssl.SSLContext | None = None,
         client_cert: str | bytes | None = None,
         client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
@@ -128,8 +152,11 @@ class _Session:
             tenant_slug: Injected as ``X-Tenant-ID`` on every same-origin
                 request (CONTRACT.md §5).
             custom_ca: The sole *server*-trust override (§6) — a PEM CA
-                bundle path (or inline PEM), or ``None`` for strict default
-                verification. Never a boolean.
+                bundle path (or inline PEM), an ``ssl.SSLContext`` with
+                ``verify_mode=CERT_REQUIRED`` and ``check_hostname=True``
+                (not combinable with a client identity), or ``None`` for
+                strict default verification. Never a boolean; anything
+                else is a ``ValueError``.
             client_cert: Optional PEM client-certificate chain (``str`` or
                 ``bytes``) presented for mTLS client authentication
                 (CONTRACT.md §6.1). Must be given together with
@@ -172,12 +199,20 @@ class _Session:
         # separate methods so the CI TLS-bypass lint gate is never tripped.
         validate_client_identity(client_cert, client_key)
         #: The raw server-trust override, kept so a JWKS fetch can trust it without the identity.
-        self.custom_ca = custom_ca
+        trust = validate_custom_ca(custom_ca)
+        self.custom_ca = trust
         self._verify: bool | str | ssl.SSLContext
         if client_cert is not None and client_key is not None:
-            self._verify = self._build_mtls_context(custom_ca, client_cert, client_key)
+            if isinstance(trust, ssl.SSLContext):
+                # load_cert_chain would put the identity on the caller's own context, which a
+                # JWKS fetch (or anything else holding it) would then present to any host.
+                raise ValueError(
+                    "custom_ca as an ssl.SSLContext cannot be combined with client_cert/"
+                    "client_key: pass a CA path or inline PEM (CONTRACT.md §6.1)"
+                )
+            self._verify = self._build_mtls_context(trust, client_cert, client_key)
         else:
-            self._verify = custom_ca if custom_ca else True
+            self._verify = trust if trust else True
 
         # Whether this session presents a §6.1 client certificate, and so
         # whether CONTRACT.md §21.3 rule 2 applies to the calls it makes. The
@@ -329,9 +364,12 @@ class _Session:
         """The context carrying this session's §6.1 client identity, but only for a ``jwks_uri``
         on the same origin as ``base_url``: a discovery document may name another host
         (§12.3 rule 6), which must not receive the identity. ``None`` otherwise."""
-        if not isinstance(self._verify, ssl.SSLContext):
+        if not self.presents_client_certificate or not isinstance(self._verify, ssl.SSLContext):
             return None
-        own, other = httpx.URL(self.base_url), httpx.URL(jwks_uri)
+        try:
+            own, other = httpx.URL(self.base_url), httpx.URL(jwks_uri)
+        except httpx.InvalidURL:
+            return None  # fail closed: an unparseable origin never receives the identity
         if (own.scheme, own.host, own.port) != (other.scheme, other.host, other.port):
             return None
         return self._verify

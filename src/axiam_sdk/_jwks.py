@@ -80,7 +80,7 @@ from jwt.types import Options
 from axiam_sdk._errors import AuthError
 from axiam_sdk._mcp import McpGuardChallenges, mcp_guard_challenges
 from axiam_sdk._revocation_feed import RevocationFeed
-from axiam_sdk._session import build_trust_context
+from axiam_sdk._session import build_trust_context, validate_custom_ca
 from axiam_sdk._telemetry import ConfigClamped, TelemetryDispatcher, TelemetryHook
 
 _LOGGER = logging.getLogger(__name__)
@@ -423,7 +423,7 @@ class JwksVerifier:
         revocation_feed: RevocationFeed | None = None,
         resource_metadata_url: str | None = None,
         telemetry_hook: TelemetryHook | None = None,
-        custom_ca: str | None = None,
+        custom_ca: str | ssl.SSLContext | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -486,10 +486,13 @@ class JwksVerifier:
 
             custom_ca: A private CA to trust for the JWKS fetch, exactly as the REST client's
                 ``custom_ca`` (CONTRACT.md §6): a CA-bundle path or inline PEM, added to the
-                system trust store. Server and hostname verification stay on. Unset by default.
+                system trust store, or an ``ssl.SSLContext`` with ``verify_mode=CERT_REQUIRED`` and
+                ``check_hostname=True``. Server and hostname verification stay on. Unset by
+                default.
 
         Raises:
-            ValueError: if ``clock_skew_seconds`` is negative or exceeds
+            ValueError: if ``custom_ca`` is not a string or a strict ``ssl.SSLContext``, or if
+                ``clock_skew_seconds`` is negative or exceeds
                 :data:`MAX_CLOCK_SKEW_SECONDS` — §10.1 rule 7 forbids an
                 operator-settable unbounded leeway.
             ValidationError: if ``resource_metadata_url`` is set without
@@ -514,7 +517,8 @@ class JwksVerifier:
         # — pure string operations, no network I/O) with their own operation
         # name and, where relevant, their route's own `scope`.
         mcp_guard_challenges(expected_audience, resource_metadata_url, "JwksVerifier")
-        ssl_context = build_trust_context(custom_ca) if custom_ca else None
+        trust = validate_custom_ca(custom_ca)
+        ssl_context = build_trust_context(trust) if trust else None
         resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
         # The fetcher is only the HTTP transport. The cache lives below, because PyJWT's cache
         # drops the held set at its TTL and cannot keep it through a failed refresh, which is

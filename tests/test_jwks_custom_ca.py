@@ -258,3 +258,128 @@ def test_django_middleware_reads_axiam_custom_ca_setting(
                 delattr(django_settings, key)
             else:
                 setattr(django_settings, key, value)
+
+
+# --- custom_ca is one rule: a path / inline PEM, or a strict SSLContext ------------------------
+
+
+def _unverified_context() -> ssl.SSLContext:
+    return ssl._create_unverified_context()  # the bypass the rule must refuse
+
+
+def test_rest_client_refuses_an_unverified_context_as_custom_ca() -> None:
+    with pytest.raises(ValueError, match="custom_ca"):
+        AxiamClient(
+            base_url="https://axiam.example.test",
+            tenant_slug="acme",
+            custom_ca=_unverified_context(),  # type: ignore[arg-type]
+        )
+
+
+def test_async_client_refuses_an_unverified_context_as_custom_ca() -> None:
+    with pytest.raises(ValueError, match="custom_ca"):
+        AsyncAxiamClient(
+            base_url="https://axiam.example.test",
+            tenant_slug="acme",
+            custom_ca=_unverified_context(),  # type: ignore[arg-type]
+        )
+
+
+def test_jwks_verifier_refuses_an_unverified_context_as_custom_ca() -> None:
+    with pytest.raises(ValueError, match="custom_ca"):
+        JwksVerifier("https://axiam.example.test", custom_ca=_unverified_context())  # type: ignore[arg-type]
+
+
+def test_context_without_hostname_check_is_refused() -> None:
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    with pytest.raises(ValueError, match="custom_ca"):
+        JwksVerifier("https://axiam.example.test", custom_ca=context)
+
+
+@pytest.mark.parametrize("bad", [b"/ca.pem", 7, True, object()])
+def test_non_str_non_context_custom_ca_is_refused(bad: Any) -> None:
+    with pytest.raises(ValueError, match="custom_ca") as caught:
+        JwksVerifier("https://axiam.example.test", custom_ca=bad)
+    assert "object at" not in str(caught.value)  # the value is never echoed
+
+
+def test_strict_context_is_accepted_and_trusts_the_private_ca(
+    pki: _MtlsPki, server: _JwksHttpsServer, token: str
+) -> None:
+    context = ssl.create_default_context(cadata=pki.ca_pem.decode("ascii"))
+    assert _verify(JwksVerifier(server.base_url, custom_ca=context), token)["sub"] == "u1"
+    client = AxiamClient(base_url=server.base_url, tenant_slug="acme", custom_ca=context)
+    assert client._session._verify is context
+    assert _verify(client._verifier_for(server.jwks_url), token)["sub"] == "u1"
+
+
+def test_context_custom_ca_cannot_be_combined_with_a_client_identity(pki: _MtlsPki) -> None:
+    with pytest.raises(ValueError, match="custom_ca"):
+        AxiamClient(
+            base_url="https://axiam.example.test",
+            tenant_slug="acme",
+            custom_ca=ssl.create_default_context(),
+            client_cert=pki.client_cert_pem,
+            client_key=pki.client_key_pem,
+        )
+
+
+def test_django_middleware_refuses_an_unverified_context_setting(pki: _MtlsPki) -> None:
+    from django.conf import settings as django_settings
+
+    import tests.test_django_middleware  # noqa: F401
+    from axiam_sdk.django.middleware import AxiamAuthMiddleware
+
+    names = {
+        "AXIAM_JWKS_BASE_URL": "https://axiam.example.test",
+        "AXIAM_TENANT_SLUG": _TENANT,
+        "AXIAM_CUSTOM_CA": _unverified_context(),
+    }
+    missing = object()
+    saved = {k: getattr(django_settings, k, missing) for k in names}
+    try:
+        for key, value in names.items():
+            setattr(django_settings, key, value)
+        with pytest.raises(ValueError, match="custom_ca"):
+            AxiamAuthMiddleware(lambda request: None)
+    finally:
+        for key, value in saved.items():
+            if value is missing:
+                delattr(django_settings, key)
+            else:
+                setattr(django_settings, key, value)
+
+
+# --- jwks_mtls_context: the identity goes only to the client's own origin ------------------------
+
+
+def _session(base_url: str, pki: _MtlsPki) -> Any:
+    return _mtls_client(pki, base_url)._session
+
+
+@pytest.mark.parametrize(
+    ("base", "jwks", "same"),
+    [
+        ("https://axiam.example.test", "https://axiam.example.test/oauth2/jwks", True),
+        ("https://axiam.example.test", "HTTPS://AXIAM.Example.TEST/jwks", True),
+        ("https://axiam.example.test", "https://axiam.example.test:443/jwks", True),
+        ("https://axiam.example.test:443", "https://axiam.example.test/jwks", True),
+        ("https://[::1]:8443", "https://[::1]:8443/jwks", True),
+        ("https://[::1]:8443", "https://[::1]:8444/jwks", False),
+        ("https://axiam.example.test", "https://axiam.example.test./jwks", False),
+        ("https://axiam.example.test", "http://axiam.example.test/jwks", False),
+        ("https://axiam.example.test", "https://other.example.test/jwks", False),
+        ("https://axiam.example.test", "https://axiam.example.test:8443/jwks", False),
+    ],
+)
+def test_jwks_mtls_context_origin_normalization(
+    pki: _MtlsPki, base: str, jwks: str, same: bool
+) -> None:
+    session = _session(base, pki)
+    assert (session.jwks_mtls_context(jwks) is not None) is same
+
+
+def test_jwks_mtls_context_fails_closed_on_an_invalid_url(pki: _MtlsPki) -> None:
+    session = _session("https://a.com", pki)
+    assert session.jwks_mtls_context("https://a.com:abc/j") is None
