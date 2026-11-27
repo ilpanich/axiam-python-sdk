@@ -135,3 +135,79 @@ async def test_async_client_verify_logout_token_does_not_block_the_loop(
     done.set()
     await task
     assert ticks >= 10, "the event loop kept running while the verification ran"
+
+
+async def _ticks_while(coro: Any) -> int:
+    """Run ``coro`` while a ticker counts event-loop turns; return the ticks."""
+    ticks = 0
+    done = asyncio.Event()
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not done.is_set():
+            ticks += 1
+            await asyncio.sleep(0.05)
+
+    task = asyncio.create_task(ticker())
+    try:
+        await coro
+    finally:
+        done.set()
+        await task
+    return ticks
+
+
+def _blocking(*_args: Any, **_kwargs: Any) -> str:
+    time.sleep(1.0)
+    return "done"
+
+
+@pytest.mark.asyncio
+async def test_async_client_oidc_exchange_validates_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from axiam_sdk import AsyncAxiamClient
+
+    client = AsyncAxiamClient(base_url="https://axiam.example.test", tenant_slug="a", org_slug="a")
+    cls = type(client)
+
+    async def send(self: Any, request: Any) -> Any:
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(cls, "_rest_send_async", send)
+    monkeypatch.setattr(cls, "_exchange_form", lambda self, **kw: {})
+    monkeypatch.setattr(cls, "_token_endpoint_url", lambda self, *a, **kw: "https://x.test/t")
+    monkeypatch.setattr(cls, "_handle_token_response", _blocking)
+    ticks = await _ticks_while(
+        client.oidc_exchange(
+            code="c",
+            code_verifier="v",
+            redirect_uri="https://x.test/cb",
+            nonce="n",
+            configuration=object(),  # type: ignore[arg-type]
+        )
+    )
+    assert ticks >= 10, "the ID-token validation ran on the event loop"
+
+
+@pytest.mark.asyncio
+async def test_async_client_device_poll_validates_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import axiam_sdk._async_client as module
+    from axiam_sdk import AsyncAxiamClient
+
+    client = AsyncAxiamClient(base_url="https://axiam.example.test", tenant_slug="a", org_slug="a")
+    cls = type(client)
+
+    async def fake_retry(attempt: Any, **kwargs: Any) -> Any:
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(module, "retry_async", fake_retry)
+    monkeypatch.setattr(cls, "_device_poll_form", lambda self, **kw: {})
+    monkeypatch.setattr(cls, "_token_endpoint_url", lambda self, *a, **kw: "https://x.test/t")
+    monkeypatch.setattr(cls, "_handle_device_poll_response", _blocking)
+    ticks = await _ticks_while(
+        client.device_poll(device_code="d", configuration=object())  # type: ignore[arg-type]
+    )
+    assert ticks >= 10, "the ID-token validation ran on the event loop"

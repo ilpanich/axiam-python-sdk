@@ -163,6 +163,10 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   endpoint no longer freezes the loop. The JWKS body is read against one overall 10 s deadline and
   capped at 1 MiB (a dripping or endless endpoint can no longer hold a refresh); UUID members must
   be in canonical 8-4-4-4-12 form.
+- **JWKS fetch deadline (OI-33 review round 3).** The 10 s overall deadline now starts with the
+  request and a timer closes the socket at it, so a server dripping response headers is abandoned
+  too; `device_poll` validates off the event loop like the other token paths; the client's
+  per-`jwks_uri` verifier cache is race-free under threads.
 - **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
   (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
   3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON

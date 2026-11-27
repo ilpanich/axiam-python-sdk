@@ -1388,9 +1388,9 @@ class _OidcMixin:
         existing = self._jwks_verifiers.get(jwks_uri)
         if existing is not None:
             return existing
-        verifier = JwksVerifier(jwks_uri, jwks_url=jwks_uri)
-        self._jwks_verifiers[jwks_uri] = verifier
-        return verifier
+        # Atomic under threads (the async client validates in worker threads): a racing loser's
+        # verifier is discarded, so every caller shares the one that is stored.
+        return self._jwks_verifiers.setdefault(jwks_uri, JwksVerifier(jwks_uri, jwks_url=jwks_uri))
 
     # ------------------------------------------------------------------
     # 6-7. introspect / revoke — form bodies + response parsing (shared)

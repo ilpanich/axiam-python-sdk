@@ -926,7 +926,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             telemetry=self._telemetry,
             deadline=deadline,
         )
-        return self._handle_device_poll_response(response, config)
+        return await asyncio.to_thread(self._handle_device_poll_response, response, config)
 
     async def device_login(
         self,

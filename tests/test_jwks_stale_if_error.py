@@ -482,6 +482,8 @@ def test_keys_as_an_object_is_a_failed_refresh(clock: Clock) -> None:
     verifier._client.fetch_data = lambda: {"keys": {"kty": "OKP"}}  # type: ignore[method-assign]
     clock.at(TTL + 1)
     assert _accepted(verifier, held), "the held kid is still accepted: the object replaced nothing"
+    clock.at(TTL + 2)
+    assert _accepted(verifier, held), "and still is after that refresh settled"
     clock.at(TTL + 301)
     assert not _accepted(verifier, held), "and the anchor never moved"
 
@@ -702,15 +704,369 @@ def test_a_dripping_endpoint_is_cut_off_at_the_overall_deadline(
         drip.close()
 
 
-def test_a_body_over_the_size_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    from axiam_sdk._jwks import _JwksFetcher
+class _Big:
+    """A server for the size cap: ``valid`` sends real JSON (a JWK padded with a long member) of
+    ``size`` bytes without a ``Content-Length``; ``declared`` announces ``size`` bytes up front and
+    streams until the client goes away, recording how much it wrote."""
 
+    def __init__(self, mode: str, size: int, jwk: dict[str, Any]) -> None:
+        import json as _json
+
+        outer = self
+        self.written = 0
+        padded = dict(jwk, pad="x" * size)
+        document = _json.dumps({"keys": [padded]}).encode()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                if mode == "declared":
+                    self.send_header("Content-Length", str(50 * 1024 * 1024))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                try:
+                    if mode == "valid":
+                        self.wfile.write(document)
+                        outer.written = len(document)
+                    else:
+                        while outer.written < 50 * 1024 * 1024:
+                            self.wfile.write(b" " * 65536)
+                            outer.written += 65536
+                except OSError:
+                    pass
+                self.close_connection = True
+
+            def log_message(self, *args: Any) -> None:
+                return None
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/oauth2/jwks"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
-    drip = _Drip(interval=0.0, size=2 * 1024 * 1024)
+
+
+def test_valid_json_over_the_size_cap_is_refused(no_proxy: None) -> None:
+    from axiam_sdk._jwks import _JwksFetcher
+
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    big = _Big("valid", 1024 * 1024 + 4096, jwk)
     try:
         with pytest.raises(PyJWKClientConnectionError):
-            _JwksFetcher(drip.url).fetch_data()
+            _JwksFetcher(big.url).fetch_data()
     finally:
-        drip.close()
+        big.close()
+
+
+def test_a_declared_length_over_the_cap_is_refused_before_the_body_is_read(
+    no_proxy: None,
+) -> None:
+    from axiam_sdk._jwks import _JwksFetcher
+
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    big = _Big("declared", 0, jwk)
+    try:
+        with pytest.raises(PyJWKClientConnectionError):
+            _JwksFetcher(big.url).fetch_data()
+        time.sleep(0.3)
+        assert big.written < 8 * 1024 * 1024, "the client stopped long before 50 MiB"
+    finally:
+        big.close()
+
+
+def test_a_forced_refresh_closes_the_ttl_window_even_past_the_ttl(clock: Clock) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    endpoint = Endpoint([jwk])
+    verifier = JwksVerifier(BASE_URL, jwks_url=f"{BASE_URL}/oauth2/jwks", lifespan=30)
+    verifier._client.fetch_data = endpoint.fetch_data  # type: ignore[method-assign]
+    held = _token(key, "held")
+    assert _accepted(verifier, held)  # t0: filled, TTL 30
+    endpoint.mode = "fail"
+    clock.at(25)  # inside the TTL: an unknown kid forces a refresh, which fails
+    assert not _accepted(verifier, _token(key, "unknown"))
+    calls = endpoint.calls
+    clock.at(65)  # due (65 >= 30); the fill's own window has passed; the forced attempt's has not
+    assert _accepted(verifier, held)
+    assert endpoint.calls == calls, "the forced attempt at 25 closes the TTL window until 85"
+    clock.at(86)
+    assert _accepted(verifier, held)
+    assert endpoint.calls == calls + 1
+
+
+def test_a_header_dripping_endpoint_is_abandoned_at_the_deadline(
+    no_proxy: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket
+
+    import axiam_sdk._jwks as jwks_module
+
+    monkeypatch.setattr(jwks_module, "_JWKS_FETCH_DEADLINE_SECONDS", 1.0)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=drip, args=(conn,), daemon=True).start()
+
+    def drip(conn: socket.socket) -> None:
+        try:
+            conn.recv(4096)
+            for byte in b"HTTP/1.1 200 OK\r\nX-Slow: " + b"a" * 200:
+                if stop.is_set():
+                    return
+                conn.sendall(bytes([byte]))
+                time.sleep(0.25)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}/oauth2/jwks"
+        verifier = JwksVerifier(BASE_URL, jwks_url=url)
+        key, _jwk = make_ed25519_keypair_and_jwk("held")
+        begun = time.perf_counter()
+        assert not _accepted(verifier, _token(key, "held"))
+        assert time.perf_counter() - begun < 4.0, "abandoned near the 1 s deadline"
+        assert verifier._inflight is None, "the refresh finished and cleared its in-flight mark"
+    finally:
+        stop.set()
+        listener.close()
+
+
+# --- the https path (real endpoints are https) and the CONNECT-tunnel path ----------------------
+
+
+def _self_signed(hostname: str) -> tuple[bytes, bytes]:
+    """A self-signed certificate (PEM) and key (PEM) valid for ``hostname`` only."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+    now = datetime.datetime.now(datetime.UTC)
+    names: list[x509.GeneralName] = [x509.DNSName(hostname)]
+    if hostname == "localhost":
+        names.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(hours=1))
+        .add_extension(x509.SubjectAlternativeName(names), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        cert.public_bytes(serialization.Encoding.PEM),
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+    )
+
+
+class _TlsServer:
+    """A TLS JWKS server; ``drip`` makes it send header bytes slowly instead of answering."""
+
+    def __init__(
+        self, tmp_path: Any, hostname: str, jwk: dict[str, Any], drip: bool = False
+    ) -> None:
+        import json as _json
+        import socket
+        import ssl
+
+        self.cert_pem, key_pem = _self_signed(hostname)
+        cert_file, key_file = tmp_path / "c.pem", tmp_path / "k.pem"
+        cert_file.write_bytes(self.cert_pem)
+        key_file.write_bytes(key_pem)
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(cert_file, key_file)
+        self.body = _json.dumps({"keys": [jwk]}).encode()
+        self.drip = drip
+        self.stop = threading.Event()
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def client_context(self) -> Any:
+        import ssl
+
+        ctx = ssl.create_default_context(cadata=self.cert_pem.decode())
+        return ctx  # hostname verification stays ON
+
+    def _serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn: Any) -> None:
+        try:
+            tls = self.context.wrap_socket(conn, server_side=True)
+            tls.recv(4096)
+            if self.drip:
+                for byte in b"HTTP/1.1 200 OK\r\nX-Slow: " + b"a" * 200:
+                    if self.stop.is_set():
+                        return
+                    tls.sendall(bytes([byte]))
+                    time.sleep(0.25)
+            else:
+                head = (
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                    + b"Content-Length: %d\r\n\r\n" % len(self.body)
+                )
+                tls.sendall(head + self.body)
+            tls.close()
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        self.stop.set()
+        self.listener.close()
+
+
+@pytest.fixture
+def tls(no_proxy: None, tmp_path: Any) -> Iterator[Callable[..., _TlsServer]]:
+    made: list[_TlsServer] = []
+
+    def build(hostname: str, jwk: dict[str, Any], drip: bool = False) -> _TlsServer:
+        made.append(_TlsServer(tmp_path, hostname, jwk, drip))
+        return made[-1]
+
+    yield build
+    for item in made:
+        item.close()
+
+
+def test_https_fetch_succeeds_with_hostname_verification_on(
+    tls: Callable[..., _TlsServer],
+) -> None:
+    from axiam_sdk._jwks import _JwksFetcher
+
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    server = tls("localhost", jwk)
+    fetcher = _JwksFetcher(f"https://localhost:{server.port}/oauth2/jwks")
+    fetcher.ssl_context = server.client_context()
+    assert fetcher.fetch_data()["keys"][0]["kid"] == "held"
+
+
+def test_https_certificate_for_the_wrong_hostname_is_refused(
+    tls: Callable[..., _TlsServer],
+) -> None:
+    from axiam_sdk._jwks import _JwksFetcher
+
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    server = tls("other.test", jwk)
+    fetcher = _JwksFetcher(f"https://localhost:{server.port}/oauth2/jwks")
+    fetcher.ssl_context = server.client_context()
+    with pytest.raises(PyJWKClientConnectionError):
+        fetcher.fetch_data()
+
+
+def test_https_header_drip_is_abandoned_at_the_deadline(
+    tls: Callable[..., _TlsServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import axiam_sdk._jwks as jwks_module
+    from axiam_sdk._jwks import _JwksFetcher
+
+    monkeypatch.setattr(jwks_module, "_JWKS_FETCH_DEADLINE_SECONDS", 1.0)
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    server = tls("localhost", jwk, drip=True)
+    fetcher = _JwksFetcher(f"https://localhost:{server.port}/oauth2/jwks")
+    fetcher.ssl_context = server.client_context()
+    begun = time.perf_counter()
+    with pytest.raises(PyJWKClientConnectionError):
+        fetcher.fetch_data()
+    assert time.perf_counter() - begun < 4.0
+
+
+def test_https_through_a_connect_proxy_still_works(
+    tls: Callable[..., _TlsServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket
+
+    from axiam_sdk._jwks import _JwksFetcher
+
+    _key, jwk = make_ed25519_keypair_and_jwk("held")
+    server = tls("localhost", jwk)
+    seen: list[str] = []
+    proxy = socket.socket()
+    proxy.bind(("127.0.0.1", 0))
+    proxy.listen(4)
+
+    def pipe(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while data := src.recv(65536):
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            for sock in (src, dst):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def handle(conn: socket.socket) -> None:
+        request = b""
+        while b"\r\n\r\n" not in request:
+            request += conn.recv(4096)
+        line = request.split(b"\r\n", 1)[0].decode()
+        seen.append(line)
+        host, _, port = line.split()[1].partition(":")
+        upstream = socket.create_connection((host, int(port)))
+        conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        threading.Thread(target=pipe, args=(upstream, conn), daemon=True).start()
+        pipe(conn, upstream)
+
+    def accept() -> None:
+        while True:
+            try:
+                conn, _ = proxy.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("https_proxy", f"http://127.0.0.1:{proxy.getsockname()[1]}")
+    try:
+        fetcher = _JwksFetcher(f"https://localhost:{server.port}/oauth2/jwks")
+        fetcher.ssl_context = server.client_context()
+        assert fetcher.fetch_data()["keys"][0]["kid"] == "held"
+        assert seen and seen[0].startswith(f"CONNECT localhost:{server.port} "), seen
+    finally:
+        proxy.close()

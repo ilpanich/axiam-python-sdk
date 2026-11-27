@@ -55,12 +55,13 @@ import json
 import logging
 import math
 import re
+import socket
 import threading
 import time
 import urllib.request
 from collections.abc import Mapping
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 
 import jwt
 from jwt import PyJWK, PyJWKClient
@@ -182,6 +183,118 @@ def _max_age(cache_control: str | None) -> int | None:
     return None
 
 
+class _Watch:
+    """Holds the connection's socket so a timer can cut the fetch at its overall deadline, in the
+    header phase as well as the body (a per-read socket timeout is reset by every dripped byte)."""
+
+    def __init__(self) -> None:
+        """Start with no socket and no expiry."""
+        self.lock = threading.Lock()
+        self.sock: Any = None
+        self.expired = False
+
+    def attach(self, sock: Any) -> None:
+        """Remember the connection's socket (closing it at once if the deadline already passed)."""
+        with self.lock:
+            self.sock = sock
+            if self.expired:
+                self._cut()
+
+    def expire(self) -> None:
+        """The deadline passed: close the socket under whatever read is blocked on it."""
+        with self.lock:
+            self.expired = True
+            self._cut()
+
+    def _cut(self) -> None:
+        """Shut down and close the socket (caller holds the lock)."""
+        sock = self.sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+class _WatchedHTTPHandler(urllib.request.HTTPHandler):
+    """``http:`` handler whose connections report their socket to a :class:`_Watch`."""
+
+    def __init__(self, watch: _Watch) -> None:
+        """Report every connection's socket to ``watch``."""
+        super().__init__()
+        self._watch = watch
+
+    def http_open(self, req: Any) -> Any:
+        """Open ``req`` over a connection that reports its socket."""
+        watch = self._watch
+
+        class Connection(http.client.HTTPConnection):
+            """An ``HTTPConnection`` that reports its socket to the watch."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Also report the raw socket as soon as it exists (before a proxy tunnel or the
+                TLS handshake, which the deadline must cover too)."""
+                super().__init__(*args, **kwargs)
+                create: Any = self._create_connection  # type: ignore[has-type]
+
+                def reporting(*a: Any, **k: Any) -> Any:
+                    """Create the connection, reporting the new socket."""
+                    sock = create(*a, **k)
+                    watch.attach(sock)
+                    return sock
+
+                self._create_connection = reporting
+
+            def connect(self) -> None:
+                """Connect, then report the (possibly TLS-wrapped) socket."""
+                super().connect()
+                watch.attach(self.sock)
+
+        return self.do_open(Connection, req)
+
+
+class _WatchedHTTPSHandler(urllib.request.HTTPSHandler):
+    """``https:`` twin of :class:`_WatchedHTTPHandler`."""
+
+    def __init__(self, watch: _Watch, context: Any) -> None:
+        """Report every connection's socket to ``watch``; ``context`` is the TLS context, if any."""
+        super().__init__(context=context)
+        self._watch = watch
+        self._ctx = context
+
+    def https_open(self, req: Any) -> Any:
+        """Open ``req`` over a TLS connection that reports its socket."""
+        watch = self._watch
+
+        class Connection(http.client.HTTPSConnection):
+            """An ``HTTPSConnection`` that reports its socket to the watch."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Also report the raw socket as soon as it exists (before a proxy tunnel or the
+                TLS handshake, which the deadline must cover too)."""
+                super().__init__(*args, **kwargs)
+                create: Any = self._create_connection  # type: ignore[has-type]
+
+                def reporting(*a: Any, **k: Any) -> Any:
+                    """Create the connection, reporting the new socket."""
+                    sock = create(*a, **k)
+                    watch.attach(sock)
+                    return sock
+
+                self._create_connection = reporting
+
+            def connect(self) -> None:
+                """Connect, then report the (possibly TLS-wrapped) socket."""
+                super().connect()
+                watch.attach(self.sock)
+
+        return self.do_open(Connection, req, context=self._ctx)
+
+
 class _JwksFetcher(PyJWKClient):
     """:class:`~jwt.PyJWKClient`'s HTTP fetch, used here ONLY as the transport: the cache, the TTL,
     the stale bound and the refresh window are :class:`JwksVerifier`'s (CONTRACT.md §12.4 rule 2).
@@ -210,12 +323,11 @@ class _JwksFetcher(PyJWKClient):
         self.not_modified = False
 
     @staticmethod
-    def _read_bounded(response: Any) -> Any:
-        """Read the body in chunks against one overall monotonic deadline
-        (:data:`_JWKS_FETCH_DEADLINE_SECONDS`, not per read) and a size cap
+    def _read_bounded(response: Any, deadline: float) -> Any:
+        """Read the body in chunks against one overall monotonic ``deadline`` (set when the
+        request started, not per read) and a size cap
         (:data:`_JWKS_MAX_BODY_BYTES`), then parse it. A server that drips bytes, or sends an
         endless body, can therefore hold a refresh for at most the deadline."""
-        deadline = time.monotonic() + _JWKS_FETCH_DEADLINE_SECONDS
         declared = response.headers.get("Content-Length")
         if declared is not None and declared.isdigit() and int(declared) > _JWKS_MAX_BODY_BYTES:
             raise ValueError("the JWKS body is too large")
@@ -236,11 +348,20 @@ class _JwksFetcher(PyJWKClient):
         headers = dict(self.headers)
         if self.etag is not None:
             headers["If-None-Match"] = self.etag
+        # One overall deadline for the whole exchange (headers and body), enforced by a timer that
+        # closes the socket: a server that drips bytes cannot hold a refresh past it.
+        deadline = time.monotonic() + _JWKS_FETCH_DEADLINE_SECONDS
+        watch = _Watch()
+        timer = threading.Timer(_JWKS_FETCH_DEADLINE_SECONDS, watch.expire)
+        timer.daemon = True
+        timer.start()
         try:
             request = urllib.request.Request(url=self.uri, headers=headers)
-            handlers: list[Any] = [_NoRedirect()]
-            if self.ssl_context is not None:
-                handlers.append(urllib.request.HTTPSHandler(context=self.ssl_context))
+            handlers: list[Any] = [
+                _NoRedirect(),
+                _WatchedHTTPHandler(watch),
+                _WatchedHTTPSHandler(watch, self.ssl_context),
+            ]
             opener = urllib.request.build_opener(*handlers)
             with opener.open(request, timeout=self.timeout) as response:
                 if response.status != 200:  # only a 200 (not any 2xx) is a fetch
@@ -253,7 +374,7 @@ class _JwksFetcher(PyJWKClient):
                     etag = None  # never stored or echoed
                 self.response_etag = etag
                 self.response_max_age = _max_age(response.headers.get("Cache-Control"))
-                document = self._read_bounded(response)
+                document = self._read_bounded(response, deadline)
         except HTTPError as exc:
             try:
                 if exc.code == 304 and self.etag is not None:
@@ -263,8 +384,10 @@ class _JwksFetcher(PyJWKClient):
             finally:
                 exc.close()
             raise PyJWKClientConnectionError("the JWKS endpoint answered with an error") from None
-        except (URLError, TimeoutError, http.client.HTTPException, ValueError) as exc:
+        except (OSError, http.client.HTTPException, ValueError) as exc:
             raise PyJWKClientConnectionError("the JWKS endpoint could not be read") from exc
+        finally:
+            timer.cancel()
         return self._as_jwk_set_payload(document)
 
 
