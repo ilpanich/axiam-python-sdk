@@ -247,11 +247,20 @@ class _Server:
         self.requests: list[dict[str, str | None]] = []
         self.status_override: int | None = None
         self.override_with_body = False
+        self.redirect = False
         self.etag = '"v1"'
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
-                outer.requests.append({"if_none_match": self.headers.get("If-None-Match")})
+                outer.requests.append(
+                    {"if_none_match": self.headers.get("If-None-Match"), "path": self.path}
+                )
+                if outer.redirect and self.path == "/oauth2/jwks":
+                    self.send_response(302)
+                    self.send_header("Location", "/elsewhere")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if outer.status_override is not None:
                     self.send_response(outer.status_override)
                     self.send_header(
@@ -471,8 +480,10 @@ def test_keys_as_an_object_is_a_failed_refresh(clock: Clock) -> None:
     held = _token(key, "held")
     assert _accepted(verifier, held)
     verifier._client.fetch_data = lambda: {"keys": {"kty": "OKP"}}  # type: ignore[method-assign]
+    clock.at(TTL + 1)
+    assert _accepted(verifier, held), "the held kid is still accepted: the object replaced nothing"
     clock.at(TTL + 301)
-    assert not _accepted(verifier, held)
+    assert not _accepted(verifier, held), "and the anchor never moved"
 
 
 def test_a_203_with_keys_is_a_failed_refresh(
@@ -595,3 +606,111 @@ def test_concurrent_callers_on_a_cold_cache_cause_one_fetch() -> None:
     for t in threads:
         t.join()
     assert results == [True] * 8 and endpoint.calls == 1
+
+
+def test_a_3xx_is_refused_not_followed(
+    clock: Clock, server: Callable[[dict[str, Any]], _Server]
+) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    srv = server(jwk)
+    srv.redirect = True
+    verifier = JwksVerifier(BASE_URL, jwks_url=srv.url)
+    assert not _accepted(verifier, _token(key, "held"))
+    assert [r["path"] for r in srv.requests] == ["/oauth2/jwks"], "the Location was not fetched"
+
+
+@pytest.mark.parametrize("second", ["forced", "failed"])
+def test_a_forced_or_failed_attempt_also_closes_the_ttl_window(clock: Clock, second: str) -> None:
+    key, jwk = make_ed25519_keypair_and_jwk("held")
+    endpoint = Endpoint([jwk])
+    verifier = JwksVerifier(BASE_URL, jwks_url=f"{BASE_URL}/oauth2/jwks", lifespan=30)
+    verifier._client.fetch_data = endpoint.fetch_data  # type: ignore[method-assign]
+    held = _token(key, "held")
+    assert _accepted(verifier, held)  # t0: filled, TTL 30
+    if second == "forced":
+        clock.at(20)  # inside the TTL: an unknown kid forces a refresh, which succeeds
+        assert not _accepted(verifier, _token(key, "unknown"))
+        due, free = 50, 85  # due again at 50; the window opened at 20 closes at 80
+    else:
+        endpoint.mode = "fail"
+        clock.at(30)  # due: the TTL-driven refresh fails
+        assert _accepted(verifier, held)
+        due, free = 50, 95  # the failure at 30 closes the window at 90
+    calls = endpoint.calls
+    clock.at(due)
+    assert _accepted(verifier, held)
+    assert endpoint.calls == calls, "no TTL-driven fetch inside the 60 s window"
+    clock.at(free)
+    assert _accepted(verifier, held)
+    assert endpoint.calls == calls + 1, "and one once the window has passed"
+
+
+class _Drip:
+    """A server that sends a valid JWKS head and then drips one byte per ``interval`` seconds."""
+
+    def __init__(self, interval: float, size: int) -> None:
+        outer = self
+        self.size = size
+        self.interval = interval
+        self.closed = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(outer.size))
+                self.end_headers()
+                try:
+                    for _ in range(min(outer.size, 200)):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        time.sleep(outer.interval)
+                except OSError:
+                    pass
+                outer.closed.set()
+
+            def log_message(self, *args: Any) -> None:
+                return None
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/oauth2/jwks"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def test_a_dripping_endpoint_is_cut_off_at_the_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import axiam_sdk._jwks as jwks_module
+    from axiam_sdk._jwks import _JwksFetcher
+
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setattr(jwks_module, "_JWKS_FETCH_DEADLINE_SECONDS", 1.0)
+    drip = _Drip(interval=0.3, size=100)
+    try:
+        fetcher = _JwksFetcher(drip.url)
+        begun = time.perf_counter()
+        with pytest.raises(PyJWKClientConnectionError):
+            fetcher.fetch_data()
+        assert time.perf_counter() - begun < 3.0, "the fetch ended at the deadline, not at the drip"
+    finally:
+        drip.close()
+
+
+def test_a_body_over_the_size_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from axiam_sdk._jwks import _JwksFetcher
+
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    drip = _Drip(interval=0.0, size=2 * 1024 * 1024)
+    try:
+        with pytest.raises(PyJWKClientConnectionError):
+            _JwksFetcher(drip.url).fetch_data()
+    finally:
+        drip.close()

@@ -394,6 +394,16 @@ def _with_member(canonical: str, old: str, new: str) -> bytes:
 @pytest.mark.parametrize(
     ("name", "old", "new"),
     [
+        (
+            "uuid in braces",
+            '11111111-1111-1111-1111-111111111111"',
+            '{11111111-1111-1111-1111-111111111111}"',
+        ),
+        (
+            "uuid without hyphens",
+            '11111111-1111-1111-1111-111111111111"',
+            '11111111111111111111111111111111"',
+        ),
         ("required string null", '"action":"user.login"', '"action":null'),
         (
             "required uuid not a uuid",

@@ -403,3 +403,20 @@ async def test_a_validly_signed_body_with_a_leading_space_is_refused_by_the_even
         _sign_bytes(b" " + REFERENCE[kind]["canonical_signed_json"].encode()), kind=kind
     )
     assert handled == [] and message.nacked is False
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.asyncio
+async def test_the_requester_refuses_a_non_finite_json_constant_as_malformed(
+    constant: str,
+) -> None:
+    body = sign_with(VEC_SUBKEY, VECTORS[0][1][:-1] + ',"x":' + constant + "}")
+    logger, log = make_logger()
+    requester, future = await vector_requester(logger=logger)
+    try:
+        decision, delivery = await offer(requester, future, body)
+        assert decision is None and delivery.nacked == 1
+        events = discard_events(log)
+        assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
+    finally:
+        await requester.close()

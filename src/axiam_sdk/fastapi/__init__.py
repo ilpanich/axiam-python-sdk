@@ -102,6 +102,7 @@ from dataclasses import dataclass, field
 import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from axiam_sdk._async_client import AsyncAxiamClient
 from axiam_sdk._claims import roles_from_claims, scopes_from_claims
@@ -302,7 +303,11 @@ async def _authenticate(
         # previous ``exp``-if-present check accepted (SEC-080) — raises and
         # maps to the standardized 401 below, never a 500 and never a
         # silent accept.
-        claims = verifier.verify_access_token(token, expected_tenant_id=configured_tenant)
+        # The verifier is synchronous and may wait on a JWKS fetch (an unknown ``kid``, a cold
+        # cache): it runs in a worker thread so the event loop is never blocked by it.
+        claims = await run_in_threadpool(
+            verifier.verify_access_token, token, expected_tenant_id=configured_tenant
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=_AUTH_FAILED_STATUS,

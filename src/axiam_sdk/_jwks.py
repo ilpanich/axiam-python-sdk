@@ -103,6 +103,10 @@ MAX_JWKS_TTL_SECONDS = 300
 #: refresh this long, never a blocked verification that has a usable key).
 _JWKS_FETCH_TIMEOUT_SECONDS = 10.0
 
+#: The overall deadline for reading one JWKS body, and its size cap (a real set is a few KiB).
+_JWKS_FETCH_DEADLINE_SECONDS = 10.0
+_JWKS_MAX_BODY_BYTES = 1024 * 1024
+
 #: CONTRACT.md §12.4 rule 2: how long past the TTL, measured from the last SUCCESSFUL fetch, the
 #: held keys keep verifying while every refresh fails. After TTL + this, every token is refused
 #: until a fetch succeeds.
@@ -205,6 +209,28 @@ class _JwksFetcher(PyJWKClient):
         self.response_max_age = None
         self.not_modified = False
 
+    @staticmethod
+    def _read_bounded(response: Any) -> Any:
+        """Read the body in chunks against one overall monotonic deadline
+        (:data:`_JWKS_FETCH_DEADLINE_SECONDS`, not per read) and a size cap
+        (:data:`_JWKS_MAX_BODY_BYTES`), then parse it. A server that drips bytes, or sends an
+        endless body, can therefore hold a refresh for at most the deadline."""
+        deadline = time.monotonic() + _JWKS_FETCH_DEADLINE_SECONDS
+        declared = response.headers.get("Content-Length")
+        if declared is not None and declared.isdigit() and int(declared) > _JWKS_MAX_BODY_BYTES:
+            raise ValueError("the JWKS body is too large")
+        body = bytearray()
+        while True:
+            chunk = response.read1(65536)
+            if not chunk:
+                break
+            body += chunk
+            if len(body) > _JWKS_MAX_BODY_BYTES:
+                raise ValueError("the JWKS body is too large")
+            if time.monotonic() > deadline:
+                raise TimeoutError("the JWKS body was not delivered in time")
+        return json.loads(bytes(body))
+
     def fetch_data(self) -> Any:
         """Fetch the JWKS document; ``None`` for a ``304`` answering the conditional request."""
         headers = dict(self.headers)
@@ -227,7 +253,7 @@ class _JwksFetcher(PyJWKClient):
                     etag = None  # never stored or echoed
                 self.response_etag = etag
                 self.response_max_age = _max_age(response.headers.get("Cache-Control"))
-                document = json.load(response)
+                document = self._read_bounded(response)
         except HTTPError as exc:
             try:
                 if exc.code == 304 and self.etag is not None:

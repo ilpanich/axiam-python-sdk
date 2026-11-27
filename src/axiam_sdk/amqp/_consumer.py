@@ -45,7 +45,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -131,6 +130,7 @@ _UUID_MEMBERS: dict[str, tuple[str, ...]] = {
     "authz_request": ("correlation_id", "tenant_id", "subject_id", "resource_id"),
     "audit_event": ("tenant_id", "actor_id", "resource_id"),
 }
+_UUID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
 _MAX_KEY_VERSION = 255  # the server's ``u8``
 #: RFC 3339 ``date-time``: ``T`` separator, a seconds field and an explicit offset.
 _RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
@@ -199,13 +199,14 @@ def _decodes(event: dict[str, Any], message_type: str) -> bool:
     issued_at = event.get("issued_at")
     if not isinstance(nonce, str) or not isinstance(issued_at, str):
         return False
-    if _RFC3339.fullmatch(issued_at) is None:
+    if _RFC3339.fullmatch(issued_at) is None or _UUID.fullmatch(nonce) is None:
+        return False
+    if any(
+        name in event and _UUID.fullmatch(event[name]) is None
+        for name in _UUID_MEMBERS[message_type]
+    ):
         return False
     try:
-        uuid.UUID(nonce)
-        for name in _UUID_MEMBERS[message_type]:
-            if name in event:
-                uuid.UUID(event[name])
         _parse_rfc3339(issued_at)
     except (ValueError, OverflowError):
         return False

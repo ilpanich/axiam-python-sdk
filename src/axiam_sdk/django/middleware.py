@@ -55,7 +55,7 @@ import hmac
 from dataclasses import dataclass, field
 from typing import Any
 
-from asgiref.sync import iscoroutinefunction, markcoroutinefunction
+from asgiref.sync import iscoroutinefunction, markcoroutinefunction, sync_to_async
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
@@ -345,7 +345,8 @@ class AxiamAuthMiddleware:
 
     async def __acall__(self, request: HttpRequest) -> HttpResponse:
         """Async twin of :meth:`_sync_call`, awaiting ``get_response``."""
-        error = self._authenticate(request)
+        # ``_authenticate`` may wait on a JWKS fetch: a worker thread keeps the event loop free.
+        error = await sync_to_async(self._authenticate, thread_sensitive=False)(request)
         if error is not None:
             return error
         return await self.get_response(request)

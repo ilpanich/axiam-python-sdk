@@ -156,6 +156,13 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   caller with no usable key (cold cache, past TTL + 300 s, unknown `kid`) waits for it. Every
   TTL-driven refresh, successful or not, respects the 60 s window, so an advertised `max-age=0`
   costs one fetch per window, not one per verification; a clock that stepped back ends the window.
+- **No blocking on the event loop (OI-33 review round 2).** The FastAPI dependency
+  (`run_in_threadpool`), the Django async middleware path (`sync_to_async(thread_sensitive=False)`)
+  and the async client's `verify_logout_token` and ID-token validation (`asyncio.to_thread`) run the
+  synchronous JWKS verifier in a worker thread: an unknown-`kid` token or a cold cache on a slow
+  endpoint no longer freezes the loop. The JWKS body is read against one overall 10 s deadline and
+  capped at 1 MiB (a dripping or endless endpoint can no longer hold a refresh); UUID members must
+  be in canonical 8-4-4-4-12 form.
 - **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
   (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
   3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON

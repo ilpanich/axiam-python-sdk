@@ -658,7 +658,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         url = self._token_endpoint_url(config, tenant_id)
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._rest_send_async(request)
-        return self._handle_token_response(response, config, nonce)
+        return await asyncio.to_thread(self._handle_token_response, response, config, nonce)
 
     async def oidc_refresh(
         self,
@@ -699,7 +699,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             request = self._session.async_client.build_request("POST", url, data=form)
             response = await self._rest_send_async(request)
             # No nonce: rule 6 does not apply to a refresh-issued ID token.
-            return self._handle_token_response(response, config, None)
+            return await asyncio.to_thread(self._handle_token_response, response, config, None)
 
         async def under_guard() -> OidcTokenSet:
             """Run ``do_refresh`` inside the shared §9 refresh-guard lock,
@@ -735,7 +735,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         request = self._session.async_client.build_request("POST", url, data=form)
         response = await self._rest_send_async(request)
         # No nonce: rule 6 does not apply to this grant.
-        return self._handle_token_response(response, config, None)
+        return await asyncio.to_thread(self._handle_token_response, response, config, None)
 
     async def login_with_provider_id_token(
         self,
@@ -812,7 +812,9 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
             raise network_error_from_transport("login_with_provider_id_token", exc) from None
         # §12.4 rule 6 with the RAW nonce (§37.2 rule 8): AXIAM's own ID token
         # carries the request's nonce as sent, not its hash.
-        return self._handle_token_response(response, config, _expose_secret(nonce))
+        return await asyncio.to_thread(
+            self._handle_token_response, response, config, _expose_secret(nonce)
+        )
 
     async def device_authorize(
         self,
@@ -1129,7 +1131,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
                 wire = response.json()
             except ValueError:
                 return mark_terminal(NetworkError("ciba_poll: the response is not JSON"))
-            return self._build_token_set(wire, config, None)
+            return await asyncio.to_thread(self._build_token_set, wire, config, None)
 
         outcome = await retry_async(
             attempt,
@@ -1460,7 +1462,7 @@ class AsyncAxiamClient(_AxiamClientBase, AsyncManagementNamespaces):
         that docstring for the six checks and why each exists.
         """
         config = configuration or await self.oidc_discover()
-        return self._verify_logout_token_impl(token, config)
+        return await asyncio.to_thread(self._verify_logout_token_impl, token, config)
 
     async def introspect(
         self,
