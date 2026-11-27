@@ -23,7 +23,9 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   not echo the value. A context cannot be combined with `client_cert`/`client_key` (the identity
   would land on the caller's own context). Inline PEM as `custom_ca` also works on the REST path now
   (httpx used to take the string as a file name and fail the first request); a CA directory keeps
-  working, and PEM `bytes` are accepted as CONTRACT.md §6's example passes them.
+  working, and PEM `bytes` are accepted as CONTRACT.md §6's example passes them. A `custom_ca` path
+  that does not exist or cannot be read now fails when the client is constructed, not at its first
+  request.
 - **C7 — login CSRF in the "Login with AXIAM" glue.** `oidc_login_views` (Django) and
   `oidc_login_router` (FastAPI) kept the in-flight login keyed by `state` alone, so a callback
   loaded in a browser *other* than the one that started the login completed it and called
