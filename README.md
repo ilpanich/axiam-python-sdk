@@ -2401,8 +2401,8 @@ regeneration from `proto/axiam/v1/`.
 ## TLS policy (§6)
 
 `httpx` clients are constructed with `verify=True` hardcoded; the only
-escape hatch is an explicit `custom_ca` parameter (a CA bundle path, inline
-PEM, or an `ssl.SSLContext` with `verify_mode=CERT_REQUIRED` and
+escape hatch is an explicit `custom_ca` parameter (a CA bundle file path, a CA
+directory, inline PEM as `str` or `bytes`, or an `ssl.SSLContext` with `verify_mode=CERT_REQUIRED` and
 `check_hostname=True`; any other value, such as an unverified context, is a
 `ValueError`; a context cannot be combined with `client_cert`) — there is no boolean bypass anywhere in this SDK,
 including the examples. CI enforces this with a dedicated grep gate.

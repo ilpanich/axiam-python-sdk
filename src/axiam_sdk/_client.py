@@ -242,7 +242,7 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         tenant_slug: str,
         org_slug: str | None = None,
         org_id: str | None = None,
-        custom_ca: str | ssl.SSLContext | None = None,
+        custom_ca: str | bytes | ssl.SSLContext | None = None,
         client_cert: str | bytes | None = None,
         client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
@@ -265,7 +265,8 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         successful login/refresh resolves it from the access token's
         ``org_id`` claim (Pitfall 3, see :meth:`resolved_org_id`). ``custom_ca``
         is the sole *server*-trust override permitted by §6 — a PEM-encoded CA
-        bundle (path or inline), or an ``ssl.SSLContext`` with
+        bundle (file path, CA directory, or inline PEM as ``str`` or ``bytes``), or an
+        ``ssl.SSLContext`` with
         ``verify_mode=CERT_REQUIRED`` and ``check_hostname=True``; never a boolean, and any
         other value is a ``ValueError``.
 

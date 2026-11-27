@@ -42,14 +42,21 @@ if TYPE_CHECKING:
 
 
 def validate_custom_ca(custom_ca: object) -> str | ssl.SSLContext | None:
-    """The one ``custom_ca`` rule (CONTRACT.md §6): a CA-bundle path or inline PEM ``str``, or an
-    ``ssl.SSLContext`` that keeps server verification on (``verify_mode == CERT_REQUIRED`` and
-    ``check_hostname``). ``None`` and ``""`` mean unset. Anything else is a ``ValueError`` that
-    never echoes the value."""
+    """The one ``custom_ca`` rule (CONTRACT.md §6): a CA-bundle file path, a CA directory, inline
+    PEM text, PEM ``bytes`` (returned as ASCII text), or an ``ssl.SSLContext`` that keeps server
+    verification on (``verify_mode == CERT_REQUIRED`` and ``check_hostname``). ``None`` and
+    ``""`` mean unset. Anything else is a ``ValueError`` that never echoes the value."""
     if custom_ca is None or custom_ca == "":
         return None
     if isinstance(custom_ca, str):
         return custom_ca
+    if isinstance(custom_ca, bytes):
+        try:
+            text = custom_ca.decode("ascii")
+        except UnicodeDecodeError:
+            text = ""
+        if _looks_like_pem(text):
+            return text
     if (
         isinstance(custom_ca, ssl.SSLContext)
         and custom_ca.verify_mode == ssl.CERT_REQUIRED
@@ -57,15 +64,16 @@ def validate_custom_ca(custom_ca: object) -> str | ssl.SSLContext | None:
     ):
         return custom_ca
     raise ValueError(
-        "custom_ca must be a CA-bundle path, inline PEM, or an ssl.SSLContext with "
-        "verify_mode=CERT_REQUIRED and check_hostname=True (CONTRACT.md §6)"
+        "custom_ca must be a CA-bundle path or directory, inline PEM (str or bytes), or an "
+        "ssl.SSLContext with verify_mode=CERT_REQUIRED and check_hostname=True (CONTRACT.md §6)"
     )
 
 
 def build_trust_context(custom_ca: str | ssl.SSLContext | None) -> ssl.SSLContext:
     """A strict client-side ``ssl.SSLContext`` (``check_hostname`` on, ``CERT_REQUIRED``) that
-    trusts the system store plus ``custom_ca`` — an inline PEM via ``cadata=``, anything else as
-    a CA-bundle path via ``cafile=`` (CONTRACT.md §6). A validated ``SSLContext`` is used as-is.
+    trusts the system store plus ``custom_ca`` — an inline PEM via ``cadata=``, a directory via
+    ``capath=``, anything else as a CA-bundle path via ``cafile=`` (CONTRACT.md §6). A validated
+    ``SSLContext`` is used as-is.
     Never weakens server verification."""
     if isinstance(custom_ca, ssl.SSLContext):
         return custom_ca
@@ -73,6 +81,8 @@ def build_trust_context(custom_ca: str | ssl.SSLContext | None) -> ssl.SSLContex
     if custom_ca:
         if _looks_like_pem(custom_ca):
             context.load_verify_locations(cadata=custom_ca)
+        elif os.path.isdir(custom_ca):
+            context.load_verify_locations(capath=custom_ca)
         else:
             context.load_verify_locations(cafile=custom_ca)
     return context
@@ -136,7 +146,7 @@ class _Session:
         base_url: str,
         tenant_slug: str,
         *,
-        custom_ca: str | ssl.SSLContext | None = None,
+        custom_ca: str | bytes | ssl.SSLContext | None = None,
         client_cert: str | bytes | None = None,
         client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
@@ -152,7 +162,8 @@ class _Session:
             tenant_slug: Injected as ``X-Tenant-ID`` on every same-origin
                 request (CONTRACT.md §5).
             custom_ca: The sole *server*-trust override (§6) — a PEM CA
-                bundle path (or inline PEM), an ``ssl.SSLContext`` with
+                bundle file path, a CA directory, inline PEM (``str`` or ``bytes``), an
+                ``ssl.SSLContext`` with
                 ``verify_mode=CERT_REQUIRED`` and ``check_hostname=True``
                 (not combinable with a client identity), or ``None`` for
                 strict default verification. Never a boolean; anything
@@ -212,7 +223,9 @@ class _Session:
                 )
             self._verify = self._build_mtls_context(trust, client_cert, client_key)
         else:
-            self._verify = trust if trust else True
+            # A str is built into a context here: handing httpx the string would make it a
+            # cafile and fail an inline PEM at the first request.
+            self._verify = build_trust_context(trust) if trust else True
 
         # Whether this session presents a §6.1 client certificate, and so
         # whether CONTRACT.md §21.3 rule 2 applies to the calls it makes. The

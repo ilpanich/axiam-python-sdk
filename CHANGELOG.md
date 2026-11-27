@@ -18,10 +18,12 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   path or an `ssl.SSLContext` but never checked, so `AxiamClient(custom_ca=ssl._create_unverified_context())`
   built REST clients with verification off, a bypass CONTRACT.md §6 forbids. One rule now applies at
   construction (`AxiamClient`, `AsyncAxiamClient`, `JwksVerifier`, the Django `AXIAM_CUSTOM_CA`
-  setting): `custom_ca` is a string (path or inline PEM) or an `ssl.SSLContext` with
+  setting): `custom_ca` is a string (bundle path, CA directory or inline PEM), PEM `bytes` or an `ssl.SSLContext` with
   `verify_mode == CERT_REQUIRED` and `check_hostname` on; anything else is a `ValueError` that does
   not echo the value. A context cannot be combined with `client_cert`/`client_key` (the identity
-  would land on the caller's own context).
+  would land on the caller's own context). Inline PEM as `custom_ca` also works on the REST path now
+  (httpx used to take the string as a file name and fail the first request); a CA directory keeps
+  working, and PEM `bytes` are accepted as CONTRACT.md §6's example passes them.
 - **C7 — login CSRF in the "Login with AXIAM" glue.** `oidc_login_views` (Django) and
   `oidc_login_router` (FastAPI) kept the in-flight login keyed by `state` alone, so a callback
   loaded in a browser *other* than the one that started the login completed it and called

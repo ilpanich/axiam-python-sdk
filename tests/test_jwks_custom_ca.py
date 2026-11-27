@@ -383,3 +383,53 @@ def test_jwks_mtls_context_origin_normalization(
 def test_jwks_mtls_context_fails_closed_on_an_invalid_url(pki: _MtlsPki) -> None:
     session = _session("https://a.com", pki)
     assert session.jwks_mtls_context("https://a.com:abc/j") is None
+
+
+# --- every accepted custom_ca form works on the REST path and the JWKS fetch ---------------------
+
+
+def _rest_get(client: AxiamClient, server: _JwksHttpsServer) -> int:
+    request = client._session.sync_client.build_request("GET", "/oauth2/jwks")
+    return int(client._session._send_sync(request).status_code)
+
+
+def _ca_forms(pki: _MtlsPki, tmp_path: Path) -> dict[str, Any]:
+    ca_dir = tmp_path / "cadir"
+    ca_dir.mkdir()
+    # OpenSSL looks a CA up in a directory by its subject-hash file name.
+    import subprocess
+
+    digest = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject_hash", "-in", str(pki.ca_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (ca_dir / f"{digest}.0").write_bytes(pki.ca_pem)
+    return {
+        "path": str(pki.ca_path),
+        "directory": str(ca_dir),
+        "inline_pem_str": pki.ca_pem.decode("ascii"),
+        "pem_bytes": pki.ca_pem,
+    }
+
+
+@pytest.mark.parametrize("form", ["path", "directory", "inline_pem_str", "pem_bytes"])
+def test_every_custom_ca_form_works_for_rest_and_jwks(
+    pki: _MtlsPki, server: _JwksHttpsServer, token: str, tmp_path: Path, form: str
+) -> None:
+    ca = _ca_forms(pki, tmp_path)[form]
+    client = AxiamClient(base_url=server.base_url, tenant_slug="acme", custom_ca=ca)
+    try:
+        assert _rest_get(client, server) == 200
+    finally:
+        client._session.close()
+    assert _verify(JwksVerifier(server.base_url, custom_ca=ca), token)["sub"] == "u1"
+    assert _verify(client._verifier_for(server.jwks_url), token)["sub"] == "u1"
+
+
+@pytest.mark.parametrize("bad", [b"not a pem", b"\xff\xfe-----BEGIN CERTIFICATE-----", b""])
+def test_non_pem_bytes_custom_ca_is_refused(bad: bytes) -> None:
+    with pytest.raises(ValueError, match="custom_ca") as caught:
+        JwksVerifier("https://axiam.example.test", custom_ca=bad)
+    assert "not a pem" not in str(caught.value)

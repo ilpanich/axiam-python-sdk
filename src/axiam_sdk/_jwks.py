@@ -423,7 +423,7 @@ class JwksVerifier:
         revocation_feed: RevocationFeed | None = None,
         resource_metadata_url: str | None = None,
         telemetry_hook: TelemetryHook | None = None,
-        custom_ca: str | ssl.SSLContext | None = None,
+        custom_ca: str | bytes | ssl.SSLContext | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -485,13 +485,13 @@ class JwksVerifier:
                 claim it does not honour.
 
             custom_ca: A private CA to trust for the JWKS fetch, exactly as the REST client's
-                ``custom_ca`` (CONTRACT.md §6): a CA-bundle path or inline PEM, added to the
-                system trust store, or an ``ssl.SSLContext`` with ``verify_mode=CERT_REQUIRED`` and
-                ``check_hostname=True``. Server and hostname verification stay on. Unset by
-                default.
+                ``custom_ca`` (CONTRACT.md §6): a CA-bundle file path, a CA directory or inline PEM
+                (``str`` or ``bytes``), added to the system trust store, or an ``ssl.SSLContext``
+                with ``verify_mode=CERT_REQUIRED`` and X
 
         Raises:
-            ValueError: if ``custom_ca`` is not a string or a strict ``ssl.SSLContext``, or if
+            ValueError: if ``custom_ca`` is not one of those forms or a strict
+                ``ssl.SSLContext``, or if
                 ``clock_skew_seconds`` is negative or exceeds
                 :data:`MAX_CLOCK_SKEW_SECONDS` — §10.1 rule 7 forbids an
                 operator-settable unbounded leeway.

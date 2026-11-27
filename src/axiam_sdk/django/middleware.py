@@ -260,8 +260,8 @@ class AxiamAuthMiddleware:
         (60 s) and bounded by
         :data:`~axiam_sdk._jwks.MAX_CLOCK_SKEW_SECONDS` (§10.1 rule 7).
       - ``AXIAM_CUSTOM_CA`` — *optional*, unset by default. A private CA (bundle
-        path, inline PEM or a strict ``ssl.SSLContext``) trusted for the JWKS fetch, as
-        the REST client's ``custom_ca`` (CONTRACT.md §6); server verification stays on.
+        path, CA directory, inline PEM or a strict ``ssl.SSLContext``) trusted for the JWKS
+        fetch, as the REST client's ``custom_ca`` (CONTRACT.md §6); server verification stays on.
       - ``AXIAM_RESOURCE_METADATA_URL`` — *optional*, unset by default
         (CONTRACT.md §28.5). Setting it is what turns §28 on: every 401 this
         middleware emits then carries a ``WWW-Authenticate`` challenge, and
