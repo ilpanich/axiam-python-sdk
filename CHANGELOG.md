@@ -212,6 +212,8 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   still collapse into one wire call and keep rules 6a-6d per key, a different token gets its own
   wire call and its own result, a key's slot is removed once vacated, and the raw token is never a
   map key, logged or placed in an error. `refresh()` (the session's own token) is unchanged.
+  `RefreshGuard.run_exclusive_sync`/`run_exclusive_async` (unreleased, never public API, and the
+  async one parked an executor thread on an unbounded lock acquire) are removed.
   `oidc_refresh` no longer runs under the cookie-session refresh guard: the per-token coalescer is
   its own guard, so a different token never waits on another's flight (§9 rule 7) and no executor
   thread is parked on a lock. The async client could deadlock once more distinct tokens were

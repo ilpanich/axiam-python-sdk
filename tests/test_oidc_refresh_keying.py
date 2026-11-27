@@ -13,7 +13,6 @@ Every test asserts the wire-call count, not only the returned values. The
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
 import threading
 import time
@@ -592,35 +591,100 @@ async def test_async_tenant_spelling_upper_lower_and_omitted_default_is_one_flig
 # --------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_async_many_distinct_tokens_complete_with_a_small_default_executor(
-    respx_mock: respx.MockRouter,
-) -> None:
-    """Twice the executor size of distinct tokens must all complete: no leader
-    may park an executor thread on a lock while the holder needs one."""
-    workers = 4
-    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(workers))
-    _mock_discovery(respx_mock)
+_DISTINCT_TOKENS_SCRIPT = """
+import asyncio, concurrent.futures, os, sys
+from urllib.parse import parse_qs
+import httpx, respx
+from axiam_sdk import AsyncAxiamClient
+from tests._oidc_testkit import BASE_URL, CLIENT_ID, discovery_document
 
-    async def responder(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(0.02)
-        return _answer_for(_presented(request))
+TENANT = "22222222-2222-2222-2222-222222222222"
+WORKERS = 4
 
-    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
-    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
-    await client.oidc_discover()
-    tokens = [f"distinct-{i}" for i in range(workers * 5)]
 
-    results = await asyncio.wait_for(
-        asyncio.gather(
-            *[client.oidc_refresh(refresh_token=t, tenant_id=TENANT_ID) for t in tokens]
-        ),
-        timeout=10,
-    )
+async def main() -> None:
+    executor = concurrent.futures.ThreadPoolExecutor(WORKERS)
+    asyncio.get_running_loop().set_default_executor(executor)
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{BASE_URL}/.well-known/openid-configuration").mock(
+                return_value=httpx.Response(200, json=discovery_document())
+            )
 
-    assert [r.access_token.get_secret_value() for r in results] == [
-        f"access-for-{t}" for t in tokens
-    ]
+            async def responder(request: httpx.Request) -> httpx.Response:
+                token = parse_qs(request.content.decode())["refresh_token"][0]
+                await asyncio.sleep(0.02)
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "a-" + token,
+                        "token_type": "Bearer",
+                        "expires_in": 900,
+                        "refresh_token": "r-" + token,
+                    },
+                )
+
+            router.post(f"{BASE_URL}/oauth2/token").mock(side_effect=responder)
+            client = AsyncAxiamClient(
+                base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID
+            )
+            await client.oidc_discover()
+            tokens = [f"distinct-{i}" for i in range(WORKERS * 5)]
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *[client.oidc_refresh(refresh_token=t, tenant_id=TENANT) for t in tokens]
+                ),
+                timeout=10,
+            )
+            got = [r.access_token.get_secret_value() for r in results]
+            assert got == ["a-" + t for t in tokens]
+            print("ALL-COMPLETED", len(results), flush=True)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+try:
+    asyncio.run(main())
+except BaseException as exc:
+    print("FAILED", type(exc).__name__, flush=True)
+    os._exit(3)
+os._exit(0)  # a regression leaves threads parked on a lock; never wait for them
+"""
+
+
+def test_async_many_distinct_tokens_complete_with_a_small_default_executor() -> None:
+    """Twice-and-more the executor size of distinct tokens must all complete:
+    no leader may park an executor thread on a lock while the holder needs one.
+
+    Runs in a subprocess with a hard timeout, so a regression is a FAIL within
+    the bound and never a hung test run (a deadlock keeps the loop and the
+    executor threads alive past any in-process ``wait_for``).
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = str(Path(__file__).resolve().parents[1])
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.lower() not in {"https_proxy", "http_proxy", "all_proxy"}
+        and not k.startswith("GLOBAL_AGENT")
+    }
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", _DISTINCT_TOKENS_SCRIPT],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("distinct-token oidc_refresh did not finish in 30 s: deadlock")
+    assert done.returncode == 0 and "ALL-COMPLETED 20" in done.stdout, done.stdout + done.stderr
 
 
 def test_sync_default_tenant_change_between_calls_is_two_flights_with_canonical_wire_tenant(

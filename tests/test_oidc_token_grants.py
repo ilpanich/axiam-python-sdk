@@ -6,6 +6,8 @@ grant-specific field sets, ID-token validation wiring, and
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from urllib.parse import parse_qsl
 
@@ -414,20 +416,50 @@ def test_oidc_refresh_does_not_take_the_cookie_session_refresh_guard(
     respx_mock: respx.MockRouter,
 ) -> None:
     """§9 rule 7: ``oidc_refresh`` has its own (per-token keyed) guard; it must
-    not run under the cookie-session ``RefreshGuard`` lock, which would make a
-    different token wait on another's flight."""
+    not wait on the cookie-session ``RefreshGuard`` lock. The lock is held for
+    the whole call, so a call that took it would never return."""
     _mock_discovery(respx_mock)
     respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
         return_value=httpx.Response(200, json=_token_response())
     )
     client = AxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    client.oidc_discover()
+    outcome: list[object] = []
 
-    def forbidden(fn: object) -> object:
-        raise AssertionError("oidc_refresh must not use the cookie-session guard")
+    guard_lock = client._session.refresh_guard._lock
+    with guard_lock:
+        worker = threading.Thread(
+            target=lambda: outcome.append(
+                client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID)
+            )
+        )
+        worker.start()
+        worker.join(5)
+        finished = not worker.is_alive()
+    worker.join(5)
 
-    client._session.refresh_guard.run_exclusive_sync = forbidden  # type: ignore[method-assign]
+    assert finished, "oidc_refresh waited on the cookie-session refresh guard lock"
+    assert len(outcome) == 1
 
-    assert client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID).access_token
+
+@pytest.mark.asyncio
+async def test_async_oidc_refresh_does_not_take_the_cookie_session_refresh_guard(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Async twin: the guard lock is held while ``oidc_refresh`` runs."""
+    _mock_discovery(respx_mock)
+    respx_mock.post(f"{BASE_URL}/oauth2/token").mock(
+        return_value=httpx.Response(200, json=_token_response())
+    )
+    client = AsyncAxiamClient(base_url=BASE_URL, tenant_slug="acme", client_id=CLIENT_ID)
+    await client.oidc_discover()
+
+    with client._session.refresh_guard._lock:
+        result = await asyncio.wait_for(
+            client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID), timeout=5
+        )
+
+    assert result.access_token
 
 
 # ---------------------------------------------------------------------
