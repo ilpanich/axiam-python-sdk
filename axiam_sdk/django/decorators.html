@@ -39,6 +39,9 @@
             <li>
                     <a class="function" href="#require_role">require_role</a>
             </li>
+            <li>
+                    <a class="function" href="#require_scope">require_scope</a>
+            </li>
     </ul>
 
 
@@ -459,52 +462,102 @@ function.</p>
 </span><span id="L-356"><a href="#L-356"><span class="linenos">356</span></a><span class="sd">    verified ``roles`` to contain at least one of ``roles`` (CONTRACT.md</span>
 </span><span id="L-357"><a href="#L-357"><span class="linenos">357</span></a><span class="sd">    §11).</span>
 </span><span id="L-358"><a href="#L-358"><span class="linenos">358</span></a>
-</span><span id="L-359"><a href="#L-359"><span class="linenos">359</span></a><span class="sd">    A **local** check only — reads ``request.axiam_user.roles`` already</span>
-</span><span id="L-360"><a href="#L-360"><span class="linenos">360</span></a><span class="sd">    attached by the middleware; it never calls the AXIAM server. Cheaper but</span>
-</span><span id="L-361"><a href="#L-361"><span class="linenos">361</span></a><span class="sd">    coarser than :func:`require_access`, and documented (§11.2.9) as NOT a</span>
-</span><span id="L-362"><a href="#L-362"><span class="linenos">362</span></a><span class="sd">    substitute for the authoritative, resource-level check: role names are</span>
-</span><span id="L-363"><a href="#L-363"><span class="linenos">363</span></a><span class="sd">    tenant-defined and callers should still gate any resource-specific</span>
-</span><span id="L-364"><a href="#L-364"><span class="linenos">364</span></a><span class="sd">    action behind :func:`require_access`.</span>
-</span><span id="L-365"><a href="#L-365"><span class="linenos">365</span></a>
-</span><span id="L-366"><a href="#L-366"><span class="linenos">366</span></a><span class="sd">    Usage::</span>
-</span><span id="L-367"><a href="#L-367"><span class="linenos">367</span></a>
-</span><span id="L-368"><a href="#L-368"><span class="linenos">368</span></a><span class="sd">        @require_role("admin", "auditor")</span>
-</span><span id="L-369"><a href="#L-369"><span class="linenos">369</span></a><span class="sd">        def reset_view(request):</span>
-</span><span id="L-370"><a href="#L-370"><span class="linenos">370</span></a><span class="sd">            ...</span>
-</span><span id="L-371"><a href="#L-371"><span class="linenos">371</span></a>
-</span><span id="L-372"><a href="#L-372"><span class="linenos">372</span></a><span class="sd">    CONTRACT.md §28.5: this decorator's own 401 carries the same challenge</span>
-</span><span id="L-373"><a href="#L-373"><span class="linenos">373</span></a><span class="sd">    every other 401 does; a role failure (403) is not a scope failure, so it</span>
-</span><span id="L-374"><a href="#L-374"><span class="linenos">374</span></a><span class="sd">    never carries one (§28.5 rule 5).</span>
-</span><span id="L-375"><a href="#L-375"><span class="linenos">375</span></a><span class="sd">    """</span>
-</span><span id="L-376"><a href="#L-376"><span class="linenos">376</span></a>
-</span><span id="L-377"><a href="#L-377"><span class="linenos">377</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_role"</span><span class="p">)</span>
-</span><span id="L-378"><a href="#L-378"><span class="linenos">378</span></a>
-</span><span id="L-379"><a href="#L-379"><span class="linenos">379</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="L-380"><a href="#L-380"><span class="linenos">380</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
-</span><span id="L-381"><a href="#L-381"><span class="linenos">381</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
-</span><span id="L-382"><a href="#L-382"><span class="linenos">382</span></a>
-</span><span id="L-383"><a href="#L-383"><span class="linenos">383</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-384"><a href="#L-384"><span class="linenos">384</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
-</span><span id="L-385"><a href="#L-385"><span class="linenos">385</span></a><span class="sd">            let the view proceed."""</span>
-</span><span id="L-386"><a href="#L-386"><span class="linenos">386</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="L-387"><a href="#L-387"><span class="linenos">387</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="L-388"><a href="#L-388"><span class="linenos">388</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
-</span><span id="L-389"><a href="#L-389"><span class="linenos">389</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
-</span><span id="L-390"><a href="#L-390"><span class="linenos">390</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
-</span><span id="L-391"><a href="#L-391"><span class="linenos">391</span></a>                    <span class="p">{</span>
-</span><span id="L-392"><a href="#L-392"><span class="linenos">392</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
-</span><span id="L-393"><a href="#L-393"><span class="linenos">393</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
-</span><span id="L-394"><a href="#L-394"><span class="linenos">394</span></a>                    <span class="p">},</span>
-</span><span id="L-395"><a href="#L-395"><span class="linenos">395</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
-</span><span id="L-396"><a href="#L-396"><span class="linenos">396</span></a>                <span class="p">)</span>
-</span><span id="L-397"><a href="#L-397"><span class="linenos">397</span></a>            <span class="k">return</span> <span class="kc">None</span>
-</span><span id="L-398"><a href="#L-398"><span class="linenos">398</span></a>
-</span><span id="L-399"><a href="#L-399"><span class="linenos">399</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
-</span><span id="L-400"><a href="#L-400"><span class="linenos">400</span></a>
-</span><span id="L-401"><a href="#L-401"><span class="linenos">401</span></a>    <span class="k">return</span> <span class="n">decorator</span>
-</span><span id="L-402"><a href="#L-402"><span class="linenos">402</span></a>
-</span><span id="L-403"><a href="#L-403"><span class="linenos">403</span></a>
-</span><span id="L-404"><a href="#L-404"><span class="linenos">404</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"require_access"</span><span class="p">,</span> <span class="s2">"require_auth"</span><span class="p">,</span> <span class="s2">"require_role"</span><span class="p">]</span>
+</span><span id="L-359"><a href="#L-359"><span class="linenos">359</span></a><span class="sd">    **Reads the token's** ``roles`` **claim only, and fails closed when it is</span>
+</span><span id="L-360"><a href="#L-360"><span class="linenos">360</span></a><span class="sd">    absent** (contract 1.68, N15, D-1): the OAuth ``scope`` claim is never</span>
+</span><span id="L-361"><a href="#L-361"><span class="linenos">361</span></a><span class="sd">    mapped onto roles — it names what the *client* asked for, not what the user</span>
+</span><span id="L-362"><a href="#L-362"><span class="linenos">362</span></a><span class="sd">    holds. AXIAM emits ``roles`` only when the client requested, and is</span>
+</span><span id="L-363"><a href="#L-363"><span class="linenos">363</span></a><span class="sd">    allowed, the ``roles`` scope, so the application must request that scope</span>
+</span><span id="L-364"><a href="#L-364"><span class="linenos">364</span></a><span class="sd">    for this guard to admit anyone. To check granted OAuth scopes use</span>
+</span><span id="L-365"><a href="#L-365"><span class="linenos">365</span></a><span class="sd">    :func:`require_scope`.</span>
+</span><span id="L-366"><a href="#L-366"><span class="linenos">366</span></a>
+</span><span id="L-367"><a href="#L-367"><span class="linenos">367</span></a><span class="sd">    A **local** check only — reads ``request.axiam_user.roles`` already</span>
+</span><span id="L-368"><a href="#L-368"><span class="linenos">368</span></a><span class="sd">    attached by the middleware; it never calls the AXIAM server. Cheaper but</span>
+</span><span id="L-369"><a href="#L-369"><span class="linenos">369</span></a><span class="sd">    coarser than :func:`require_access`, and documented (§11.2.9) as NOT a</span>
+</span><span id="L-370"><a href="#L-370"><span class="linenos">370</span></a><span class="sd">    substitute for the authoritative, resource-level check: role names are</span>
+</span><span id="L-371"><a href="#L-371"><span class="linenos">371</span></a><span class="sd">    tenant-defined and callers should still gate any resource-specific</span>
+</span><span id="L-372"><a href="#L-372"><span class="linenos">372</span></a><span class="sd">    action behind :func:`require_access`.</span>
+</span><span id="L-373"><a href="#L-373"><span class="linenos">373</span></a>
+</span><span id="L-374"><a href="#L-374"><span class="linenos">374</span></a><span class="sd">    Usage::</span>
+</span><span id="L-375"><a href="#L-375"><span class="linenos">375</span></a>
+</span><span id="L-376"><a href="#L-376"><span class="linenos">376</span></a><span class="sd">        @require_role("admin", "auditor")</span>
+</span><span id="L-377"><a href="#L-377"><span class="linenos">377</span></a><span class="sd">        def reset_view(request):</span>
+</span><span id="L-378"><a href="#L-378"><span class="linenos">378</span></a><span class="sd">            ...</span>
+</span><span id="L-379"><a href="#L-379"><span class="linenos">379</span></a>
+</span><span id="L-380"><a href="#L-380"><span class="linenos">380</span></a><span class="sd">    CONTRACT.md §28.5: this decorator's own 401 carries the same challenge</span>
+</span><span id="L-381"><a href="#L-381"><span class="linenos">381</span></a><span class="sd">    every other 401 does; a role failure (403) is not a scope failure, so it</span>
+</span><span id="L-382"><a href="#L-382"><span class="linenos">382</span></a><span class="sd">    never carries one (§28.5 rule 5).</span>
+</span><span id="L-383"><a href="#L-383"><span class="linenos">383</span></a><span class="sd">    """</span>
+</span><span id="L-384"><a href="#L-384"><span class="linenos">384</span></a>
+</span><span id="L-385"><a href="#L-385"><span class="linenos">385</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_role"</span><span class="p">)</span>
+</span><span id="L-386"><a href="#L-386"><span class="linenos">386</span></a>
+</span><span id="L-387"><a href="#L-387"><span class="linenos">387</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
+</span><span id="L-388"><a href="#L-388"><span class="linenos">388</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
+</span><span id="L-389"><a href="#L-389"><span class="linenos">389</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
+</span><span id="L-390"><a href="#L-390"><span class="linenos">390</span></a>
+</span><span id="L-391"><a href="#L-391"><span class="linenos">391</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-392"><a href="#L-392"><span class="linenos">392</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="L-393"><a href="#L-393"><span class="linenos">393</span></a><span class="sd">            let the view proceed."""</span>
+</span><span id="L-394"><a href="#L-394"><span class="linenos">394</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="L-395"><a href="#L-395"><span class="linenos">395</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-396"><a href="#L-396"><span class="linenos">396</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
+</span><span id="L-397"><a href="#L-397"><span class="linenos">397</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
+</span><span id="L-398"><a href="#L-398"><span class="linenos">398</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
+</span><span id="L-399"><a href="#L-399"><span class="linenos">399</span></a>                    <span class="p">{</span>
+</span><span id="L-400"><a href="#L-400"><span class="linenos">400</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="L-401"><a href="#L-401"><span class="linenos">401</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
+</span><span id="L-402"><a href="#L-402"><span class="linenos">402</span></a>                    <span class="p">},</span>
+</span><span id="L-403"><a href="#L-403"><span class="linenos">403</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
+</span><span id="L-404"><a href="#L-404"><span class="linenos">404</span></a>                <span class="p">)</span>
+</span><span id="L-405"><a href="#L-405"><span class="linenos">405</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="L-406"><a href="#L-406"><span class="linenos">406</span></a>
+</span><span id="L-407"><a href="#L-407"><span class="linenos">407</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
+</span><span id="L-408"><a href="#L-408"><span class="linenos">408</span></a>
+</span><span id="L-409"><a href="#L-409"><span class="linenos">409</span></a>    <span class="k">return</span> <span class="n">decorator</span>
+</span><span id="L-410"><a href="#L-410"><span class="linenos">410</span></a>
+</span><span id="L-411"><a href="#L-411"><span class="linenos">411</span></a>
+</span><span id="L-412"><a href="#L-412"><span class="linenos">412</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_scope</span><span class="p">(</span><span class="o">*</span><span class="n">scopes</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
+</span><span id="L-413"><a href="#L-413"><span class="linenos">413</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring the verified token's granted ``scope``</span>
+</span><span id="L-414"><a href="#L-414"><span class="linenos">414</span></a><span class="sd">    to contain at least one of ``scopes`` (CONTRACT.md §11.2 rule 11, contract</span>
+</span><span id="L-415"><a href="#L-415"><span class="linenos">415</span></a><span class="sd">    1.68).</span>
+</span><span id="L-416"><a href="#L-416"><span class="linenos">416</span></a>
+</span><span id="L-417"><a href="#L-417"><span class="linenos">417</span></a><span class="sd">    The counterpart of :func:`require_role` for OAuth scopes: a **local** check</span>
+</span><span id="L-418"><a href="#L-418"><span class="linenos">418</span></a><span class="sd">    on ``request.axiam_user.scopes`` already attached by the middleware. A</span>
+</span><span id="L-419"><a href="#L-419"><span class="linenos">419</span></a><span class="sd">    scope is what the *client* was granted, not something the user holds.</span>
+</span><span id="L-420"><a href="#L-420"><span class="linenos">420</span></a>
+</span><span id="L-421"><a href="#L-421"><span class="linenos">421</span></a><span class="sd">    Usage::</span>
+</span><span id="L-422"><a href="#L-422"><span class="linenos">422</span></a>
+</span><span id="L-423"><a href="#L-423"><span class="linenos">423</span></a><span class="sd">        @require_scope("reports:read")</span>
+</span><span id="L-424"><a href="#L-424"><span class="linenos">424</span></a><span class="sd">        def reports_view(request):</span>
+</span><span id="L-425"><a href="#L-425"><span class="linenos">425</span></a><span class="sd">            ...</span>
+</span><span id="L-426"><a href="#L-426"><span class="linenos">426</span></a><span class="sd">    """</span>
+</span><span id="L-427"><a href="#L-427"><span class="linenos">427</span></a>
+</span><span id="L-428"><a href="#L-428"><span class="linenos">428</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_scope"</span><span class="p">)</span>
+</span><span id="L-429"><a href="#L-429"><span class="linenos">429</span></a>
+</span><span id="L-430"><a href="#L-430"><span class="linenos">430</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
+</span><span id="L-431"><a href="#L-431"><span class="linenos">431</span></a><span class="w">        </span><span class="sd">"""Bind ``scopes`` to a guard wrapping ``view``."""</span>
+</span><span id="L-432"><a href="#L-432"><span class="linenos">432</span></a>
+</span><span id="L-433"><a href="#L-433"><span class="linenos">433</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-434"><a href="#L-434"><span class="linenos">434</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="L-435"><a href="#L-435"><span class="linenos">435</span></a><span class="sd">            let the view proceed."""</span>
+</span><span id="L-436"><a href="#L-436"><span class="linenos">436</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="L-437"><a href="#L-437"><span class="linenos">437</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="L-438"><a href="#L-438"><span class="linenos">438</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
+</span><span id="L-439"><a href="#L-439"><span class="linenos">439</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">scope</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">scopes</span> <span class="k">for</span> <span class="n">scope</span> <span class="ow">in</span> <span class="n">scopes</span><span class="p">):</span>
+</span><span id="L-440"><a href="#L-440"><span class="linenos">440</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
+</span><span id="L-441"><a href="#L-441"><span class="linenos">441</span></a>                    <span class="p">{</span>
+</span><span id="L-442"><a href="#L-442"><span class="linenos">442</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="L-443"><a href="#L-443"><span class="linenos">443</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required scope"</span><span class="p">,</span>
+</span><span id="L-444"><a href="#L-444"><span class="linenos">444</span></a>                    <span class="p">},</span>
+</span><span id="L-445"><a href="#L-445"><span class="linenos">445</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
+</span><span id="L-446"><a href="#L-446"><span class="linenos">446</span></a>                <span class="p">)</span>
+</span><span id="L-447"><a href="#L-447"><span class="linenos">447</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="L-448"><a href="#L-448"><span class="linenos">448</span></a>
+</span><span id="L-449"><a href="#L-449"><span class="linenos">449</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
+</span><span id="L-450"><a href="#L-450"><span class="linenos">450</span></a>
+</span><span id="L-451"><a href="#L-451"><span class="linenos">451</span></a>    <span class="k">return</span> <span class="n">decorator</span>
+</span><span id="L-452"><a href="#L-452"><span class="linenos">452</span></a>
+</span><span id="L-453"><a href="#L-453"><span class="linenos">453</span></a>
+</span><span id="L-454"><a href="#L-454"><span class="linenos">454</span></a><span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"require_access"</span><span class="p">,</span> <span class="s2">"require_auth"</span><span class="p">,</span> <span class="s2">"require_role"</span><span class="p">,</span> <span class="s2">"require_scope"</span><span class="p">]</span>
 </span></pre></div>
 
 
@@ -737,55 +790,71 @@ def my_view(request):
 </span><span id="require_role-357"><a href="#require_role-357"><span class="linenos">357</span></a><span class="sd">    verified ``roles`` to contain at least one of ``roles`` (CONTRACT.md</span>
 </span><span id="require_role-358"><a href="#require_role-358"><span class="linenos">358</span></a><span class="sd">    §11).</span>
 </span><span id="require_role-359"><a href="#require_role-359"><span class="linenos">359</span></a>
-</span><span id="require_role-360"><a href="#require_role-360"><span class="linenos">360</span></a><span class="sd">    A **local** check only — reads ``request.axiam_user.roles`` already</span>
-</span><span id="require_role-361"><a href="#require_role-361"><span class="linenos">361</span></a><span class="sd">    attached by the middleware; it never calls the AXIAM server. Cheaper but</span>
-</span><span id="require_role-362"><a href="#require_role-362"><span class="linenos">362</span></a><span class="sd">    coarser than :func:`require_access`, and documented (§11.2.9) as NOT a</span>
-</span><span id="require_role-363"><a href="#require_role-363"><span class="linenos">363</span></a><span class="sd">    substitute for the authoritative, resource-level check: role names are</span>
-</span><span id="require_role-364"><a href="#require_role-364"><span class="linenos">364</span></a><span class="sd">    tenant-defined and callers should still gate any resource-specific</span>
-</span><span id="require_role-365"><a href="#require_role-365"><span class="linenos">365</span></a><span class="sd">    action behind :func:`require_access`.</span>
-</span><span id="require_role-366"><a href="#require_role-366"><span class="linenos">366</span></a>
-</span><span id="require_role-367"><a href="#require_role-367"><span class="linenos">367</span></a><span class="sd">    Usage::</span>
-</span><span id="require_role-368"><a href="#require_role-368"><span class="linenos">368</span></a>
-</span><span id="require_role-369"><a href="#require_role-369"><span class="linenos">369</span></a><span class="sd">        @require_role("admin", "auditor")</span>
-</span><span id="require_role-370"><a href="#require_role-370"><span class="linenos">370</span></a><span class="sd">        def reset_view(request):</span>
-</span><span id="require_role-371"><a href="#require_role-371"><span class="linenos">371</span></a><span class="sd">            ...</span>
-</span><span id="require_role-372"><a href="#require_role-372"><span class="linenos">372</span></a>
-</span><span id="require_role-373"><a href="#require_role-373"><span class="linenos">373</span></a><span class="sd">    CONTRACT.md §28.5: this decorator's own 401 carries the same challenge</span>
-</span><span id="require_role-374"><a href="#require_role-374"><span class="linenos">374</span></a><span class="sd">    every other 401 does; a role failure (403) is not a scope failure, so it</span>
-</span><span id="require_role-375"><a href="#require_role-375"><span class="linenos">375</span></a><span class="sd">    never carries one (§28.5 rule 5).</span>
-</span><span id="require_role-376"><a href="#require_role-376"><span class="linenos">376</span></a><span class="sd">    """</span>
-</span><span id="require_role-377"><a href="#require_role-377"><span class="linenos">377</span></a>
-</span><span id="require_role-378"><a href="#require_role-378"><span class="linenos">378</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_role"</span><span class="p">)</span>
-</span><span id="require_role-379"><a href="#require_role-379"><span class="linenos">379</span></a>
-</span><span id="require_role-380"><a href="#require_role-380"><span class="linenos">380</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
-</span><span id="require_role-381"><a href="#require_role-381"><span class="linenos">381</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
-</span><span id="require_role-382"><a href="#require_role-382"><span class="linenos">382</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
-</span><span id="require_role-383"><a href="#require_role-383"><span class="linenos">383</span></a>
-</span><span id="require_role-384"><a href="#require_role-384"><span class="linenos">384</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="require_role-385"><a href="#require_role-385"><span class="linenos">385</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
-</span><span id="require_role-386"><a href="#require_role-386"><span class="linenos">386</span></a><span class="sd">            let the view proceed."""</span>
-</span><span id="require_role-387"><a href="#require_role-387"><span class="linenos">387</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="require_role-388"><a href="#require_role-388"><span class="linenos">388</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-</span><span id="require_role-389"><a href="#require_role-389"><span class="linenos">389</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
-</span><span id="require_role-390"><a href="#require_role-390"><span class="linenos">390</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
-</span><span id="require_role-391"><a href="#require_role-391"><span class="linenos">391</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
-</span><span id="require_role-392"><a href="#require_role-392"><span class="linenos">392</span></a>                    <span class="p">{</span>
-</span><span id="require_role-393"><a href="#require_role-393"><span class="linenos">393</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
-</span><span id="require_role-394"><a href="#require_role-394"><span class="linenos">394</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
-</span><span id="require_role-395"><a href="#require_role-395"><span class="linenos">395</span></a>                    <span class="p">},</span>
-</span><span id="require_role-396"><a href="#require_role-396"><span class="linenos">396</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
-</span><span id="require_role-397"><a href="#require_role-397"><span class="linenos">397</span></a>                <span class="p">)</span>
-</span><span id="require_role-398"><a href="#require_role-398"><span class="linenos">398</span></a>            <span class="k">return</span> <span class="kc">None</span>
-</span><span id="require_role-399"><a href="#require_role-399"><span class="linenos">399</span></a>
-</span><span id="require_role-400"><a href="#require_role-400"><span class="linenos">400</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
-</span><span id="require_role-401"><a href="#require_role-401"><span class="linenos">401</span></a>
-</span><span id="require_role-402"><a href="#require_role-402"><span class="linenos">402</span></a>    <span class="k">return</span> <span class="n">decorator</span>
+</span><span id="require_role-360"><a href="#require_role-360"><span class="linenos">360</span></a><span class="sd">    **Reads the token's** ``roles`` **claim only, and fails closed when it is</span>
+</span><span id="require_role-361"><a href="#require_role-361"><span class="linenos">361</span></a><span class="sd">    absent** (contract 1.68, N15, D-1): the OAuth ``scope`` claim is never</span>
+</span><span id="require_role-362"><a href="#require_role-362"><span class="linenos">362</span></a><span class="sd">    mapped onto roles — it names what the *client* asked for, not what the user</span>
+</span><span id="require_role-363"><a href="#require_role-363"><span class="linenos">363</span></a><span class="sd">    holds. AXIAM emits ``roles`` only when the client requested, and is</span>
+</span><span id="require_role-364"><a href="#require_role-364"><span class="linenos">364</span></a><span class="sd">    allowed, the ``roles`` scope, so the application must request that scope</span>
+</span><span id="require_role-365"><a href="#require_role-365"><span class="linenos">365</span></a><span class="sd">    for this guard to admit anyone. To check granted OAuth scopes use</span>
+</span><span id="require_role-366"><a href="#require_role-366"><span class="linenos">366</span></a><span class="sd">    :func:`require_scope`.</span>
+</span><span id="require_role-367"><a href="#require_role-367"><span class="linenos">367</span></a>
+</span><span id="require_role-368"><a href="#require_role-368"><span class="linenos">368</span></a><span class="sd">    A **local** check only — reads ``request.axiam_user.roles`` already</span>
+</span><span id="require_role-369"><a href="#require_role-369"><span class="linenos">369</span></a><span class="sd">    attached by the middleware; it never calls the AXIAM server. Cheaper but</span>
+</span><span id="require_role-370"><a href="#require_role-370"><span class="linenos">370</span></a><span class="sd">    coarser than :func:`require_access`, and documented (§11.2.9) as NOT a</span>
+</span><span id="require_role-371"><a href="#require_role-371"><span class="linenos">371</span></a><span class="sd">    substitute for the authoritative, resource-level check: role names are</span>
+</span><span id="require_role-372"><a href="#require_role-372"><span class="linenos">372</span></a><span class="sd">    tenant-defined and callers should still gate any resource-specific</span>
+</span><span id="require_role-373"><a href="#require_role-373"><span class="linenos">373</span></a><span class="sd">    action behind :func:`require_access`.</span>
+</span><span id="require_role-374"><a href="#require_role-374"><span class="linenos">374</span></a>
+</span><span id="require_role-375"><a href="#require_role-375"><span class="linenos">375</span></a><span class="sd">    Usage::</span>
+</span><span id="require_role-376"><a href="#require_role-376"><span class="linenos">376</span></a>
+</span><span id="require_role-377"><a href="#require_role-377"><span class="linenos">377</span></a><span class="sd">        @require_role("admin", "auditor")</span>
+</span><span id="require_role-378"><a href="#require_role-378"><span class="linenos">378</span></a><span class="sd">        def reset_view(request):</span>
+</span><span id="require_role-379"><a href="#require_role-379"><span class="linenos">379</span></a><span class="sd">            ...</span>
+</span><span id="require_role-380"><a href="#require_role-380"><span class="linenos">380</span></a>
+</span><span id="require_role-381"><a href="#require_role-381"><span class="linenos">381</span></a><span class="sd">    CONTRACT.md §28.5: this decorator's own 401 carries the same challenge</span>
+</span><span id="require_role-382"><a href="#require_role-382"><span class="linenos">382</span></a><span class="sd">    every other 401 does; a role failure (403) is not a scope failure, so it</span>
+</span><span id="require_role-383"><a href="#require_role-383"><span class="linenos">383</span></a><span class="sd">    never carries one (§28.5 rule 5).</span>
+</span><span id="require_role-384"><a href="#require_role-384"><span class="linenos">384</span></a><span class="sd">    """</span>
+</span><span id="require_role-385"><a href="#require_role-385"><span class="linenos">385</span></a>
+</span><span id="require_role-386"><a href="#require_role-386"><span class="linenos">386</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_role"</span><span class="p">)</span>
+</span><span id="require_role-387"><a href="#require_role-387"><span class="linenos">387</span></a>
+</span><span id="require_role-388"><a href="#require_role-388"><span class="linenos">388</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
+</span><span id="require_role-389"><a href="#require_role-389"><span class="linenos">389</span></a><span class="w">        </span><span class="sd">"""Bind ``roles`` to a guard wrapping ``view`` (see</span>
+</span><span id="require_role-390"><a href="#require_role-390"><span class="linenos">390</span></a><span class="sd">        :func:`require_role`'s docstring for the pipeline)."""</span>
+</span><span id="require_role-391"><a href="#require_role-391"><span class="linenos">391</span></a>
+</span><span id="require_role-392"><a href="#require_role-392"><span class="linenos">392</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="require_role-393"><a href="#require_role-393"><span class="linenos">393</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="require_role-394"><a href="#require_role-394"><span class="linenos">394</span></a><span class="sd">            let the view proceed."""</span>
+</span><span id="require_role-395"><a href="#require_role-395"><span class="linenos">395</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="require_role-396"><a href="#require_role-396"><span class="linenos">396</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="require_role-397"><a href="#require_role-397"><span class="linenos">397</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
+</span><span id="require_role-398"><a href="#require_role-398"><span class="linenos">398</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">role</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">roles</span> <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">roles</span><span class="p">):</span>
+</span><span id="require_role-399"><a href="#require_role-399"><span class="linenos">399</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
+</span><span id="require_role-400"><a href="#require_role-400"><span class="linenos">400</span></a>                    <span class="p">{</span>
+</span><span id="require_role-401"><a href="#require_role-401"><span class="linenos">401</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="require_role-402"><a href="#require_role-402"><span class="linenos">402</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required role"</span><span class="p">,</span>
+</span><span id="require_role-403"><a href="#require_role-403"><span class="linenos">403</span></a>                    <span class="p">},</span>
+</span><span id="require_role-404"><a href="#require_role-404"><span class="linenos">404</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
+</span><span id="require_role-405"><a href="#require_role-405"><span class="linenos">405</span></a>                <span class="p">)</span>
+</span><span id="require_role-406"><a href="#require_role-406"><span class="linenos">406</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="require_role-407"><a href="#require_role-407"><span class="linenos">407</span></a>
+</span><span id="require_role-408"><a href="#require_role-408"><span class="linenos">408</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
+</span><span id="require_role-409"><a href="#require_role-409"><span class="linenos">409</span></a>
+</span><span id="require_role-410"><a href="#require_role-410"><span class="linenos">410</span></a>    <span class="k">return</span> <span class="n">decorator</span>
 </span></pre></div>
 
 
             <div class="docstring"><p>View decorator factory requiring the authenticated identity's
 verified <code>roles</code> to contain at least one of <code>roles</code> (CONTRACT.md
 §11).</p>
+
+<p><strong>Reads the token's</strong> <code>roles</code> <strong>claim only, and fails closed when it is
+absent</strong> (contract 1.68, N15, D-1): the OAuth <code>scope</code> claim is never
+mapped onto roles — it names what the <em>client</em> asked for, not what the user
+holds. AXIAM emits <code>roles</code> only when the client requested, and is
+allowed, the <code>roles</code> scope, so the application must request that scope
+for this guard to admit anyone. To check granted OAuth scopes use
+<code><a href="#require_scope">require_scope()</a></code>.</p>
 
 <p>A <strong>local</strong> check only — reads <code>request.axiam_user.roles</code> already
 attached by the middleware; it never calls the AXIAM server. Cheaper but
@@ -804,6 +873,78 @@ def reset_view(request):
 <p>CONTRACT.md §28.5: this decorator's own 401 carries the same challenge
 every other 401 does; a role failure (403) is not a scope failure, so it
 never carries one (§28.5 rule 5).</p>
+</div>
+
+
+                </section>
+                <section id="require_scope">
+                            <input id="require_scope-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
+<div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">require_scope</span><span class="signature pdoc-code condensed">(<span class="param"><span class="o">*</span><span class="n">scopes</span><span class="p">:</span> <span class="nb">str</span></span><span class="return-annotation">) -> <span class="n">Callable</span><span class="p">[[</span><span class="o">~</span><span class="n">_View</span><span class="p">],</span> <span class="o">~</span><span class="n">_View</span><span class="p">]</span>:</span></span>
+
+                <label class="view-source-button" for="require_scope-view-source"><span>View Source</span></label>
+
+    </div>
+    <a class="headerlink" href="#require_scope"></a>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="require_scope-413"><a href="#require_scope-413"><span class="linenos">413</span></a><span class="k">def</span><span class="w"> </span><span class="nf">require_scope</span><span class="p">(</span><span class="o">*</span><span class="n">scopes</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">_View</span><span class="p">],</span> <span class="n">_View</span><span class="p">]:</span>
+</span><span id="require_scope-414"><a href="#require_scope-414"><span class="linenos">414</span></a><span class="w">    </span><span class="sd">"""View decorator factory requiring the verified token's granted ``scope``</span>
+</span><span id="require_scope-415"><a href="#require_scope-415"><span class="linenos">415</span></a><span class="sd">    to contain at least one of ``scopes`` (CONTRACT.md §11.2 rule 11, contract</span>
+</span><span id="require_scope-416"><a href="#require_scope-416"><span class="linenos">416</span></a><span class="sd">    1.68).</span>
+</span><span id="require_scope-417"><a href="#require_scope-417"><span class="linenos">417</span></a>
+</span><span id="require_scope-418"><a href="#require_scope-418"><span class="linenos">418</span></a><span class="sd">    The counterpart of :func:`require_role` for OAuth scopes: a **local** check</span>
+</span><span id="require_scope-419"><a href="#require_scope-419"><span class="linenos">419</span></a><span class="sd">    on ``request.axiam_user.scopes`` already attached by the middleware. A</span>
+</span><span id="require_scope-420"><a href="#require_scope-420"><span class="linenos">420</span></a><span class="sd">    scope is what the *client* was granted, not something the user holds.</span>
+</span><span id="require_scope-421"><a href="#require_scope-421"><span class="linenos">421</span></a>
+</span><span id="require_scope-422"><a href="#require_scope-422"><span class="linenos">422</span></a><span class="sd">    Usage::</span>
+</span><span id="require_scope-423"><a href="#require_scope-423"><span class="linenos">423</span></a>
+</span><span id="require_scope-424"><a href="#require_scope-424"><span class="linenos">424</span></a><span class="sd">        @require_scope("reports:read")</span>
+</span><span id="require_scope-425"><a href="#require_scope-425"><span class="linenos">425</span></a><span class="sd">        def reports_view(request):</span>
+</span><span id="require_scope-426"><a href="#require_scope-426"><span class="linenos">426</span></a><span class="sd">            ...</span>
+</span><span id="require_scope-427"><a href="#require_scope-427"><span class="linenos">427</span></a><span class="sd">    """</span>
+</span><span id="require_scope-428"><a href="#require_scope-428"><span class="linenos">428</span></a>
+</span><span id="require_scope-429"><a href="#require_scope-429"><span class="linenos">429</span></a>    <span class="n">challenges</span> <span class="o">=</span> <span class="n">_settings_mcp_challenges</span><span class="p">(</span><span class="s2">"require_scope"</span><span class="p">)</span>
+</span><span id="require_scope-430"><a href="#require_scope-430"><span class="linenos">430</span></a>
+</span><span id="require_scope-431"><a href="#require_scope-431"><span class="linenos">431</span></a>    <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">view</span><span class="p">:</span> <span class="n">_View</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_View</span><span class="p">:</span>
+</span><span id="require_scope-432"><a href="#require_scope-432"><span class="linenos">432</span></a><span class="w">        </span><span class="sd">"""Bind ``scopes`` to a guard wrapping ``view``."""</span>
+</span><span id="require_scope-433"><a href="#require_scope-433"><span class="linenos">433</span></a>
+</span><span id="require_scope-434"><a href="#require_scope-434"><span class="linenos">434</span></a>        <span class="k">def</span><span class="w"> </span><span class="nf">_guard</span><span class="p">(</span><span class="n">request</span><span class="p">:</span> <span class="n">HttpRequest</span><span class="p">,</span> <span class="o">*</span><span class="n">_args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">_kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HttpResponse</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="require_scope-435"><a href="#require_scope-435"><span class="linenos">435</span></a><span class="w">            </span><span class="sd">"""Return a 403/401 JSON response on failure, else ``None`` to</span>
+</span><span id="require_scope-436"><a href="#require_scope-436"><span class="linenos">436</span></a><span class="sd">            let the view proceed."""</span>
+</span><span id="require_scope-437"><a href="#require_scope-437"><span class="linenos">437</span></a>            <span class="n">user</span> <span class="o">=</span> <span class="n">_authenticated_user</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="require_scope-438"><a href="#require_scope-438"><span class="linenos">438</span></a>            <span class="k">if</span> <span class="n">user</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="require_scope-439"><a href="#require_scope-439"><span class="linenos">439</span></a>                <span class="k">return</span> <span class="n">_missing_middleware_response</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">challenges</span><span class="p">)</span>
+</span><span id="require_scope-440"><a href="#require_scope-440"><span class="linenos">440</span></a>            <span class="k">if</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">scope</span> <span class="ow">in</span> <span class="n">user</span><span class="o">.</span><span class="n">scopes</span> <span class="k">for</span> <span class="n">scope</span> <span class="ow">in</span> <span class="n">scopes</span><span class="p">):</span>
+</span><span id="require_scope-441"><a href="#require_scope-441"><span class="linenos">441</span></a>                <span class="k">return</span> <span class="n">JsonResponse</span><span class="p">(</span>
+</span><span id="require_scope-442"><a href="#require_scope-442"><span class="linenos">442</span></a>                    <span class="p">{</span>
+</span><span id="require_scope-443"><a href="#require_scope-443"><span class="linenos">443</span></a>                        <span class="s2">"error"</span><span class="p">:</span> <span class="s2">"authorization_denied"</span><span class="p">,</span>
+</span><span id="require_scope-444"><a href="#require_scope-444"><span class="linenos">444</span></a>                        <span class="s2">"message"</span><span class="p">:</span> <span class="s2">"caller lacks a required scope"</span><span class="p">,</span>
+</span><span id="require_scope-445"><a href="#require_scope-445"><span class="linenos">445</span></a>                    <span class="p">},</span>
+</span><span id="require_scope-446"><a href="#require_scope-446"><span class="linenos">446</span></a>                    <span class="n">status</span><span class="o">=</span><span class="n">_AUTHZ_DENIED_STATUS</span><span class="p">,</span>
+</span><span id="require_scope-447"><a href="#require_scope-447"><span class="linenos">447</span></a>                <span class="p">)</span>
+</span><span id="require_scope-448"><a href="#require_scope-448"><span class="linenos">448</span></a>            <span class="k">return</span> <span class="kc">None</span>
+</span><span id="require_scope-449"><a href="#require_scope-449"><span class="linenos">449</span></a>
+</span><span id="require_scope-450"><a href="#require_scope-450"><span class="linenos">450</span></a>        <span class="k">return</span> <span class="n">_wrap</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="n">_guard</span><span class="p">)</span>
+</span><span id="require_scope-451"><a href="#require_scope-451"><span class="linenos">451</span></a>
+</span><span id="require_scope-452"><a href="#require_scope-452"><span class="linenos">452</span></a>    <span class="k">return</span> <span class="n">decorator</span>
+</span></pre></div>
+
+
+            <div class="docstring"><p>View decorator factory requiring the verified token's granted <code>scope</code>
+to contain at least one of <code>scopes</code> (CONTRACT.md §11.2 rule 11, contract
+1.68).</p>
+
+<p>The counterpart of <code><a href="#require_role">require_role()</a></code> for OAuth scopes: a <strong>local</strong> check
+on <code>request.axiam_user.scopes</code> already attached by the middleware. A
+scope is what the <em>client</em> was granted, not something the user holds.</p>
+
+<p>Usage::</p>
+
+<pre><code>@require_scope("reports:read")
+def reports_view(request):
+    ...
+</code></pre>
 </div>
 
 
