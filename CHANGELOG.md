@@ -7,10 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-28
+
 Contract 1.68 (security audit 2026-11-14, wave 3). `CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from `ilpanich/axiam`; `proto/` is unchanged
 and the §27 layer regenerates (`management/models.py`, 202 operations). **This is a minor release
 that changes behaviour in four places (C7, C6, N15, N14); read the migration notes.**
+
+### Fixed
+
+- Give oidc_refresh its own guard and resolve the tenant once (#115)
+
+- Key the oidc_refresh single-flight per refresh token (#115)
+
+- Inline PEM and PEM bytes as custom_ca on the REST path (#114)
+
+- Validate custom_ca and harden the JWKS origin check (#114)
+
+- Review follow-ups for the JWKS custom CA (#114)
+
+- Trust custom_ca and the mTLS identity on the JWKS fetch (#114)
+
+- OI-33 review round 3 (axiam#883)
+
+- OI-33 review round 2 (axiam#883)
+
+- OI-33 review round 1 (axiam#883)
+
+- Typed consume, discard event fields, BOM refusal, bounded JWKS stale-if-error (OI-33, axiam#883)
+
+- Pin strict UTF-8 decode, move alignment changelog entry into 1.4.0 (OI-11 alignment, round 1)
+
+- Align with contract 1.69 §8 (OI-11 alignment, axiam#882, axiam#883)
+
+- JWKS outage window, real message shapes in consumer tests, doc wording (OI wave B, round 2)
+
+- JWKS unknown-kid cooldown, consumer layout check, logout reasons, glue scheme check (OI wave B, round 1)
+
+- Verify received bytes, remove unsigned opt-out, discard event, glue cookie clear (OI-11, #110, axiam#880, axiam#881, axiam#882, axiam#883)
+
+- Bound login glue, safe return_to, access-token rules, roles claim, authz requester (SA-21, C6/C7/N14/N15/N2)
 
 ### Security
 
@@ -118,6 +154,20 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   `%r`, so a control character cannot forge a log line.
 - Vendored `CONTRACT.md` re-synced to 1.69 (typed event consumer, byte-order-mark refusal, bounded JWKS
   stale-if-error and the wire-form clarification; axiam#883).
+
+- re-vendor CONTRACT.md 1.69 (§9 rule 7: oidc_refresh single-flight per tenant and token)
+
+- Bound the distinct-token test and drop the unused exclusive guard (#115)
+
+- Build the refused unverified context without the gated helper (#114)
+
+- re-vendor CONTRACT.md after the server merged ilpanich/axiam#893
+
+- re-vendor CONTRACT.md 1.69 (typed consume, BOM refusal, bounded JWKS stale-if-error; axiam#883)
+
+- re-vendor CONTRACT.md 1.69 wire-form clarification (axiam#883)
+
+- re-vendor CONTRACT.md, openapi.json and the management registry
 
 ### Removed
 
