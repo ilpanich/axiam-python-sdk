@@ -51,6 +51,18 @@ def _v2_fields(now: datetime | None = None) -> dict[str, Any]:
     }
 
 
+def _authz(action: str, resource_id: str) -> dict[str, Any]:
+    """A genuine ``AuthzRequest`` layout (CONTRACT §8 v2): the consumer refuses other shapes."""
+    return {
+        "correlation_id": "11111111-1111-1111-1111-111111111111",
+        "tenant_id": "22222222-2222-2222-2222-222222222222",
+        "subject_id": "33333333-3333-3333-3333-333333333333",
+        "action": action,
+        "resource_id": resource_id,
+        **_v2_fields(),
+    }
+
+
 def _sign(signing_key: bytes, message: dict[str, Any]) -> bytes:
     """Build a wire body with a real HMAC-SHA256 signature for arbitrary
     message content, reusing the exact canonicalization axiam_sdk.amqp._hmac
@@ -62,11 +74,7 @@ def _sign(signing_key: bytes, message: dict[str, Any]) -> bytes:
     return json.dumps(signed, separators=(",", ":")).encode("utf-8")
 
 
-VALID_MESSAGE: dict[str, Any] = {
-    "action": "read",
-    "resource_id": "44444444-4444-4444-4444-444444444444",
-    **_v2_fields(),
-}
+VALID_MESSAGE: dict[str, Any] = _authz("read", "44444444-4444-4444-4444-444444444444")
 VALID_BODY = _sign(VALID_SIGNING_KEY, VALID_MESSAGE)
 VALID_SIGNATURE_HEX = json.loads(VALID_BODY)["hmac_signature"]
 
@@ -139,7 +147,9 @@ async def test_valid_hmac_and_none_handler_acks(
     async def handler(event: dict[str, Any]) -> None:
         handler_called_with.append(event)
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is True
     assert message.nacked is None
@@ -165,7 +175,9 @@ async def test_invalid_hmac_nacks_without_requeue_and_handler_never_called(
         nonlocal handler_calls
         handler_calls += 1
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False
@@ -182,13 +194,15 @@ async def test_handler_raises_errdrop_nacks_without_requeue(
 ) -> None:
     """Path 3: valid HMAC + handler raises ErrDrop -> nack(requeue=False)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, {"action": "delete", "resource_id": "x", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("delete", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:
         raise ErrDrop("poison message")
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False
@@ -199,56 +213,34 @@ async def test_handler_raises_other_exception_nacks_with_requeue(
 ) -> None:
     """Path 4: valid HMAC + handler raises a plain exception -> nack(requeue=True)."""
     logger, _handler = recording_logger
-    body = _sign(VALID_SIGNING_KEY, {"action": "update", "resource_id": "y", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("update", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     async def handler(event: dict[str, Any]) -> None:
         raise RuntimeError("transient downstream failure")
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is True  # requeue=True
 
 
-async def test_post_verify_parse_failure_nacks_without_requeue(
+async def test_validly_signed_unparseable_body_nacks_without_requeue(
     recording_logger: tuple[logging.Logger, _RecordingLogHandler],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Path 5: HMAC verifies, but the post-verify parse step fails (body is
-    not a usable JSON object once re-parsed) -> nack(requeue=False); handler
-    NOT invoked.
+    """Path 5: the HMAC verifies over the received bytes, but those bytes are not a usable JSON
+    object -> nack(requeue=False); handler NOT invoked.
 
-    Both ``verify_hmac`` and the consumer's own event-parsing step decode
-    the identical ``message.body`` bytes, so a body that fails to parse as a
-    JSON object structurally also fails HMAC verification first (the same
-    is true of the Go reference's ``verifyHMAC``, which also requires a
-    JSON-object body). This test proves the *independent* parse-failure
-    branch in ``_on_message`` — reached only after HMAC verification has
-    already succeeded — behaves identically to the HMAC-failure path
-    (nack-without-requeue, handler never invoked, no signature in the log)
-    by making ``json.loads`` fail on the SECOND (post-verify) call only,
-    isolating the parse-failure branch from the HMAC-failure branch.
-    """
-    import axiam_sdk.amqp._consumer as consumer_module
-
+    The SDK parses the verified bytes once (server #882: verify the received bytes, dispatch
+    what was parsed from them), so this refusal is part of verification and needs no separate
+    "post-verify parse" branch. The body here is correctly signed over ``{not json}``: the
+    scenario an attacker holding the signing key could still produce."""
     logger, handler_records = recording_logger
-    message = RecordingMessage(VALID_BODY)  # a body that DOES pass verify_hmac
-
-    real_loads = json.loads
-    call_count = 0
-
-    def _loads_fail_second_call(*args: object, **kwargs: object) -> object:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            # First call is inside verify_hmac() — let it succeed normally.
-            return real_loads(*args, **kwargs)
-        # Second call is _on_message's own post-verify parse — force it to
-        # fail, isolating the parse-failure branch.
-        raise json.JSONDecodeError("forced parse failure", "{}", 0)
-
-    monkeypatch.setattr(consumer_module.json, "loads", _loads_fail_second_call)
+    canonical = '{"action":"update","resource_id":[}'
+    mac = hmac.new(VALID_SIGNING_KEY, canonical.encode(), hashlib.sha256).hexdigest()
+    message = RecordingMessage((canonical[:-1] + ',"hmac_signature":"' + mac + '"}').encode())
 
     handler_calls = 0
 
@@ -256,7 +248,9 @@ async def test_post_verify_parse_failure_nacks_without_requeue(
         nonlocal handler_calls
         handler_calls += 1
 
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False  # requeue=False

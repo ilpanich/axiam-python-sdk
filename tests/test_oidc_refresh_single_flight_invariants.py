@@ -33,10 +33,11 @@ import pytest
 import respx
 
 from axiam_sdk import AsyncAxiamClient, AxiamClient
-from axiam_sdk._oidc import _AsyncSingleFlight, _SyncSingleFlight
+from axiam_sdk._oidc import _AsyncSingleFlight, _refresh_flight_key, _SyncSingleFlight
 from tests._oidc_testkit import BASE_URL, CLIENT_ID, discovery_document
 
 TENANT_ID = "22222222-2222-2222-2222-222222222222"
+KEY = _refresh_flight_key("rt", TENANT_ID)  # the key of a caller presenting ``rt``
 
 
 def _mock_discovery(respx_mock: respx.MockRouter) -> None:
@@ -118,7 +119,7 @@ def _waiter_generation_round() -> dict[str, Any]:
     def waiter() -> None:
         waiter_parked.set()
         try:
-            outcomes["waiter"] = coalescer.run(gen1)
+            outcomes["waiter"] = coalescer.run(KEY, gen1)
         except BaseException as exc:  # noqa: BLE001 - reported to the main thread
             outcomes["waiter"] = exc
 
@@ -127,13 +128,13 @@ def _waiter_generation_round() -> dict[str, Any]:
         while not newcomer_may_start[0] and time.monotonic() < deadline:
             pass
         try:
-            outcomes["newcomer"] = coalescer.run(gen2)
+            outcomes["newcomer"] = coalescer.run(KEY, gen2)
         except BaseException as exc:  # noqa: BLE001 - reported to the main thread
             outcomes["newcomer"] = exc
 
     def leader() -> None:
         try:
-            outcomes["leader"] = coalescer.run(gen1)
+            outcomes["leader"] = coalescer.run(KEY, gen1)
         except BaseException as exc:  # noqa: BLE001 - reported to the main thread
             outcomes["leader"] = exc
         # The leader's slot is vacated the instant ``run`` returns, so a caller
@@ -218,8 +219,8 @@ def test_sync_caller_landing_in_the_publish_vacate_window_joins(
         # is cleared — with no lock held, so a real second caller can (and
         # here does) complete an entire oidc_refresh inside this window.
         coalescer._after_publish = None  # the newcomer must not re-enter here
-        window["slot_occupied"] = coalescer._in_flight is not None
-        window["published"] = coalescer._in_flight is not None and coalescer._in_flight.is_settled()
+        window["slot_occupied"] = KEY in coalescer._in_flight
+        window["published"] = KEY in coalescer._in_flight and coalescer._in_flight[KEY].is_settled()
 
         def newcomer() -> None:
             window["newcomer"] = client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID)
@@ -249,11 +250,13 @@ def test_sync_lagging_attempt_does_not_clear_a_newer_attempts_slot() -> None:
     def in_window() -> None:
         # Simulate a newer attempt having claimed the slot while this
         # attempt was unwinding.
-        coalescer._in_flight = newer  # type: ignore[assignment]
+        coalescer._in_flight[KEY] = newer  # type: ignore[assignment]
 
     coalescer._after_publish = in_window
-    assert coalescer.run(lambda: "old-attempt") == "old-attempt"
-    assert coalescer._in_flight is newer, "a lagging attempt must not clear a newer attempt's slot"
+    assert coalescer.run(KEY, lambda: "old-attempt") == "old-attempt"
+    assert coalescer._in_flight[KEY] is newer, (
+        "a lagging attempt must not clear a newer attempt's slot"
+    )
 
 
 def test_sync_caller_after_full_settlement_gets_a_fresh_refresh(
@@ -278,7 +281,7 @@ def test_sync_caller_after_full_settlement_gets_a_fresh_refresh(
     assert calls["n"] == 2
     assert first.access_token.get_secret_value() == "token-1"
     assert second.access_token.get_secret_value() == "token-2"
-    assert client._oidc_refresh_single_flight_sync._in_flight is None
+    assert client._oidc_refresh_single_flight_sync._in_flight == {}
 
 
 def test_sync_failure_is_shared_and_the_slot_is_vacated() -> None:
@@ -297,7 +300,7 @@ def test_sync_failure_is_shared_and_the_slot_is_vacated() -> None:
 
     def worker(index: int) -> None:
         try:
-            coalescer.run(fn)
+            coalescer.run(KEY, fn)
         except BaseException as exc:  # noqa: BLE001 - reported to the main thread
             outcomes[index] = exc
 
@@ -313,7 +316,7 @@ def test_sync_failure_is_shared_and_the_slot_is_vacated() -> None:
 
     assert calls == [1], "no retry, exactly one attempt (§9.3)"
     assert all(exc is boom for exc in outcomes), "the same exception object reaches every caller"
-    assert coalescer._in_flight is None
+    assert coalescer._in_flight == {}
 
 
 # =====================================================================
@@ -434,14 +437,14 @@ async def test_async_caller_landing_in_the_publish_vacate_window_joins() -> None
 
     def in_window() -> None:
         coalescer._after_publish = None
-        task = coalescer._pending
+        task = coalescer._pending.get(KEY)
         window["published"] = task is not None and task.done()
         # A caller electing itself right now must be handed the settled task.
-        window["joined_task"] = coalescer._claim_or_join(never)
+        window["joined_task"] = coalescer._claim_or_join(KEY, never)
         window["slot_task"] = task
 
     coalescer._after_publish = in_window
-    assert await coalescer.run(fn) == "burst-1-token"
+    assert await coalescer.run(KEY, fn) == "burst-1-token"
 
     assert window["published"] is True, "the task must be settled before the slot is cleared"
     assert window["joined_task"] is window["slot_task"], "the arriving caller must join, not lead"
@@ -471,27 +474,27 @@ async def test_async_lagging_attempt_does_not_clear_a_newer_attempts_slot() -> N
 
         return fn
 
-    first = coalescer._claim_or_join(make("first"))
+    first = coalescer._claim_or_join(KEY, make("first"))
     await _poll_until(lambda: calls == ["first"], what="the first attempt to start")
 
     first.cancel()
     await asyncio.sleep(0)
     assert first.cancelled()
-    assert coalescer._pending is first, "the cancelled task's slot is not vacated yet"
+    assert coalescer._pending[KEY] is first, "the cancelled task's slot is not vacated yet"
 
     # A caller arriving now must lead (a cancelled task publishes nothing).
-    second = coalescer._claim_or_join(make("second"))
-    assert coalescer._pending is second
+    second = coalescer._claim_or_join(KEY, make("second"))
+    assert coalescer._pending[KEY] is second
     vacated = asyncio.Event()
     first.add_done_callback(lambda _: vacated.set())  # queued after _vacate
     await vacated.wait()
 
-    assert coalescer._pending is second, (
+    assert coalescer._pending[KEY] is second, (
         "the cancelled attempt's cleanup must not clear the newer attempt's slot"
     )
     # ...and because the slot survived, a later caller still joins instead of
     # starting a third wire call.
-    assert coalescer._claim_or_join(make("third")) is second
+    assert coalescer._claim_or_join(KEY, make("third")) is second
     release.set()
     assert await asyncio.shield(second) == "second"
     assert calls == ["first", "second"]
@@ -515,7 +518,7 @@ async def test_async_caller_after_full_settlement_gets_a_fresh_refresh(
 
     first = await client.oidc_refresh(refresh_token="rt", tenant_id=TENANT_ID)
     await asyncio.sleep(0)  # let the slot's done callback run
-    assert client._oidc_refresh_single_flight_async._pending is None
+    assert client._oidc_refresh_single_flight_async._pending == {}
     second = await client.oidc_refresh(refresh_token="rotated-token-1", tenant_id=TENANT_ID)
 
     assert calls["n"] == 2
@@ -539,7 +542,7 @@ async def test_async_failure_is_shared_with_no_retry_and_the_slot_is_vacated() -
 
     async def call() -> BaseException | None:
         try:
-            await coalescer.run(fn)
+            await coalescer.run(KEY, fn)
         except BaseException as exc:  # noqa: BLE001 - returned for the assertions
             return exc
         return None
@@ -552,7 +555,7 @@ async def test_async_failure_is_shared_with_no_retry_and_the_slot_is_vacated() -
     assert calls == [1], "no retry, exactly one attempt (§9.3)"
     assert all(exc is boom for exc in outcomes)
     await asyncio.sleep(0)
-    assert coalescer._pending is None
+    assert coalescer._pending == {}
 
 
 @pytest.mark.asyncio

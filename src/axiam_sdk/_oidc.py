@@ -18,8 +18,8 @@ Reuse, not reimplementation:
   + §6 TLS -> the existing ``_Session`` (``_session.py``);
 * §7/§12.5 redaction -> ``pydantic.SecretStr`` (already this SDK's
   ``Sensitive`` equivalent);
-* §9 single-flight refresh -> ``RefreshGuard.run_exclusive_sync/async``
-  (``token/refresh_guard.py``), extended (never forked) for §12;
+* §9 single-flight refresh -> ``RefreshGuard`` for the cookie session;
+  ``oidc_refresh`` has its own guard, the per-token keyed coalescers below;
 * §12.4 signature verification -> ``_jwks.JwksVerifier``, extended (never
   forked) via its new public ``get_signing_key`` method.
 """
@@ -27,9 +27,11 @@ Reuse, not reimplementation:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import threading
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -420,7 +422,7 @@ _RESERVED_AUTHORIZE_PARAMS = frozenset(
 
 #: Shape of a UUID, used to reject a slug where §12.3 rule 4 requires a UUID.
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.IGNORECASE
 )
 
 
@@ -585,6 +587,27 @@ class _DiscoveryCache:
             return document
 
 
+def _refresh_flight_key(refresh_token: SecretStr | str, tenant_id: str) -> str:
+    """The single-flight key of one ``oidc_refresh`` call (CONTRACT.md §9,
+    §12.3 rule 4): a SHA-256 digest of the **resolved** tenant UUID (the
+    explicit argument, or the client's default — see
+    :meth:`_OidcMixin._resolve_oauth2_tenant_id`; normalised to the lower-case
+    hyphenated UUID form, so the same effective tenant always yields the same
+    key) and the refresh token, separated by a NUL. Scope and every other parameter
+    are not part of it.
+
+    Callers presenting the *same* token (in the same tenant) form one burst;
+    a caller presenting a different token is never part of it. Only the
+    digest ever becomes a map key — the raw token is never stored as one,
+    never logged and never placed in an error.
+    """
+    digest = hashlib.sha256()
+    digest.update(str(uuid.UUID(tenant_id)).encode("ascii"))
+    digest.update(b"\x00")
+    digest.update(_expose_secret(refresh_token).encode("utf-8"))
+    return digest.hexdigest()
+
+
 class _SyncFlight:
     """One sync ``oidc_refresh`` attempt's **publication** — the object a
     waiter joins, holds, and reads its outcome from (CONTRACT.md §9 rule 6).
@@ -634,18 +657,20 @@ class _SyncFlight:
 
 class _SyncSingleFlight:
     """Collapse N concurrent sync callers of an operation into exactly one
-    real invocation, all sharing its result/exception — the request-
-    coalescing half of ``oidc_refresh``'s two-part single-flight behavior
-    (port-brief-addendum item 14): "de-duplicates its own concurrent
-    callers AND runs the wire call inside the existing §9 guard." This
-    class provides the de-duplication; :meth:`RefreshGuard.run_exclusive_sync
-    <axiam_sdk.token.refresh_guard.RefreshGuard.run_exclusive_sync>` (called
-    by the ONE selected caller's ``fn``) provides the "inside the existing
-    §9 guard" half, so an ``oidc_refresh`` and a concurrent cookie-session
-    ``refresh()`` still cannot interleave.
+    real invocation, all sharing its result/exception — ``oidc_refresh``'s
+    single-flight guard (CONTRACT.md §9). It is deliberately **not** the
+    cookie-session :class:`~axiam_sdk.token.refresh_guard.RefreshGuard`: the
+    token namespaces differ (a caller-supplied OAuth2 refresh token vs the
+    session's own), and one shared lock would make a different token wait on
+    another's flight (§9 rule 7). Nothing here holds a lock across the call.
 
-    **Rule 6 invariants (CONTRACT.md §9 rule 6, contract 1.6) — do not
-    regress these:**
+    **Keyed.** The coalescer holds one slot *per key* (:func:`_refresh_flight_key`,
+    a digest of the refresh token): callers of one key form a burst, a caller of
+    another key never joins it and never receives its outcome. A key's slot is
+    removed once vacated, so the map does not grow.
+
+    **Rule 6 invariants (CONTRACT.md §9 rule 6, contract 1.6), applied per
+    key — do not regress these:**
 
     * **(6a) publish-before-vacate** — :meth:`_publish_then_vacate` sets the
       attempt's publication *first* and clears the slot *second*, so a
@@ -672,21 +697,22 @@ class _SyncSingleFlight:
     def __init__(self) -> None:
         """Build an idle single-flight coalescer with no call in progress."""
         self._lock = threading.Lock()
-        self._in_flight: _SyncFlight | None = None
+        self._in_flight: dict[str, _SyncFlight] = {}
         # Test-only seam: invoked inside the publish -> vacate window so a
         # test can deterministically land a caller there (rule 6a). NEVER
         # set in production — nothing in the SDK assigns it.
         self._after_publish: Callable[[], None] | None = None
 
-    def run(self, fn: Callable[[], Any]) -> Any:
+    def run(self, key: str, fn: Callable[[], Any]) -> Any:
         """Run ``fn()`` exactly once across any number of concurrent
-        callers; every other concurrent caller blocks and then receives the
-        same result or re-raises the same exception."""
+        callers of ``key``; every other concurrent caller of the same key
+        blocks and then receives the same result or re-raises the same
+        exception. A caller of a different key leads its own call."""
         with self._lock:
-            joined = self._in_flight
+            joined = self._in_flight.get(key)
             if joined is None:
                 mine = _SyncFlight()
-                self._in_flight = mine
+                self._in_flight[key] = mine
 
         if joined is not None:
             # Waiter: wait on the publication we joined — never on the slot.
@@ -695,29 +721,36 @@ class _SyncSingleFlight:
         try:
             result = fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised to every waiter as-is
-            self._publish_then_vacate(mine, exc=exc)
+            self._publish_then_vacate(key, mine, exc=exc)
             raise
 
-        self._publish_then_vacate(mine, result=result)
+        self._publish_then_vacate(key, mine, result=result)
         return result
 
     def _publish_then_vacate(
-        self, flight: _SyncFlight, *, result: Any = None, exc: BaseException | None = None
+        self,
+        key: str,
+        flight: _SyncFlight,
+        *,
+        result: Any = None,
+        exc: BaseException | None = None,
     ) -> None:
         """Publish ``flight``'s outcome, then release the slot — in that
-        order (rule 6a), clearing only our own entry (rule 6c)."""
+        order (rule 6a), clearing only our own entry under our own key
+        (rule 6c)."""
         flight.publish(result=result, exc=exc)
         if self._after_publish is not None:
             self._after_publish()
         with self._lock:
-            if self._in_flight is flight:
-                self._in_flight = None
+            if self._in_flight.get(key) is flight:
+                del self._in_flight[key]
 
 
 class _AsyncSingleFlight:
     """Async twin of :class:`_SyncSingleFlight`.
 
-    The in-flight slot holds one :class:`asyncio.Task` per burst — the
+    The coalescer holds one slot per key (:func:`_refresh_flight_key`, a digest
+    of the refresh token), each holding one :class:`asyncio.Task` per burst — the
     "shared future/promise" mechanism §9 rule 5 permits — and **every**
     participant, the caller that created it included, joins it through
     :func:`asyncio.shield`. Electing a leader is a single synchronous step
@@ -765,36 +798,37 @@ class _AsyncSingleFlight:
 
     def __init__(self) -> None:
         """Build an idle single-flight coalescer with no call in progress."""
-        self._pending: asyncio.Task[Any] | None = None
+        self._pending: dict[str, asyncio.Task[Any]] = {}
         # Test-only seam: invoked inside the publish -> vacate window so a
         # test can deterministically land a caller there (rule 6a). NEVER
         # set in production — nothing in the SDK assigns it.
         self._after_publish: Callable[[], None] | None = None
 
-    def _claim_or_join(self, fn: Callable[[], Awaitable[Any]]) -> asyncio.Task[Any]:
-        """Elect this caller a leader or a waiter and return the task
-        carrying this burst's single wire call.
+    def _claim_or_join(self, key: str, fn: Callable[[], Awaitable[Any]]) -> asyncio.Task[Any]:
+        """Elect this caller a leader or a waiter of ``key``'s burst and
+        return the task carrying that burst's single wire call. A task of
+        another key is never joined.
 
         Fully synchronous — there is no ``await`` between reading the slot
         and claiming it, which is what makes the election atomic under
         asyncio's cooperative scheduling (§9 rule 4).
         """
-        task = self._pending
+        task = self._pending.get(key)
         if task is not None and not task.cancelled():
             # Live, or settled-but-not-yet-vacated: join it either way
             # (rules 6a/6b). A cancelled task publishes nothing, so it does
             # not qualify and this caller leads instead.
             return task
         task = asyncio.ensure_future(fn())
-        self._pending = task
+        self._pending[key] = task
         # Chaining the clear onto the task itself is what orders publication
         # before vacating (rule 6a) — a done callback cannot run earlier.
-        task.add_done_callback(self._vacate)
+        task.add_done_callback(lambda done: self._vacate(key, done))
         return task
 
-    def _vacate(self, task: asyncio.Task[Any]) -> None:
-        """Release the slot once ``task`` has settled — clearing it only if
-        it is still *our* entry (rule 6c)."""
+    def _vacate(self, key: str, task: asyncio.Task[Any]) -> None:
+        """Release ``key``'s slot once ``task`` has settled — clearing it
+        only if it is still *our* entry under that key (rule 6c)."""
         if not task.cancelled():
             # Mark a failure as retrieved: every participant re-raises it
             # from its own ``shield``, but a burst whose callers all went
@@ -802,12 +836,12 @@ class _AsyncSingleFlight:
             task.exception()
         if self._after_publish is not None:
             self._after_publish()
-        if self._pending is task:
-            self._pending = None
+        if self._pending.get(key) is task:
+            del self._pending[key]
 
-    async def run(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+    async def run(self, key: str, fn: Callable[[], Awaitable[Any]]) -> Any:
         """Async twin of :meth:`_SyncSingleFlight.run`."""
-        return await asyncio.shield(self._claim_or_join(fn))
+        return await asyncio.shield(self._claim_or_join(key, fn))
 
 
 #: The seven endpoint names RFC 8705 §5 ever aliases (CONTRACT.md §21.3 rule 2;
@@ -1388,9 +1422,15 @@ class _OidcMixin:
         existing = self._jwks_verifiers.get(jwks_uri)
         if existing is not None:
             return existing
-        verifier = JwksVerifier(jwks_uri, jwks_url=jwks_uri)
-        self._jwks_verifiers[jwks_uri] = verifier
-        return verifier
+        # Atomic under threads (the async client validates in worker threads): a racing loser's
+        # verifier is discarded, so every caller shares the one that is stored.
+        # The JWKS fetch trusts what the REST session trusts (custom_ca); the mTLS identity goes
+        # only to a jwks_uri on the client's own origin.
+        verifier = JwksVerifier(jwks_uri, jwks_url=jwks_uri, custom_ca=self._session.custom_ca)
+        mtls = self._session.jwks_mtls_context(jwks_uri)
+        if mtls is not None:
+            verifier._client.ssl_context = mtls
+        return self._jwks_verifiers.setdefault(jwks_uri, verifier)
 
     # ------------------------------------------------------------------
     # 6-7. introspect / revoke — form bodies + response parsing (shared)
@@ -1733,6 +1773,13 @@ class _OidcMixin:
                 "with client_secret (CONTRACT.md §12.1 note 4)."
             )
         return _expose_secret(self._oidc_client_secret)
+
+    def _canonical_oauth2_tenant_id(self, explicit: str | None) -> str:
+        """The effective tenant of an ``/oauth2/*`` call, resolved **once** and
+        canonicalised to the lower-case hyphenated UUID form. The single-flight
+        key and the wire ``tenant_id`` both use this value, so what is coalesced
+        is exactly what is sent, whatever the spelling the caller passed."""
+        return str(uuid.UUID(self._resolve_oauth2_tenant_id(explicit)))
 
     def _resolve_oauth2_tenant_id(self, explicit: str | None) -> str:
         """Resolve the tenant UUID for the ``/oauth2/*`` ``tenant_id`` query

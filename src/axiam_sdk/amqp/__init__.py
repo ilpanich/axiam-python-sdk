@@ -23,7 +23,10 @@ v2 replay protection (NEW-4). Two surfaces share those primitives:
   with a private, exclusive ``reply_to`` queue and accepts only the server's signed answer to
   *that* request: signature under the tenant subkey over the **received** bytes, ``tenant_id``,
   ``correlation_id`` and ``nonce`` bound to an outstanding request. Anything else is nacked
-  without requeue and never an allow. :class:`AioPikaAuthzTransport` is the ``aio-pika`` seam.
+  without requeue, logged as a security event with the routing key and the requester's own
+  tenant, and never an allow. It needs an AXIAM server of 1.68 or later and has no option to
+  accept unsigned responses (contract 1.69). :class:`AioPikaAuthzTransport` is the ``aio-pika``
+  seam.
 
 **§22 — the reactor runtime.** A reactor is an external process that subscribes
 to named hook events on the AMQP bus and answers back — allow, deny, or a

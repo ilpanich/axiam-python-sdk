@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.4.0] - 2026-11-22
-
 Contract 1.68 (security audit 2026-11-14, wave 3). `CONTRACT.md`, `openapi.json` and
 `management-registry.json` re-vendored byte for byte from `ilpanich/axiam`; `proto/` is unchanged
 and the §27 layer regenerates (`management/models.py`, 202 operations). **This is a minor release
@@ -16,6 +14,18 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
 
 ### Security
 
+- **`custom_ca` accepted an unverified `ssl.SSLContext` (#114).** `custom_ca` was documented as a
+  path or an `ssl.SSLContext` but never checked, so `AxiamClient(custom_ca=ssl._create_unverified_context())`
+  built REST clients with verification off, a bypass CONTRACT.md §6 forbids. One rule now applies at
+  construction (`AxiamClient`, `AsyncAxiamClient`, `JwksVerifier`, the Django `AXIAM_CUSTOM_CA`
+  setting): `custom_ca` is a string (bundle path, CA directory or inline PEM), PEM `bytes` or an `ssl.SSLContext` with
+  `verify_mode == CERT_REQUIRED` and `check_hostname` on; anything else is a `ValueError` that does
+  not echo the value. A context cannot be combined with `client_cert`/`client_key` (the identity
+  would land on the caller's own context). Inline PEM as `custom_ca` also works on the REST path now
+  (httpx used to take the string as a file name and fail the first request); a CA directory keeps
+  working, and PEM `bytes` are accepted as CONTRACT.md §6's example passes them. A `custom_ca` path
+  that does not exist or cannot be read now fails when the client is constructed, not at its first
+  request.
 - **C7 — login CSRF in the "Login with AXIAM" glue.** `oidc_login_views` (Django) and
   `oidc_login_router` (FastAPI) kept the in-flight login keyed by `state` alone, so a callback
   loaded in a browser *other* than the one that started the login completed it and called
@@ -48,6 +58,16 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   header or cookie, turning a 403 into a 500.
 - `MemoryOidcStateStore` is bounded (`max_entries`, default 10 000, oldest evicted first): the login
   route is unauthenticated and every call saves an entry.
+- **AMQP — contract 1.69 §8 alignment (axiam#882, axiam#883).** `CONTRACT.md` and
+  `testdata/v2_reference_vectors.json` (which gains `wire_json`) re-vendored. The `AuthzResponse`
+  requester now reports the discard reason in the contract's normative order: a response with a bad
+  signature that also lacks or mistypes `tenant_id`, `nonce`, `correlation_id` or `allowed` is
+  `malformed` (it was `signature`), and a body with trailing whitespace is `malformed`, not
+  `unsigned`. A delivery that arrives after `close()` is nacked without requeue, not decoded, and
+  logs no event. The strict JSON parser refuses any trailing whitespace after `}` and invalid UTF-8
+  before parsing. New tests feed the vectors' `wire_json` through the consumer and assert the
+  producer emits it byte for byte. There is no lenient (unsigned-accepting) mode in this SDK, and
+  none was removed here.
 
 ### Added
 
@@ -59,7 +79,7 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   trailing signature member cut out (never a re-serialization), the decision decoded from those same
   bytes, `tenant_id` the requester's own, `correlation_id` and `nonce` matching an outstanding
   request. Anything else is nacked without requeue, logged, never an allow. Unsigned responses are
-  refused unless `allow_unsigned_responses=True`. Also `AioPikaAuthzTransport`, `AuthzDecision`,
+  always discarded (there is no opt-out; see "Removed"). Also `AioPikaAuthzTransport`, `AuthzDecision`,
   `AuthzTransport`, `build_authz_request`. Tests pin all four §8 vectors.
 - `require_scope` — `axiam_sdk.fastapi.require_scope(verifier, tenant, *scopes)` and
   `axiam_sdk.django.decorators.require_scope(*scopes)`: a local check of the token's granted `scope`.
@@ -70,6 +90,136 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   `return_to` rule (consulted only for values the default rule refuses; a predicate that raises
   accepts nothing).
 - `OidcStateEntry.binding_digest` (optional) and `MemoryOidcStateStore(max_entries=...)`.
+
+### Changed
+
+- **JWKS fetch (OI-33 review round 1).** `JwksVerifier` no longer follows redirects when it fetches
+  the JWKS: a `3xx` is a failed refresh (the URL is used as configured). The fetch is bounded by the
+  SDK's own 10 s timeout and runs on a single detached thread, never under the cache's lock: a
+  verification whose held set is usable returns at once while a refresh is in flight, and only a
+  caller with no usable key (cold cache, past TTL + 300 s, unknown `kid`) waits for it. Every
+  TTL-driven refresh, successful or not, respects the 60 s window, so an advertised `max-age=0`
+  costs one fetch per window, not one per verification; a clock that stepped back ends the window.
+- **No blocking on the event loop (OI-33 review round 2).** The FastAPI dependency
+  (`run_in_threadpool`), the Django async middleware path (`sync_to_async(thread_sensitive=False)`)
+  and the async client's `verify_logout_token` and ID-token validation (`asyncio.to_thread`) run the
+  synchronous JWKS verifier in a worker thread: an unknown-`kid` token or a cold cache on a slow
+  endpoint no longer freezes the loop. The JWKS body is read against one overall 10 s deadline and
+  capped at 1 MiB (a dripping or endless endpoint can no longer hold a refresh); UUID members must
+  be in canonical 8-4-4-4-12 form.
+- **JWKS fetch deadline (OI-33 review round 3).** The 10 s overall deadline now starts with the
+  request and a timer closes the socket at it, so a server dripping response headers is abandoned
+  too; `device_poll` validates off the event loop like the other token paths; the client's
+  per-`jwks_uri` verifier cache is race-free under threads.
+- **Event consumer decode (OI-33 review round 1).** Required members must be present and strings
+  (`null` is refused), the server's `Uuid` members must be UUIDs, `issued_at` must be a full RFC
+  3339 `date-time` with an offset, `key_version` fits a `u8`, and `NaN`/`Infinity` are not JSON
+  (also in `AuthzRequester`). The discard event's text renders `routing_key` and `tenant_id` with
+  `%r`, so a control character cannot forge a log line.
+- Vendored `CONTRACT.md` re-synced to 1.69 (typed event consumer, byte-order-mark refusal, bounded JWKS
+  stale-if-error and the wire-form clarification; axiam#883).
+
+### Removed
+
+- The AMQP authz requester no longer offers an opt-out for unsigned responses
+  (`allow_unsigned_responses` and `AuthzDecision.unsigned`, added earlier in this unreleased cycle and never
+  released): no AXIAM server sends one to a reply queue, so the option could admit only a forged
+  response (CONTRACT 1.69 §8, server #881). The requester requires a 1.68 server.
+
+### Fixed (follow-up review, OI-11; contract 1.69)
+
+- **Back-channel logout token `kid` (axiam#880).** `verify_logout_token` selects the key by `kid`
+  (CONTRACT §12.7.3 rule 1, 1.69): a token with no `kid`, or an unknown one, raises `AuthError` with
+  `reason == "unknown_kid"` (a bad signature `invalid_signature`, a wrong `alg` `invalid_alg`, an
+  expired token `token_expired`). Tests use a server-shaped token (header exactly
+  `alg`/`typ: logout+jwt`/`kid`) against a two-key JWKS, and pin that §10.1 rules 10 and 11 do not
+  apply to the logout and ID-token paths.
+- **The event consumer verifies the received bytes (axiam#882, D-5).** `verify_hmac` no longer
+  re-serializes (`json.dumps` escaped every non-ASCII character, so a genuine message containing one
+  failed). The HMAC is computed over the delivery body with its trailing `hmac_signature` member cut
+  out, and `consume(...)` hands the handler the object parsed from those same bytes. A duplicate or
+  case-variant key, trailing content or a signature that is not the last member is nacked without
+  requeue. New `axiam_sdk.amqp._hmac.verify_and_decode`.
+- **Discard event (axiam#883, PYT-R1-1).** Every discarded authorization response logs one warning
+  with `timestamp`, `exchange`, `routing_key` (the reply queue), `tenant_id` (the requester's own)
+  and `reason`; never a signature, nonce or body member.
+- **PYT-R1-2.** An unexpected exception while handling one reply delivery (a lone-surrogate `nonce`
+  used to raise `UnicodeEncodeError`) no longer ends the consumer loop and shuts the requester down
+  silently: it is logged by type, the delivery nacked, the requester keeps serving; the end of the
+  reply queue is logged once.
+- **GLUE-R1-5.** The binding cookie is cleared when the success hook, the state store or any
+  unexpected error fails: the callback answers a generic `500` instead of raising (PYT-R1-4: the
+  cookie clear wins over propagation to the application's exception handlers; see the README).
+- **`Location` encoding (TYP-R3-1, Decision 7).** Both glues write the percent-encoded form of the
+  redirect target themselves (`encode_redirect_location`): a stray `%` became `%25`, a lone
+  surrogate U+FFFD, instead of whatever the framework's redirect helper did.
+- **PYT-R1-5.** `OidcStateEntry.binding_digest` is excluded from `repr()`.
+- Tests: PYT-R1-3 (the "signature not trailing" case renamed, a real one added), PYT-R1-6 (request
+  type and both hooks in order), GLUE-R1-4 (state spent by a refusal; pinned, not a defect).
+
+- **Unknown-`kid` cooldown (review round 1).** The JWKS verifier no longer disables PyJWT's cache on
+  a forced re-fetch: the `kid` is looked up by hand, an unknown one costs at most one re-fetch per
+  60 s window (the cache is refilled, not dropped), on the access-, ID- and logout-token paths
+  (§12.4 rule 2, §12.7.3 rule 1). Logout reason codes are never `None`. The event consumer also
+  refuses a validly signed message that is not an `AuthzRequest` or `AuditEventMessage` layout.
+
+- **Typed consume (axiam#883, D-9, OI-33).** `consume(...)` takes the ONE signed type it consumes,
+  `message_type="authz_request"` or `"audit_event"`, and checks the canonical bytes against that
+  type's layout only: the other type's genuine, validly signed message is refused as `malformed`
+  before the HMAC and before anything is decoded (also with a signature digit changed), and never
+  reaches the handler. It no longer matches either layout. A verified body that does not decode
+  (a member of the wrong JSON type, an `issued_at` that is not RFC 3339, a `nonce` that is not a
+  UUID) is `malformed`; the nonce is recorded only after the decode and every gate pass.
+- **Event-consumer discard event (axiam#883, D-8, OI-33).** For every discard `consume(...)` logs
+  exactly one warning on its logger with `timestamp`, `exchange`, `routing_key`, `tenant_id` and
+  `reason` (`malformed`, `unsigned`, `signature`, `key_version`, `stale`, `replay`, first that
+  applies in CONTRACT §8 rule 4's order), as `extra` members and in the message; never a signature,
+  nonce, key or body member. **API change (within the unreleased changes): `consume(...)` gains the required
+  keyword-only `tenant_id`** (the tenant whose subkey the key is; what the event reports, never a
+  value read from a body) beside `message_type`. `exchange`/`routing_key` are the delivery's own
+  (the queue name when the transport reports none).
+- **Byte-order mark and no escape (D-10, OI-33).** The first byte of a body must be `{`: a UTF-8
+  byte-order mark (or whitespace, or any prefix) is `malformed`, never stripped, in the event
+  consumer and in `AuthzRequester` (which previously accepted a validly signed body with a leading
+  space and reported a prefixed unsigned one as `signature`). The consume callback catches anything
+  an unexpected body could raise (the exception's type is logged), so the delivery loop continues.
+- **JWKS stale-if-error, bounded (D-10, OI-33; CONTRACT §12.4 rule 2).** The `JwksVerifier` cache is
+  its own instead of PyJWT's: the age runs from the last successful fetch (a `200` with at least
+  one key, or a `304` to the conditional `If-None-Match` request); the TTL is `lifespan` or the
+  response's `Cache-Control: max-age`, 300 s by default and **at most 300 s** (`lifespan=` above
+  300 is clamped and emits one `config_clamped` event through the new `telemetry_hook=`; an
+  advertised `max-age` is clamped silently). A failed refresh (transport error, other status,
+  non-JWKS body, an empty key set) keeps the held keys and never moves the age; they verify until
+  exactly TTL + 300 s, then every token is refused until a fetch succeeds. An unknown-`kid` refresh
+  that fails refuses that token only; every failed attempt counts toward the 60 s window. Before, a
+  refresh failure past the TTL refused every token at once and an empty set was adopted. A `keys` array with no JWK object (`[{}]`, `[0]`), a non-`200` 2xx and a clock that moved backwards are handled as a failed refresh / refresh due; an `ETag` with control characters or over 256 bytes is never stored; a failed first fetch also opens the 60 s window. The discard event reports the broker's `exchange` and `routing_key` as given (`""` included); the queue name stands in only when the transport reports none. JWKS entries are parsed individually: a well-formed JWK this SDK cannot use counts and is skipped.
+
+- **JWKS fetch ignored `custom_ca` and the mTLS identity (#114).** `JwksVerifier` fetched the key
+  set over the system trust store only, so a private-CA deployment could log in and call the API
+  but every local token verification failed closed. `JwksVerifier` now takes `custom_ca=` (bundle
+  path, inline PEM or a strict context, as the REST client's `custom_ca`, CONTRACT.md §6; the only public TLS input);
+  the client's OIDC verifiers trust the session's `custom_ca` and, when it presents a §6.1 client
+  identity, send it only to a `jwks_uri` on the client's own origin; the Django middleware reads
+  `settings.AXIAM_CUSTOM_CA`. Server and hostname
+  verification stay on; a verifier given no CA still refuses a private-CA endpoint.
+- **`oidc_refresh` joined a refresh of a different token (#115).** The §12 `oidc_refresh`
+  single-flight (`AxiamClient` and `AsyncAxiamClient`) held one slot per client, so a call with
+  refresh token B made while token A was refreshing (or inside A's publish-before-vacate window)
+  joined A's burst and returned A's token set; B was never sent. The coalescers are now keyed by a
+  SHA-256 digest of the resolved tenant UUID in lower-case hyphenated form (the argument or the client's default, so an explicit
+  tenant equal to the default and an omitted one are one flight) plus the refresh token
+  (CONTRACT.md §9, §12.3 rule 4); `scope` is not part of the key: callers of the same token
+  still collapse into one wire call and keep rules 6a-6d per key, a different token gets its own
+  wire call and its own result, a key's slot is removed once vacated, and the raw token is never a
+  map key, logged or placed in an error. `refresh()` (the session's own token) is unchanged.
+  `RefreshGuard.run_exclusive_sync`/`run_exclusive_async` (unreleased, never public API, and the
+  async one parked an executor thread on an unbounded lock acquire) are removed.
+  `oidc_refresh` no longer runs under the cookie-session refresh guard: the per-token coalescer is
+  its own guard, so a different token never waits on another's flight (§9 rule 7) and no executor
+  thread is parked on a lock. The async client could deadlock once more distinct tokens were
+  refreshed at once than the default executor has threads; that is fixed. The tenant is resolved
+  and canonicalised once and used for both the key and the wire `tenant_id`; a `tenant_id` with a
+  trailing newline is now an `AuthError`.
 
 ### Migration notes
 
@@ -94,7 +244,16 @@ that changes behaviour in four places (C7, C6, N15, N14); read the migration not
   server older than 1.67 — is refused until its holder refreshes (at most one access-token lifetime,
   15 minutes by default). Test fixtures that mint access tokens should set `typ: at+jwt` (or no
   `typ`). A token carrying a `purpose` claim is never an access token.
-- **AMQP.** Nothing changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
+- **AMQP `consume(...)`.** It now dispatches only the `AuthzRequest` and `AuditEventMessage` v2
+  layouts (members in the CONTRACT §8 order); any other validly signed shape (a
+  `CacheInvalidationMessage`, an `AuthzResponse`) is nacked without requeue.
+- **AMQP `consume(...)` signature.** Pass `tenant_id=` and `message_type=` (`"authz_request"` or
+  `"audit_event"`); run two consumers to read both types. A body with the other type's layout, or
+  one that starts with anything but `{`, is nacked as `malformed` and logged (see Fixed).
+- **`JwksVerifier(lifespan=...)`.** The default is now "the response's `max-age`, else 300 s" and
+  the value is capped at 300 s (it was passed to PyJWT uncapped). The refreshed keys are no longer
+  kept in `verifier._client.jwk_set_cache` (private; the cache is `JwksVerifier`'s own).
+- **AMQP.** Nothing else changes for `consume(...)`. If you publish `AuthzRequest` yourself and read
   `axiam.authz.response`, move to `AuthzRequester`; the shared queue is where another tenant's
   answers, and any principal's forgeries, arrive.
 

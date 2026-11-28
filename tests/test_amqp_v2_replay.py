@@ -162,7 +162,15 @@ async def test_on_message_accepts_reference_vector_end_to_end() -> None:
         handler_events.append(event)
 
     await _on_message(
-        message, SUBKEY, handler, logger, nonce_store=store, skew_seconds=300, now=now
+        message,
+        SUBKEY,
+        handler,
+        logger,
+        nonce_store=store,
+        skew_seconds=300,
+        now=now,
+        tenant_id="t-1",
+        message_type="authz_request",
     )
 
     assert message.acked is True
@@ -213,6 +221,8 @@ async def test_on_message_rejects_key_version_1() -> None:
         nonce_store=NonceStore(ttl_seconds=600),
         skew_seconds=300,
         now=now,
+        tenant_id="t-1",
+        message_type="authz_request",
     )
 
     assert message.acked is False
@@ -245,6 +255,8 @@ async def test_on_message_rejects_stale_issued_at() -> None:
         nonce_store=NonceStore(ttl_seconds=600),
         skew_seconds=300,
         now=now,
+        tenant_id="t-1",
+        message_type="audit_event",
     )
 
     assert message.acked is False
@@ -272,12 +284,32 @@ async def test_on_message_rejects_replayed_nonce() -> None:
         handler_calls += 1
 
     first = RecordingMessage(body)
-    await _on_message(first, SUBKEY, handler, logger, nonce_store=store, skew_seconds=300, now=now)
+    await _on_message(
+        first,
+        SUBKEY,
+        handler,
+        logger,
+        nonce_store=store,
+        skew_seconds=300,
+        now=now,
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
     assert first.acked is True
     assert handler_calls == 1
 
     second = RecordingMessage(body)  # identical body -> identical nonce
-    await _on_message(second, SUBKEY, handler, logger, nonce_store=store, skew_seconds=300, now=now)
+    await _on_message(
+        second,
+        SUBKEY,
+        handler,
+        logger,
+        nonce_store=store,
+        skew_seconds=300,
+        now=now,
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
     assert second.acked is False
     assert second.nacked is False  # requeue=False
     assert handler_calls == 1  # handler NOT invoked a second time

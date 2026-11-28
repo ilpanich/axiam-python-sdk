@@ -146,9 +146,11 @@ class ListLogger(logging.Handler):
     def __init__(self) -> None:
         super().__init__(logging.DEBUG)
         self.records: list[str] = []
+        self.raw: list[logging.LogRecord] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record.getMessage())
+        self.raw.append(record)
 
 
 def make_logger() -> tuple[logging.Logger, ListLogger]:
@@ -158,6 +160,20 @@ def make_logger() -> tuple[logging.Logger, ListLogger]:
     handler = ListLogger()
     logger.addHandler(handler)
     return logger, handler
+
+
+_RESERVED = set(logging.LogRecord("n", 0, "p", 0, "m", (), None).__dict__) | {"message", "asctime"}
+
+
+def serialized(record: logging.LogRecord) -> str:
+    """Everything a log pipeline could emit for ``record``: the formatted message, the structured
+    members added with ``extra=``, and any exception text."""
+    members = {k: v for k, v in record.__dict__.items() if k not in _RESERVED}
+    return record.getMessage() + " " + json.dumps(members, default=str, sort_keys=True)
+
+
+def discard_events(log: ListLogger) -> list[logging.LogRecord]:
+    return [r for r in log.raw if "discarded" in r.getMessage()]
 
 
 async def vector_requester(**kwargs: Any) -> tuple[AuthzRequester, asyncio.Future[Any]]:
@@ -198,7 +214,6 @@ async def test_contract_vectors_verify(index: int) -> None:
         decision, delivery = await offer(requester, future, vector_wire(index))
         assert decision is not None, "the contract vector must verify and complete the request"
         assert (decision.allowed, decision.reason, decision.reason_code) == (allowed, reason, code)
-        assert decision.unsigned is False
         assert delivery.acked == 1
 
         # Retired on acceptance: the same response again is dropped.
@@ -236,32 +251,46 @@ def _replace(body: bytes, old: str, new: str) -> bytes:
     return text.replace(old, new, 1).encode("utf-8")
 
 
-def _discard_cases() -> list[tuple[str, bytes]]:
+def _discard_cases() -> list[tuple[str, bytes, str]]:
+    """(name, body, the A.2 ``reason`` the discard event must carry)."""
     v1, v2 = VECTORS[0][1], VECTORS[1][1]
     good = VEC_SUBKEY
     return [
-        ("vector 1 under another tenant's subkey", sign_with(subkey_for(VEC_OTHER_TENANT, 2), v1)),
-        ("vector 1 under key_version 3", sign_with(subkey_for(VEC_TENANT, 3), v1)),
+        (
+            "vector 1 under another tenant's subkey",
+            sign_with(subkey_for(VEC_OTHER_TENANT, 2), v1),
+            "signature",
+        ),
+        ("vector 1 under key_version 3", sign_with(subkey_for(VEC_TENANT, 3), v1), "signature"),
         (
             "tampered: allowed flipped to false, signature kept",
             _replace(vector_wire(0), '"allowed":true', '"allowed":false'),
+            "signature",
         ),
         (
             "tampered: vector 2 flipped to true, signature kept",
             _replace(vector_wire(1), '"allowed":false', '"allowed":true'),
+            "signature",
         ),
-        ("tampered reason_code", _replace(vector_wire(1), "no_grant", "allowed")),
+        (
+            "tampered reason_code",
+            _replace(vector_wire(1), "no_grant", "allowed"),
+            "signature",
+        ),
         (
             "response for another nonce",
             sign_with(good, v1.replace(VEC_NONCE, "66666666-6666-6666-6666-666666666666")),
+            "unknown_request",
         ),
         (
             "response for another correlation_id",
             sign_with(good, v1.replace(VEC_CORRELATION, "77777777-7777-7777-7777-777777777777")),
+            "unknown_request",
         ),
         (
             "response for another tenant (validly signed with our key)",
             sign_with(good, v1.replace(VEC_TENANT, VEC_OTHER_TENANT)),
+            "tenant",
         ),
         (
             "no allowed: a signed AuthzRequest on the response queue",
@@ -271,37 +300,58 @@ def _discard_cases() -> list[tuple[str, bytes]]:
                 f'"subject_id":"{SUBJECT}","action":"documents:read","resource_id":"{RESOURCE}",'
                 f'"key_version":2,"nonce":"{VEC_NONCE}","issued_at":"2026-07-10T12:00:00Z"}}',
             ),
+            "malformed",
         ),
         (
             "allowed not a boolean",
             sign_with(good, v1.replace('"allowed":true', '"allowed":"true"')),
+            "malformed",
         ),
         (
             "no tenant_id",
             sign_with(good, v1.replace(f'"tenant_id":"{VEC_TENANT}",', "")),
+            "malformed",
         ),
-        ("no nonce", sign_with(good, v1.replace(f',"nonce":"{VEC_NONCE}"', ""))),
+        ("no nonce", sign_with(good, v1.replace(f',"nonce":"{VEC_NONCE}"', "")), "malformed"),
         (
-            "signature not the trailing member",
+            # The signature member is still last, so this fails only because the signature no
+            # longer verifies over the changed bytes.
+            "unsigned member added, signature kept",
             _replace(vector_wire(0), '"allowed":true', '"allowed":true,"x":1'),
+            "signature",
+        ),
+        (
+            # A real "signature is not the trailing member" body: vector 1 with the member moved
+            # before ``nonce``. A refactor of _cut_trailing_signature that accepted a mid-body
+            # signature would verify this and fail the test.
+            "hmac_signature moved before nonce",
+            (
+                f'{{"correlation_id":"{VEC_CORRELATION}","allowed":true,"reason_code":"allowed",'
+                f'"tenant_id":"{VEC_TENANT}","hmac_signature":"{VECTORS[0][2]}",'
+                f'"nonce":"{VEC_NONCE}"}}'
+            ).encode(),
+            "malformed",
         ),
         (
             "duplicate allowed keys, validly signed",
             sign_with(good, v1.replace('"allowed":true', '"allowed":false,"allowed":true')),
+            "malformed",
         ),
         (
             "case-variant allowed key, validly signed",
             sign_with(good, v1.replace('"reason_code"', '"ALLOWED":false,"reason_code"')),
+            "malformed",
         ),
-        ("trailing whitespace after the closing brace", vector_wire(0) + b"\n"),
+        ("trailing whitespace after the closing brace", vector_wire(0) + b"\n", "malformed"),
+        ("non-hex signature", _replace(vector_wire(0), VECTORS[0][2], "z" * 64), "malformed"),
         (
-            "non-hex signature",
-            _replace(vector_wire(0), VECTORS[0][2], "z" * 64),
+            "short signature",
+            _replace(vector_wire(0), VECTORS[0][2], VECTORS[0][2][:62]),
+            "malformed",
         ),
-        ("short signature", _replace(vector_wire(0), VECTORS[0][2], VECTORS[0][2][:62])),
-        ("not JSON", b"not json"),
-        ("not an object", b"[1,2]"),
-        ("invalid UTF-8", b"\xff\xfe"),
+        ("not JSON", b"not json", "malformed"),
+        ("not an object", b"[1,2]", "malformed"),
+        ("invalid UTF-8", b"\xff\xfe", "malformed"),
         (
             "reason is not a string, validly signed",
             sign_with(
@@ -310,14 +360,23 @@ def _discard_cases() -> list[tuple[str, bytes]]:
                     '"reason":"no permission grants action \'documents:read\'"', '"reason":7'
                 ),
             ),
+            "malformed",
+        ),
+        (
+            # PYT-R1-2: a lone surrogate JSON can carry; str(nonce).encode() used to raise.
+            "validly signed nonce that is a lone surrogate",
+            sign_with(good, v1.replace(f'"nonce":"{VEC_NONCE}"', '"nonce":"\\ud800"')),
+            "unknown_request",
         ),
     ]
 
 
-@pytest.mark.parametrize(("name", "body"), _discard_cases(), ids=[c[0] for c in _discard_cases()])
+@pytest.mark.parametrize(
+    ("name", "body", "reason"), _discard_cases(), ids=[c[0] for c in _discard_cases()]
+)
 @pytest.mark.asyncio
 async def test_a_response_that_fails_verification_is_discarded_and_never_allows(
-    name: str, body: bytes
+    name: str, body: bytes, reason: str
 ) -> None:
     logger, log = make_logger()
     requester, future = await vector_requester(logger=logger)
@@ -325,10 +384,12 @@ async def test_a_response_that_fails_verification_is_discarded_and_never_allows(
         decision, delivery = await offer(requester, future, body)
         assert decision is None and not future.done(), "never completes the request, never an allow"
         assert delivery.nacked == 1 and delivery.acked == 0, "nacked without requeue"
-        assert any("discarded" in line for line in log.records), "logged as a security event"
-        assert all("hmac" not in line.lower() or "hmac_signature" in line for line in log.records)
+        events = discard_events(log)
+        assert len(events) == 1, "one security event per discard"
+        assert events[0].levelno == logging.WARNING
+        assert events[0].reason == reason  # type: ignore[attr-defined]
         for _n, _c, signature, *_r in VECTORS:
-            assert all(signature not in line for line in log.records)
+            assert all(signature not in serialized(r) for r in log.raw)
 
         # The request is still outstanding: the genuine answer completes it.
         decision, _ = await offer(requester, future, vector_wire(0))
@@ -345,28 +406,21 @@ UNSIGNED = (
 
 
 @pytest.mark.asyncio
-async def test_unsigned_is_refused_by_default() -> None:
-    requester, future = await vector_requester()
+async def test_unsigned_is_discarded_with_reason_unsigned_and_the_check_keeps_waiting() -> None:
+    """Appendix A.1: there is no opt-out. A well-formed unsigned response for an outstanding
+    ``correlation_id`` is discarded, never accepted, and the genuine answer still completes."""
+    logger, log = make_logger()
+    requester, future = await vector_requester(logger=logger)
     try:
         decision, delivery = await offer(requester, future, UNSIGNED)
-        assert decision is None and delivery.nacked == 1
-    finally:
-        await requester.close()
+        assert decision is None and not future.done()
+        assert delivery.nacked == 1 and delivery.acked == 0
+        (event,) = discard_events(log)
+        assert event.reason == "unsigned"  # type: ignore[attr-defined]
+        assert not any("UNSIGNED" in line for line in log.records)
 
-
-@pytest.mark.asyncio
-async def test_unsigned_is_accepted_with_the_opt_out_flagged_and_logged() -> None:
-    logger, log = make_logger()
-    requester, future = await vector_requester(allow_unsigned_responses=True, logger=logger)
-    try:
-        decision, _d = await offer(requester, future, UNSIGNED)
-        assert decision is not None
-        assert (decision.allowed, decision.unsigned, decision.reason_code) == (
-            True,
-            True,
-            "allowed",
-        )
-        assert any("UNSIGNED" in line for line in log.records)
+        decision, _d = await offer(requester, future, vector_wire(0))
+        assert decision is not None and decision.allowed is True
     finally:
         await requester.close()
 
@@ -375,34 +429,274 @@ async def test_unsigned_is_accepted_with_the_opt_out_flagged_and_logged() -> Non
     "body",
     [
         '{"correlation_id":"77777777-7777-7777-7777-777777777777","allowed":true}',
-        f'{{"correlation_id":"{VEC_CORRELATION}"}}',
-        f'{{"correlation_id":"{VEC_CORRELATION}","allowed":"yes"}}',
+        f'{{"correlation_id":"{VEC_CORRELATION}","allowed":true,"hmac_signature":null}}',
     ],
+    ids=["unknown correlation_id", "null signature member"],
 )
 @pytest.mark.asyncio
-async def test_opt_out_needs_an_outstanding_correlation_id_and_a_boolean_allowed(body: str) -> None:
-    requester, future = await vector_requester(allow_unsigned_responses=True)
+async def test_other_unsigned_shapes_are_discarded_too(body: str) -> None:
+    requester, future = await vector_requester()
     try:
-        decision, _d = await offer(requester, future, body.encode())
-        assert decision is None
+        decision, delivery = await offer(requester, future, body.encode())
+        assert decision is None and delivery.nacked == 1
+    finally:
+        await requester.close()
+
+
+def test_the_requester_has_no_unsigned_response_option() -> None:
+    import inspect
+
+    from axiam_sdk.amqp import AuthzDecision
+
+    assert "allow_unsigned_responses" not in inspect.signature(AuthzRequester.open).parameters
+    assert "allow_unsigned_responses" not in inspect.signature(AuthzRequester.__init__).parameters
+    assert "unsigned" not in {f.name for f in __import__("dataclasses").fields(AuthzDecision)}
+
+
+# --- A.2: the discard event carries the routing key and the tenant ----------------------------
+
+ROUTING_KEY = "amq.gen-Xk3p"
+
+
+def _event_cases() -> list[tuple[str, bytes, str]]:
+    v1 = VECTORS[0][1]
+    return [
+        ("signature", sign_with(subkey_for(VEC_OTHER_TENANT, 2), v1), "signature"),
+        (
+            "tenant",
+            sign_with(VEC_SUBKEY, v1.replace(VEC_TENANT, VEC_OTHER_TENANT)),
+            "tenant",
+        ),
+        ("unsigned", UNSIGNED, "unsigned"),
+        ("malformed", b"not json", "malformed"),
+        (
+            "unknown_request",
+            sign_with(VEC_SUBKEY, v1.replace(VEC_NONCE, "66666666-6666-6666-6666-666666666666")),
+            "unknown_request",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "reason"), _event_cases(), ids=[c[0] for c in _event_cases()]
+)
+@pytest.mark.asyncio
+async def test_the_discard_event_carries_exactly_the_a2_members_and_no_secret(
+    name: str, body: bytes, reason: str
+) -> None:
+    logger, log = make_logger()
+    requester, future = await vector_requester(logger=logger)
+    try:
+        await offer(requester, future, body)
+        (event,) = discard_events(log)
+        members = {k: v for k, v in event.__dict__.items() if k not in _RESERVED}
+        assert set(members) == {"timestamp", "exchange", "routing_key", "tenant_id", "reason"}
+        assert members["routing_key"] == ROUTING_KEY, "the requester's own reply queue"
+        assert members["tenant_id"] == VEC_TENANT, "the requester's own tenant"
+        assert members["exchange"] == ""
+        assert members["reason"] == reason
+        stamp = datetime.fromisoformat(members["timestamp"])
+        assert stamp.utcoffset() is not None and stamp.utcoffset().total_seconds() == 0
+        assert members["timestamp"].endswith("Z") or members["timestamp"].endswith("+00:00")
+
+        # The routing key and tenant are also in the message text, so a plain-text log carries them.
+        assert ROUTING_KEY in event.getMessage() and VEC_TENANT in event.getMessage()
+
+        text = " ".join(serialized(r) for r in log.raw)
+        sent_signature = body.decode("latin-1").rpartition('"hmac_signature":"')[2][:64]
+        for secret in (
+            sent_signature if len(sent_signature) == 64 else VECTORS[0][2],
+            VECTORS[0][2],
+            VEC_NONCE,
+            "66666666-6666-6666-6666-666666666666",
+            VEC_CORRELATION,
+        ):
+            assert secret not in text, f"{secret!r} must never reach the event"
+        if name == "tenant":
+            assert VEC_OTHER_TENANT not in text, "never the tenant the response claims"
+        computed = hmac_mod.new(VEC_SUBKEY, VECTORS[0][1].encode(), hashlib.sha256).hexdigest()
+        assert computed not in text
+    finally:
+        await requester.close()
+
+
+# --- PYT-R1-2: an unexpected exception never ends the requester silently -----------------------
+
+
+def _signed_response(correlation_id: str, nonce: str, allowed: bool = True) -> bytes:
+    canonical = (
+        f'{{"correlation_id":"{correlation_id}","allowed":{str(allowed).lower()},'
+        f'"reason_code":"allowed","tenant_id":"{VEC_TENANT}","nonce":"{nonce}"}}'
+    )
+    return sign_with(VEC_SUBKEY, canonical)
+
+
+@pytest.mark.asyncio
+async def test_a_surrogate_nonce_does_not_end_the_requester() -> None:
+    """A validly signed response whose nonce is a lone surrogate used to raise
+    ``UnicodeEncodeError`` out of ``_handle``, which ended the consumer loop and shut the
+    requester down for good, with no log line."""
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
+    try:
+        task = asyncio.create_task(requester.check(SUBJECT, "a", RESOURCE))
+        published = await _next_published(transport, 1)
+        request = json.loads(published["body"])
+
+        hostile = RecordingDelivery(
+            sign_with(
+                VEC_SUBKEY,
+                f'{{"correlation_id":"{published["correlation_id"]}","allowed":true,'
+                f'"tenant_id":"{VEC_TENANT}","nonce":"\\ud800"}}',
+            )
+        )
+        await transport.deliveries.put(hostile)
+        await asyncio.sleep(0.05)
+        assert hostile.nacked == 1 and not task.done()
+
+        genuine = RecordingDelivery(_signed_response(published["correlation_id"], request["nonce"]))
+        await transport.deliveries.put(genuine)
+        assert (await asyncio.wait_for(task, 2)).allowed is True
+        assert genuine.acked == 1
     finally:
         await requester.close()
 
 
 @pytest.mark.asyncio
-async def test_opt_out_never_admits_a_signed_response_that_fails() -> None:
-    requester, future = await vector_requester(allow_unsigned_responses=True)
+async def test_an_unexpected_exception_while_handling_a_delivery_is_loud_and_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fault inside the handler of one delivery (here a bug in verification, with a message
+    that must not be logged) discards that delivery, is logged, and leaves the requester
+    serving: the next genuine answer completes the request."""
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
     try:
-        tampered = _replace(vector_wire(1), '"allowed":false', '"allowed":true')
-        decision, _d = await offer(requester, future, tampered)
-        assert decision is None
-        null_sig = (
-            f'{{"correlation_id":"{VEC_CORRELATION}","allowed":true,"hmac_signature":null}}'
-        ).encode()
-        decision, _d = await offer(requester, future, null_sig)
-        assert decision is None, "a null hmac_signature is a signature member, not an absent one"
+        real = requester._verify_response
+        calls = 0
+
+        def flaky(body: bytes) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("SECRET-INTERNAL-DETAIL")
+            return real(body)
+
+        monkeypatch.setattr(requester, "_verify_response", flaky)
+
+        task = asyncio.create_task(requester.check(SUBJECT, "a", RESOURCE))
+        published = await _next_published(transport, 1)
+        request = json.loads(published["body"])
+        answer = _signed_response(published["correlation_id"], request["nonce"])
+
+        broken = RecordingDelivery(answer)
+        await transport.deliveries.put(broken)
+        await asyncio.sleep(0.05)
+        assert broken.nacked == 1 and broken.acked == 0
+        assert not task.done(), "never an allow from a delivery that failed"
+        failures = [r for r in log.raw if "unexpected" in r.getMessage()]
+        assert len(failures) == 1 and failures[0].levelno >= logging.WARNING
+        assert "RuntimeError" in failures[0].getMessage()
+        assert all("SECRET-INTERNAL-DETAIL" not in serialized(r) for r in log.raw)
+
+        again = RecordingDelivery(answer)
+        await transport.deliveries.put(again)
+        assert (await asyncio.wait_for(task, 2)).allowed is True
+
+        # And the requester still takes new checks.
+        task2 = asyncio.create_task(requester.check(SUBJECT, "b", RESOURCE))
+        published2 = await _next_published(transport, 2)
+        await transport.deliveries.put(
+            RecordingDelivery(
+                _signed_response(
+                    published2["correlation_id"], json.loads(published2["body"])["nonce"], False
+                )
+            )
+        )
+        assert (await asyncio.wait_for(task2, 2)).allowed is False
     finally:
         await requester.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_ack_after_acceptance_leaves_the_decision_and_the_requester_intact() -> (
+    None
+):
+    class AckFails(RecordingDelivery):
+        async def ack(self) -> None:
+            raise ConnectionError("channel closed")
+
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
+    try:
+        task = asyncio.create_task(requester.check(SUBJECT, "a", RESOURCE))
+        published = await _next_published(transport, 1)
+        nonce = json.loads(published["body"])["nonce"]
+        await transport.deliveries.put(
+            AckFails(_signed_response(published["correlation_id"], nonce))
+        )
+        assert (await asyncio.wait_for(task, 2)).allowed is True
+        assert discard_events(log) == [], "an accepted answer is not a discard"
+
+        task2 = asyncio.create_task(requester.check(SUBJECT, "b", RESOURCE))
+        published2 = await _next_published(transport, 2)
+        nonce2 = json.loads(published2["body"])["nonce"]
+        await transport.deliveries.put(
+            RecordingDelivery(_signed_response(published2["correlation_id"], nonce2))
+        )
+        assert (await asyncio.wait_for(task2, 2)).allowed is True
+    finally:
+        await requester.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_nack_after_a_discard_emits_no_second_event() -> None:
+    class NackFails(RecordingDelivery):
+        async def nack(self) -> None:
+            raise ConnectionError("channel closed")
+
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
+    try:
+        await transport.deliveries.put(NackFails(b"not json"))
+        await asyncio.sleep(0.05)
+        events = discard_events(log)
+        assert len(events) == 1 and events[0].reason == "malformed"  # type: ignore[attr-defined]
+        assert not requester._closed
+    finally:
+        await requester.close()
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_the_reply_queue_is_logged_once_and_fails_later_checks() -> None:
+    transport = FakeTransport()
+    logger, log = make_logger()
+    requester = await AuthzRequester.open(
+        transport, tenant_id=VEC_TENANT, signing_key=VEC_SUBKEY, timeout=3, logger=logger
+    )
+    await transport.deliveries.put(None)
+    for _ in range(100):
+        if requester._closed:
+            break
+        await asyncio.sleep(0.01)
+    with pytest.raises(AuthzRequesterClosedError):
+        await requester.check(SUBJECT, "a", RESOURCE)
+    ended = [r for r in log.raw if "consumer ended" in r.getMessage()]
+    assert len(ended) == 1 and ended[0].levelno >= logging.WARNING
+    await requester.close()
+    assert len([r for r in log.raw if "consumer ended" in r.getMessage()]) == 1
 
 
 # --- the request ----------------------------------------------------------------------------

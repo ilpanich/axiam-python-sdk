@@ -68,7 +68,15 @@ async def main() -> None:
 
         # The SDK owns the full ack/nack loop; handler is invoked only after
         # a delivery's HMAC signature has been verified.
-        await consume(channel, queue_name, signing_key, handler, prefetch=10)
+        await consume(
+            channel,
+            queue_name,
+            signing_key,
+            handler,
+            tenant_id=getenv("AXIAM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+            message_type="authz_request",  # the ONE signed type this consumer accepts
+            prefetch=10,
+        )
 
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()

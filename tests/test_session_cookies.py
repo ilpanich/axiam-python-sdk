@@ -79,11 +79,17 @@ def test_verify_defaults_to_true_never_false() -> None:
     assert session._verify is True
 
 
-def test_custom_ca_is_the_only_verify_override() -> None:
+def test_custom_ca_is_the_only_verify_override(tmp_path: Path) -> None:
+    """A CA path yields a strict context (never a boolean bypass) that trusts that CA."""
+    from tests.test_mtls_client_cert import _MtlsPki
+
+    pki = _MtlsPki(tmp_path)
     session = _Session(
-        base_url="https://example.test", tenant_slug="acme", custom_ca="/path/to/ca.pem"
+        base_url="https://example.test", tenant_slug="acme", custom_ca=str(pki.ca_path)
     )
-    assert session._verify == "/path/to/ca.pem"
+    assert isinstance(session._verify, ssl.SSLContext)
+    assert session._verify.verify_mode == ssl.CERT_REQUIRED
+    assert session._verify.check_hostname is True
 
 
 def test_prepare_request_sets_x_tenant_id_header() -> None:

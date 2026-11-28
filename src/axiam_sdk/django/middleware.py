@@ -55,7 +55,7 @@ import hmac
 from dataclasses import dataclass, field
 from typing import Any
 
-from asgiref.sync import iscoroutinefunction, markcoroutinefunction
+from asgiref.sync import iscoroutinefunction, markcoroutinefunction, sync_to_async
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
@@ -259,6 +259,9 @@ class AxiamAuthMiddleware:
         RECOMMENDED :data:`~axiam_sdk._jwks.DEFAULT_CLOCK_SKEW_SECONDS`
         (60 s) and bounded by
         :data:`~axiam_sdk._jwks.MAX_CLOCK_SKEW_SECONDS` (§10.1 rule 7).
+      - ``AXIAM_CUSTOM_CA`` — *optional*, unset by default. A private CA (bundle
+        path, CA directory, inline PEM or a strict ``ssl.SSLContext``) trusted for the JWKS
+        fetch, as the REST client's ``custom_ca`` (CONTRACT.md §6); server verification stays on.
       - ``AXIAM_RESOURCE_METADATA_URL`` — *optional*, unset by default
         (CONTRACT.md §28.5). Setting it is what turns §28 on: every 401 this
         middleware emits then carries a ``WWW-Authenticate`` challenge, and
@@ -324,6 +327,8 @@ class AxiamAuthMiddleware:
             # resource_metadata_url with no expected_audience), and
             # precomputed once below rather than per request.
             resource_metadata_url=getattr(settings, "AXIAM_RESOURCE_METADATA_URL", None),
+            # CONTRACT.md §6: a private CA for the JWKS fetch, as the REST client's custom_ca.
+            custom_ca=getattr(settings, "AXIAM_CUSTOM_CA", None),
         )
         self._mcp_challenges = self._verifier.mcp_challenges("AxiamAuthMiddleware")
 
@@ -345,7 +350,8 @@ class AxiamAuthMiddleware:
 
     async def __acall__(self, request: HttpRequest) -> HttpResponse:
         """Async twin of :meth:`_sync_call`, awaiting ``get_response``."""
-        error = self._authenticate(request)
+        # ``_authenticate`` may wait on a JWKS fetch: a worker thread keeps the event loop free.
+        error = await sync_to_async(self._authenticate, thread_sensitive=False)(request)
         if error is not None:
             return error
         return await self.get_response(request)

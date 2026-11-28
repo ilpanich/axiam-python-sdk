@@ -17,9 +17,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
-
-import axiam_sdk.amqp._consumer as consumer_module
 from axiam_sdk.amqp._consumer import CONSUMER_TAG, DEFAULT_PREFETCH, _on_message, consume
 
 VALID_SIGNING_KEY = b"axiam-sdk-test-signing-key"
@@ -30,6 +27,18 @@ def _v2_fields() -> dict[str, Any]:
         "key_version": 2,
         "nonce": str(uuid.uuid4()),
         "issued_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _authz(action: str, resource_id: str) -> dict[str, Any]:
+    """A genuine ``AuthzRequest`` layout (CONTRACT §8 v2): the consumer refuses other shapes."""
+    return {
+        "correlation_id": "11111111-1111-1111-1111-111111111111",
+        "tenant_id": "22222222-2222-2222-2222-222222222222",
+        "subject_id": "33333333-3333-3333-3333-333333333333",
+        "action": action,
+        "resource_id": resource_id,
+        **_v2_fields(),
     }
 
 
@@ -98,7 +107,14 @@ async def test_consume_sets_qos_declares_passive_and_registers_callback() -> Non
     async def handler(event: dict[str, Any]) -> None:
         handled.append(event)
 
-    await consume(channel, "tenant-queue", VALID_SIGNING_KEY, handler)
+    await consume(
+        channel,
+        "tenant-queue",
+        VALID_SIGNING_KEY,
+        handler,
+        tenant_id="t-1",
+        message_type="authz_request",
+    )
 
     assert channel.qos == {"prefetch_count": DEFAULT_PREFETCH}
     assert channel.declare_args == {"name": "tenant-queue", "durable": True, "passive": True}
@@ -113,10 +129,18 @@ async def test_consume_callback_dispatches_to_on_message() -> None:
     async def handler(event: dict[str, Any]) -> None:
         handled.append(event)
 
-    await consume(channel, "q", VALID_SIGNING_KEY, handler, prefetch=3)
+    await consume(
+        channel,
+        "q",
+        VALID_SIGNING_KEY,
+        handler,
+        tenant_id="t-1",
+        message_type="authz_request",
+        prefetch=3,
+    )
     assert channel.qos == {"prefetch_count": 3}
 
-    body = _sign(VALID_SIGNING_KEY, {"action": "read", "resource_id": "r", **_v2_fields()})
+    body = _sign(VALID_SIGNING_KEY, _authz("read", "44444444-4444-4444-4444-444444444444"))
     message = RecordingMessage(body)
 
     # Invoke the registered per-delivery callback -> _on_message -> handler.
@@ -133,30 +157,20 @@ async def test_consume_uses_default_logger_when_none() -> None:
         return None
 
     # logger omitted -> the module NullHandler logger is used; must not raise.
-    await consume(channel, "q", VALID_SIGNING_KEY, handler)
+    await consume(
+        channel, "q", VALID_SIGNING_KEY, handler, tenant_id="t-1", message_type="authz_request"
+    )
     assert channel.queue.callback is not None
 
 
-async def test_on_message_non_object_body_nacks_without_requeue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A body that verifies via HMAC but re-parses to a non-dict (e.g. a
-    JSON array) hits the ``raise TypeError`` guard, which is caught and
-    nacked without requeue exactly like a parse failure."""
-    body = _sign(VALID_SIGNING_KEY, {"action": "read", "resource_id": "r", **_v2_fields()})
-    message = RecordingMessage(body)
-
-    real_loads = json.loads
-    calls = 0
-
-    def _loads(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return real_loads(*args, **kwargs)  # inside verify_hmac
-        return [1, 2, 3]  # post-verify parse yields a non-object
-
-    monkeypatch.setattr(consumer_module.json, "loads", _loads)
+async def test_on_message_validly_signed_non_object_body_nacks_without_requeue() -> None:
+    """A body whose signature verifies over the received bytes but which is not one JSON object
+    (here: valid HMAC over ``{not json}``) is nacked without requeue and never dispatched. The
+    SDK parses the verified bytes exactly once (server #882), so there is no separate
+    "re-parse" step left to fail: the refusal is part of verification."""
+    canonical = '{"action":"read","resource_id":["r",}'
+    mac = hmac.new(VALID_SIGNING_KEY, canonical.encode(), hashlib.sha256).hexdigest()
+    message = RecordingMessage((canonical[:-1] + ',"hmac_signature":"' + mac + '"}').encode())
 
     handler_calls = 0
 
@@ -165,7 +179,9 @@ async def test_on_message_non_object_body_nacks_without_requeue(
         handler_calls += 1
 
     logger = logging.getLogger("test.axiam_sdk.amqp.consume")
-    await _on_message(message, VALID_SIGNING_KEY, handler, logger)
+    await _on_message(
+        message, VALID_SIGNING_KEY, handler, logger, tenant_id="t-1", message_type="authz_request"
+    )
 
     assert message.acked is False
     assert message.nacked is False

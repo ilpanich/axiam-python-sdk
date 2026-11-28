@@ -22,12 +22,19 @@ What a delivery must satisfy to complete a request (rules 1-4 of §8):
    ``key_version`` it sent, constant-time;
 3. *binding* -- ``tenant_id`` is the requester's, and ``correlation_id`` **and** ``nonce`` match
    one request still outstanding, which is then retired;
-4. anything else is nacked without requeue, logged as a security event (never a signature
-   value), never an allow, and the caller keeps waiting for the genuine answer.
+4. anything else is nacked without requeue, logged as a security event (routing key and the
+   requester's own tenant, never a signature value, nonce or any member of the body; contract
+   1.69, ``_discard_event``), never an allow, and the caller keeps waiting for the genuine
+   answer.
 
-A response with no ``hmac_signature`` member at all (a server older than 1.68) is refused unless
-the integrator passes ``allow_unsigned_responses=True``; that opt-out never admits a response
-that *carries* a signature and fails it.
+**Server requirement.** The requester needs an AXIAM server of 1.68 or later (contract 1.68).
+Such a server signs every authorization response with the tenant's AMQP subkey and answers on
+the requester's private ``reply_to`` queue. A server older than 1.68 ignores ``reply_to`` and
+answers, unsigned, only on the shared ``axiam.authz.response`` queue, which this requester never
+reads: against it every check times out. There is no option to accept unsigned responses
+(CONTRACT 1.69 §8): no AXIAM server sends one to a reply queue, so an unsigned response can only
+have been published by someone else, and it is discarded and logged. During a rolling upgrade
+from a pre-1.68 server, use REST or gRPC authorization until every replica runs 1.68 or later.
 """
 
 from __future__ import annotations
@@ -38,12 +45,13 @@ import hashlib
 import hmac
 import json
 import logging
-import re
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
+
+from axiam_sdk.amqp._hmac import cut_trailing_signature, strict_json_object
 
 __all__ = [
     "AUTHZ_KEY_VERSION",
@@ -73,9 +81,11 @@ DEFAULT_AUTHZ_TIMEOUT_SECONDS = 10.0
 _SERVER_QUEUE_PREFIX = "axiam."
 
 _SIG_MEMBER = b',"hmac_signature":"'
-_SIG_HEX_LENGTH = 64
 _SIG_TAIL = b'"}'
-_HEX64 = re.compile(rb"[0-9a-fA-F]{64}")
+
+#: The ``exchange`` of every delivery on the reply queue: the server answers through the default
+#: exchange (§8 consumer obligation 5).
+_DEFAULT_EXCHANGE = ""
 
 _LOGGER = logging.getLogger("axiam_sdk.amqp")
 
@@ -89,8 +99,7 @@ class AuthzRequesterClosedError(Exception):
 class AuthzDecision:
     """A verified answer to one ``AuthzRequest``."""
 
-    #: The decision. ``True`` only for a response that verified under the tenant subkey (or, with
-    #: ``allow_unsigned_responses``, one that carried no signature at all -- see ``unsigned``).
+    #: The decision. ``True`` only for a response that verified under the tenant subkey.
     allowed: bool
     #: The server's human-readable reason; ``""`` when absent.
     reason: str = ""
@@ -98,9 +107,6 @@ class AuthzDecision:
     #: ``tenant_suspended``, ...); ``""`` when absent. A code this SDK does not know is surfaced
     #: verbatim (§11.2 rule 9).
     reason_code: str = ""
-    #: ``True`` when the response carried no ``hmac_signature`` and was accepted only because
-    #: ``allow_unsigned_responses`` is set.
-    unsigned: bool = False
 
 
 class AuthzDelivery(Protocol):
@@ -208,54 +214,24 @@ def build_authz_request(
 
 
 class _Discard(Exception):  # noqa: N818 -- a control-flow signal, not an error type
-    """A delivery that fails §8 rule 1, 2 or 3. ``str(exc)`` names the fact, never a value."""
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """``object_pairs_hook`` that refuses an object with a repeated key."""
-    seen: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise _Discard("a duplicate key")
-        seen[key] = value
-    return seen
+    """A delivery that fails §8 rule 1, 2 or 3. ``str(exc)`` is the A.2 ``reason`` code (one of
+    ``malformed``, ``unsigned``, ``signature``, ``tenant``, ``unknown_request``) and nothing
+    else: the body is unauthenticated input, so no value read from it is ever carried."""
 
 
 def _strict_object(raw: bytes) -> dict[str, Any]:
-    """Parse ``raw`` as one JSON object with unambiguous keys: no duplicate key at any depth and
-    no two top-level keys equal under case folding (a decoder that matches keys case-insensitively
-    would otherwise read a different decision from the same bytes)."""
+    """:func:`~axiam_sdk.amqp._hmac.strict_json_object`, with any refusal a ``malformed``
+    discard."""
     try:
-        parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-    except _Discard:
-        raise
-    except (ValueError, RecursionError) as exc:
-        raise _Discard("the body is not a JSON object") from exc
-    if not isinstance(parsed, dict):
-        raise _Discard("the body is not a JSON object")
-    folded = {key.casefold() for key in parsed}
-    if len(folded) != len(parsed):
-        raise _Discard("keys that differ only by case")
-    return parsed
+        return strict_json_object(raw)
+    except ValueError:
+        raise _Discard("malformed") from None
 
 
 def _cut_trailing_signature(body: bytes) -> tuple[bytes, bytes] | None:
-    """Remove the final ``,"hmac_signature":"<64 hex>"`` member from ``body``.
-
-    Returns ``(canonical, signature_hex)`` -- ``canonical`` being the rest closed with ``}`` --
-    or ``None`` when ``body`` does not end in exactly that member. Never repaired by
-    re-serializing.
-    """
-    suffix_length = len(_SIG_MEMBER) + _SIG_HEX_LENGTH + len(_SIG_TAIL)
-    if len(body) <= suffix_length or not body.endswith(_SIG_TAIL):
-        return None
-    start = len(body) - suffix_length
-    if body[start : start + len(_SIG_MEMBER)] != _SIG_MEMBER:
-        return None
-    signature = body[start + len(_SIG_MEMBER) : len(body) - len(_SIG_TAIL)]
-    if _HEX64.fullmatch(signature) is None:
-        return None
-    return body[:start] + b"}", signature
+    """Remove the final ``,"hmac_signature":"<64 hex>"`` member from ``body`` (shared with the
+    event consumer, :func:`~axiam_sdk.amqp._hmac.cut_trailing_signature`)."""
+    return cut_trailing_signature(body)
 
 
 def _is_json_string(value: object) -> bool:
@@ -270,7 +246,7 @@ def _optional_text(members: dict[str, Any], name: str) -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise _Discard(f"{name} is not a string")
+        raise _Discard("malformed")
     return value
 
 
@@ -300,7 +276,6 @@ class AuthzRequester:
         tenant_id: str,
         signing_key: bytes,
         reply_to: str,
-        allow_unsigned_responses: bool,
         timeout: float,
         logger: logging.Logger,
         clock: Callable[[], datetime],
@@ -310,7 +285,6 @@ class AuthzRequester:
         self._tenant_id = tenant_id
         self._signing_key = bytes(signing_key)
         self._reply_to = reply_to
-        self._allow_unsigned = allow_unsigned_responses
         self._timeout = timeout
         self._logger = logger
         self._clock = clock
@@ -325,27 +299,25 @@ class AuthzRequester:
         *,
         tenant_id: str,
         signing_key: bytes,
-        allow_unsigned_responses: bool = False,
         timeout: float = DEFAULT_AUTHZ_TIMEOUT_SECONDS,
         logger: logging.Logger | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> AuthzRequester:
         """Open a private reply queue on ``transport`` and return a requester for ``tenant_id``.
 
+        Requires an AXIAM server of 1.68 or later, and there is no option to accept unsigned
+        responses: see the module documentation.
+
         Args:
             transport: Usually ``AioPikaAuthzTransport(channel)``.
             tenant_id: The requester's own tenant UUID.
             signing_key: The tenant's AMQP subkey for key version 2 (§8.1).
-            allow_unsigned_responses: The explicit, integrator-set opt-out for ONE rolling
-                upgrade against a server older than contract 1.68, whose responses are unsigned.
-                Off by default. With it set, a response that carries **no** ``hmac_signature``
-                member at all is accepted on its ``correlation_id`` alone (and logged as a
-                security warning); a response that carries a signature is verified in full
-                whatever this says, and the opt-out never admits one that fails. Remove it once
-                the server is upgraded.
             timeout: Bounds each :meth:`check`, in seconds (default 10).
-            logger: Receives the security events (a discarded response, an unsigned one
-                admitted). Messages never contain a signature value. Silent by default.
+            logger: Receives the security events: one warning per discarded response, carrying
+                ``timestamp``, ``exchange``, ``routing_key`` (the reply queue), ``tenant_id``
+                (the requester's own) and ``reason``, both as ``extra`` members and in the
+                message text; never a signature value, a nonce or any member of the body.
+                Silent by default.
             clock: Returns the current time; tests only.
 
         Raises:
@@ -371,7 +343,6 @@ class AuthzRequester:
             tenant_id=tenant,
             signing_key=signing_key,
             reply_to=queue,
-            allow_unsigned_responses=allow_unsigned_responses,
             timeout=timeout,
             logger=logger if logger is not None else _LOGGER,
             clock=clock if clock is not None else lambda: datetime.now(UTC),
@@ -459,65 +430,141 @@ class AuthzRequester:
             self._pending.pop(correlation_id, None)
 
     async def _consume(self, deliveries: AsyncIterator[AuthzDelivery]) -> None:
-        """Read the private reply queue until it ends."""
+        """Read the private reply queue until it ends.
+
+        One delivery can never end the loop: an unexpected exception while handling it is logged
+        (its type only) and the delivery nacked, and the next one is served. Only the end of the
+        queue or the connection (or :meth:`close`) ends it, and that is logged once.
+        """
         try:
             async for delivery in deliveries:
-                await self._handle(delivery)
+                try:
+                    await self._handle(delivery)
+                except Exception as exc:  # noqa: BLE001 -- one bad delivery must not end the loop
+                    await self._on_unexpected_failure(delivery, exc)
         finally:
             # The queue or connection went away: nothing further can be answered.
+            if not self._closed:
+                self._logger.warning(
+                    "axiam_sdk_security: AMQP authz reply queue consumer ended; the requester "
+                    "is closed and every outstanding and later check fails"
+                )
             self._shutdown()
+
+    async def _on_unexpected_failure(self, delivery: AuthzDelivery, exc: Exception) -> None:
+        """Handle a failure that is not a discard: say so (the exception's type, never its
+        message or any value of the body), refuse the delivery, and carry on."""
+        self._logger.warning(
+            "axiam_sdk_security: AMQP authz response handling failed unexpectedly (%s); "
+            "the delivery is refused and the requester keeps serving",
+            type(exc).__qualname__,
+        )
+        self._log_discard("malformed")
+        with contextlib.suppress(Exception):
+            await delivery.nack()
+
+    def _log_discard(self, reason: str) -> None:
+        """The security event for one discarded response (contract 1.69, §8 consumer obligation
+        4): ``timestamp``, ``exchange``, ``routing_key``, ``tenant_id``, ``reason`` -- and
+        nothing read from the body, no signature (received or computed) and no nonce.
+
+        ``exchange`` and ``routing_key`` are what this requester consumes from: the default
+        exchange (``""``), where the server publishes every answer, and its own reply queue.
+        ``tenant_id`` is the requester's own, never the one the response claims. The members are
+        both ``extra`` fields (for a structured handler) and in the message (for a plain one).
+        """
+        timestamp = self._clock().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self._logger.warning(
+            "axiam_sdk_security: AMQP authz response discarded: timestamp=%s exchange=%r "
+            "routing_key=%s tenant_id=%s reason=%s",
+            timestamp,
+            _DEFAULT_EXCHANGE,
+            self._reply_to,
+            self._tenant_id,
+            reason,
+            extra={
+                "timestamp": timestamp,
+                "exchange": _DEFAULT_EXCHANGE,
+                "routing_key": self._reply_to,
+                "tenant_id": self._tenant_id,
+                "reason": reason,
+            },
+        )
 
     async def _handle(self, delivery: AuthzDelivery) -> None:
         """Verify one delivery and complete the matching request, or discard it (nack without
         requeue plus a security event)."""
+        if self._closed:
+            # After Close nothing can be answered: the body is not decoded or dispatched, it is
+            # refused without requeue, and no discard event is required.
+            with contextlib.suppress(Exception):
+                await delivery.nack()
+            return
         body = delivery.body
         try:
             decision, correlation_id = self._verify_response(body)
         except _Discard as exc:
-            # The fact of failure only -- never a signature value (§8 protocol rule 4).
-            self._logger.warning("axiam_sdk_security: AMQP authz response discarded: %s", exc)
-            await delivery.nack()
+            self._log_discard(str(exc))
+            with contextlib.suppress(Exception):
+                await delivery.nack()
             return
 
         pending = self._pending.get(correlation_id)
         if pending is None or pending.future.done():
-            self._logger.warning(
-                "axiam_sdk_security: AMQP authz response discarded: no outstanding request"
-            )
-            await delivery.nack()
+            self._log_discard("unknown_request")
+            with contextlib.suppress(Exception):
+                await delivery.nack()
             return
         # Retire on acceptance: a second response for it is dropped.
         del self._pending[correlation_id]
         pending.future.set_result(decision)
-        await delivery.ack()
+        try:
+            await delivery.ack()
+        except Exception as exc:  # noqa: BLE001 -- the answer is already delivered to its caller
+            self._logger.warning(
+                "axiam_sdk_security: AMQP authz response acknowledgement failed (%s); the "
+                "decision stands and the requester keeps serving",
+                type(exc).__qualname__,
+            )
 
     def _verify_response(self, body: bytes) -> tuple[AuthzDecision, str]:
         """Apply §8's consumer obligations 1-3 to ``body``; return the decision and the
         ``correlation_id`` it answers.
 
         Never re-serializes: the signature is checked over ``body`` minus its trailing signature
-        member, and the decision is decoded from those same bytes (C2).
+        member, and the decision is decoded from those same bytes (C2). Raises :class:`_Discard`
+        carrying the A.2 reason code for anything that is not a verified answer to an
+        outstanding request.
         """
         members = _strict_object(body)
 
-        # Rule 1 (strict parse) for the member every response carries.
-        if type(members.get("allowed")) is not bool:
-            raise _Discard("allowed is missing or not a boolean")
-
+        # Rule 1: no signature member at all is an unsigned response. No AXIAM server sends one
+        # to a reply queue (Appendix A.1), so only someone else can have published it.
         if "hmac_signature" not in members:
-            return self._accept_unsigned(members)
+            raise _Discard("unsigned")
+
+        # Reason (3), before the HMAC: the signature member must be a trailing 64-hex string and
+        # ``allowed``, ``tenant_id``, ``nonce`` and ``correlation_id`` present and well-typed. The
+        # values are read only to classify the discard; nothing here is trusted until step 2.
+        if type(members.get("allowed")) is not bool:
+            raise _Discard("malformed")
+        for name in ("tenant_id", "nonce", "correlation_id"):
+            if not _is_json_string(members.get(name)):
+                raise _Discard("malformed")
 
         cut = _cut_trailing_signature(body)
         if cut is None:
-            raise _Discard("the body does not end in the hmac_signature member")
+            raise _Discard("malformed")
         canonical, signature = cut
+        # Defence in depth: with duplicate keys refused above, the parsed member equals the
+        # trailing one whenever the cut succeeded, so this cannot fire today.
         if members["hmac_signature"] != signature.decode("ascii"):
-            raise _Discard("hmac_signature is not the trailing member")
+            raise _Discard("malformed")
 
         # Rule 2: HMAC-SHA256 under the requester's own tenant subkey, constant time.
         expected = hmac.new(self._signing_key, canonical, hashlib.sha256).digest()
         if not hmac.compare_digest(expected, bytes.fromhex(signature.decode("ascii"))):
-            raise _Discard("the signature does not verify")
+            raise _Discard("signature")
 
         # Everything below reads the verified canonical bytes, not `body` (C2).
         verified = _strict_object(canonical)
@@ -529,44 +576,26 @@ class AuthzRequester:
             and _is_json_string(nonce)
             and _is_json_string(correlation_id)
         ):
-            raise _Discard("tenant_id, nonce or correlation_id is missing")
+            raise _Discard("malformed")
         if type(verified.get("allowed")) is not bool:
-            raise _Discard("allowed is missing or not a boolean")
+            raise _Discard("malformed")
+        reason = _optional_text(verified, "reason")
+        reason_code = _optional_text(verified, "reason_code")
 
         # Rule 3: the requester's own tenant, and one outstanding request.
         if tenant_id != self._tenant_id:
-            raise _Discard("tenant_id is not the requester's")
+            raise _Discard("tenant")
         pending = self._pending.get(str(correlation_id))
-        if pending is None or not hmac.compare_digest(pending.nonce.encode(), str(nonce).encode()):
-            raise _Discard("correlation_id and nonce match no outstanding request")
+        # ``surrogatepass``: JSON can carry a lone surrogate, which strict UTF-8 refuses to
+        # encode; it must compare unequal, not raise.
+        if pending is None or not hmac.compare_digest(
+            pending.nonce.encode("utf-8", "surrogatepass"),
+            str(nonce).encode("utf-8", "surrogatepass"),
+        ):
+            raise _Discard("unknown_request")
 
         decision = AuthzDecision(
-            allowed=verified["allowed"],
-            reason=_optional_text(verified, "reason"),
-            reason_code=_optional_text(verified, "reason_code"),
-        )
-        return decision, str(correlation_id)
-
-    def _accept_unsigned(self, members: dict[str, Any]) -> tuple[AuthzDecision, str]:
-        """A response with no ``hmac_signature`` member: refused unless the opt-out is set, in
-        which case it is accepted on its ``correlation_id`` alone (a pre-1.68 server answers with
-        no ``tenant_id`` or ``nonce``)."""
-        if not self._allow_unsigned:
-            raise _Discard("the response is unsigned")
-        correlation_id = members.get("correlation_id")
-        if not _is_json_string(correlation_id):
-            raise _Discard("the unsigned response has no correlation_id")
-        if str(correlation_id) not in self._pending:
-            raise _Discard("correlation_id matches no outstanding request")
-        decision = AuthzDecision(
-            allowed=members["allowed"],
-            reason=_optional_text(members, "reason"),
-            reason_code=_optional_text(members, "reason_code"),
-            unsigned=True,
-        )
-        self._logger.warning(
-            "axiam_sdk_security: AMQP authz response accepted UNSIGNED because "
-            "allow_unsigned_responses is set"
+            allowed=verified["allowed"], reason=reason, reason_code=reason_code
         )
         return decision, str(correlation_id)
 

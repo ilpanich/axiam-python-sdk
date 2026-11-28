@@ -50,21 +50,38 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
+import json
 import logging
+import math
 import re
+import socket
+import ssl
 import threading
 import time
+import urllib.request
 from collections.abc import Mapping
 from typing import Any
+from urllib.error import HTTPError
 
 import jwt
-from jwt import PyJWKClient
-from jwt.exceptions import MissingRequiredClaimError, PyJWTError
+from jwt import PyJWK, PyJWKClient
+from jwt.exceptions import (
+    ExpiredSignatureError,
+    ImmatureSignatureError,
+    InvalidIssuedAtError,
+    MissingRequiredClaimError,
+    PyJWKClientConnectionError,
+    PyJWKClientError,
+    PyJWTError,
+)
 from jwt.types import Options
 
 from axiam_sdk._errors import AuthError
 from axiam_sdk._mcp import McpGuardChallenges, mcp_guard_challenges
 from axiam_sdk._revocation_feed import RevocationFeed
+from axiam_sdk._session import build_trust_context, validate_custom_ca
+from axiam_sdk._telemetry import ConfigClamped, TelemetryDispatcher, TelemetryHook
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,9 +95,25 @@ _UUID_RE = re.compile(
 # path; do not substitute one.
 JWKS_PATH = "/oauth2/jwks"
 
-# Normal (non-forced) cache TTL, matching the Rust/Go references'
-# JWKS_CACHE_TTL / maxCacheInterval.
+# Default JWKS cache TTL, matching the Rust/Go references' JWKS_CACHE_TTL / maxCacheInterval.
 _DEFAULT_LIFESPAN_SECONDS = 300
+
+#: CONTRACT.md §12.4 rule 2 (contract 1.69, D-10): the TTL is at most this, whether configured or
+#: advertised by ``Cache-Control: max-age``; a larger value is clamped down, never honoured.
+MAX_JWKS_TTL_SECONDS = 300
+
+#: The SDK's own bound on one JWKS fetch, in seconds (a hanging endpoint costs one detached
+#: refresh this long, never a blocked verification that has a usable key).
+_JWKS_FETCH_TIMEOUT_SECONDS = 10.0
+
+#: The overall deadline for reading one JWKS body, and its size cap (a real set is a few KiB).
+_JWKS_FETCH_DEADLINE_SECONDS = 10.0
+_JWKS_MAX_BODY_BYTES = 1024 * 1024
+
+#: CONTRACT.md §12.4 rule 2: how long past the TTL, measured from the last SUCCESSFUL fetch, the
+#: held keys keep verifying while every refresh fails. After TTL + this, every token is refused
+#: until a fetch succeeds.
+JWKS_MAX_STALE_SECONDS = 300
 
 # Minimum interval between forced refetches triggered by an unknown `kid`,
 # to avoid a hostile/rotating-kid token stream hammering the JWKS endpoint
@@ -125,21 +158,272 @@ def _is_access_token_typ(typ: object) -> bool:
     return lowered == "at+jwt"
 
 
+def _window_open(last: float | None, now: float) -> bool:
+    """Whether the 60 s refresh window that started at ``last`` is over. A start in the future
+    (``now < last``: the clock stepped back) means the window is over, so the refresh a negative
+    age makes due can happen."""
+    return last is None or not 0 <= now - last < _FORCED_REFETCH_MIN_INTERVAL_SECONDS
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect: a JWKS URL is used as configured."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        """Decline to follow the redirect."""
+        return None
+
+
+def _max_age(cache_control: str | None) -> int | None:
+    """The ``max-age`` of a ``Cache-Control`` header value, or ``None`` when absent or invalid."""
+    if not cache_control:
+        return None
+    for directive in cache_control.split(","):
+        name, _, value = directive.strip().partition("=")
+        if name.strip().lower() == "max-age":
+            value = value.strip().strip('"')
+            return int(value) if value.isascii() and value.isdigit() else None
+    return None
+
+
+class _Watch:
+    """Holds the connection's socket so a timer can cut the fetch at its overall deadline, in the
+    header phase as well as the body (a per-read socket timeout is reset by every dripped byte)."""
+
+    def __init__(self) -> None:
+        """Start with no socket and no expiry."""
+        self.lock = threading.Lock()
+        self.sock: Any = None
+        self.expired = False
+
+    def attach(self, sock: Any) -> None:
+        """Remember the connection's socket (closing it at once if the deadline already passed)."""
+        with self.lock:
+            self.sock = sock
+            if self.expired:
+                self._cut()
+
+    def expire(self) -> None:
+        """The deadline passed: close the socket under whatever read is blocked on it."""
+        with self.lock:
+            self.expired = True
+            self._cut()
+
+    def _cut(self) -> None:
+        """Shut down and close the socket (caller holds the lock)."""
+        sock = self.sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+class _WatchedHTTPHandler(urllib.request.HTTPHandler):
+    """``http:`` handler whose connections report their socket to a :class:`_Watch`."""
+
+    def __init__(self, watch: _Watch) -> None:
+        """Report every connection's socket to ``watch``."""
+        super().__init__()
+        self._watch = watch
+
+    def http_open(self, req: Any) -> Any:
+        """Open ``req`` over a connection that reports its socket."""
+        watch = self._watch
+
+        class Connection(http.client.HTTPConnection):
+            """An ``HTTPConnection`` that reports its socket to the watch."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Also report the raw socket as soon as it exists (before a proxy tunnel or the
+                TLS handshake, which the deadline must cover too)."""
+                super().__init__(*args, **kwargs)
+                create: Any = self._create_connection  # type: ignore[has-type]
+
+                def reporting(*a: Any, **k: Any) -> Any:
+                    """Create the connection, reporting the new socket."""
+                    sock = create(*a, **k)
+                    watch.attach(sock)
+                    return sock
+
+                self._create_connection = reporting
+
+            def connect(self) -> None:
+                """Connect, then report the (possibly TLS-wrapped) socket."""
+                super().connect()
+                watch.attach(self.sock)
+
+        return self.do_open(Connection, req)
+
+
+class _WatchedHTTPSHandler(urllib.request.HTTPSHandler):
+    """``https:`` twin of :class:`_WatchedHTTPHandler`."""
+
+    def __init__(self, watch: _Watch, context: Any) -> None:
+        """Report every connection's socket to ``watch``; ``context`` is the TLS context, if any."""
+        super().__init__(context=context)
+        self._watch = watch
+        self._ctx = context
+
+    def https_open(self, req: Any) -> Any:
+        """Open ``req`` over a TLS connection that reports its socket."""
+        watch = self._watch
+
+        class Connection(http.client.HTTPSConnection):
+            """An ``HTTPSConnection`` that reports its socket to the watch."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Also report the raw socket as soon as it exists (before a proxy tunnel or the
+                TLS handshake, which the deadline must cover too)."""
+                super().__init__(*args, **kwargs)
+                create: Any = self._create_connection  # type: ignore[has-type]
+
+                def reporting(*a: Any, **k: Any) -> Any:
+                    """Create the connection, reporting the new socket."""
+                    sock = create(*a, **k)
+                    watch.attach(sock)
+                    return sock
+
+                self._create_connection = reporting
+
+            def connect(self) -> None:
+                """Connect, then report the (possibly TLS-wrapped) socket."""
+                super().connect()
+                watch.attach(self.sock)
+
+        return self.do_open(Connection, req, context=self._ctx)
+
+
+class _JwksFetcher(PyJWKClient):
+    """:class:`~jwt.PyJWKClient`'s HTTP fetch, used here ONLY as the transport: the cache, the TTL,
+    the stale bound and the refresh window are :class:`JwksVerifier`'s (CONTRACT.md §12.4 rule 2).
+
+    Adds what the contract needs of the fetch: the conditional request (``If-None-Match`` with the
+    held set's ``ETag``) and the response's ``Cache-Control: max-age``, both reported through
+    attributes that :meth:`JwksVerifier._refresh` reads after each call.
+    """
+
+    def __init__(self, uri: str, ssl_context: ssl.SSLContext | None = None) -> None:
+        """Build a fetcher for ``uri`` with no PyJWT-side cache, over ``ssl_context`` (the system
+        trust store when ``None``)."""
+        super().__init__(
+            uri,
+            cache_jwk_set=False,
+            timeout=_JWKS_FETCH_TIMEOUT_SECONDS,
+            ssl_context=ssl_context,
+        )
+        #: ``ETag`` of the held set, sent as ``If-None-Match``.
+        self.etag: str | None = None
+        #: Set by the last ``fetch_data``: the response's ``ETag`` / ``max-age``, and whether the
+        #: answer was a ``304 Not Modified``. ``None`` / ``False`` when it reported none (also the
+        #: case when a test replaces ``fetch_data``).
+        self.response_etag: str | None = None
+        self.response_max_age: int | None = None
+        self.not_modified = False
+
+    def reset_response(self) -> None:
+        """Forget what the previous fetch reported."""
+        self.response_etag = None
+        self.response_max_age = None
+        self.not_modified = False
+
+    @staticmethod
+    def _read_bounded(response: Any, deadline: float) -> Any:
+        """Read the body in chunks against one overall monotonic ``deadline`` (set when the
+        request started, not per read) and a size cap
+        (:data:`_JWKS_MAX_BODY_BYTES`), then parse it. A server that drips bytes, or sends an
+        endless body, can therefore hold a refresh for at most the deadline."""
+        declared = response.headers.get("Content-Length")
+        if declared is not None and declared.isdigit() and int(declared) > _JWKS_MAX_BODY_BYTES:
+            raise ValueError("the JWKS body is too large")
+        body = bytearray()
+        while True:
+            chunk = response.read1(65536)
+            if not chunk:
+                break
+            body += chunk
+            if len(body) > _JWKS_MAX_BODY_BYTES:
+                raise ValueError("the JWKS body is too large")
+            if time.monotonic() > deadline:
+                raise TimeoutError("the JWKS body was not delivered in time")
+        return json.loads(bytes(body))
+
+    def fetch_data(self) -> Any:
+        """Fetch the JWKS document; ``None`` for a ``304`` answering the conditional request."""
+        headers = dict(self.headers)
+        if self.etag is not None:
+            headers["If-None-Match"] = self.etag
+        # One overall deadline for the whole exchange (headers and body), enforced by a timer that
+        # closes the socket: a server that drips bytes cannot hold a refresh past it.
+        deadline = time.monotonic() + _JWKS_FETCH_DEADLINE_SECONDS
+        watch = _Watch()
+        timer = threading.Timer(_JWKS_FETCH_DEADLINE_SECONDS, watch.expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            request = urllib.request.Request(url=self.uri, headers=headers)
+            handlers: list[Any] = [
+                _NoRedirect(),
+                _WatchedHTTPHandler(watch),
+                _WatchedHTTPSHandler(watch, self.ssl_context),
+            ]
+            opener = urllib.request.build_opener(*handlers)
+            with opener.open(request, timeout=self.timeout) as response:
+                if response.status != 200:  # only a 200 (not any 2xx) is a fetch
+                    raise PyJWKClientConnectionError("the JWKS endpoint did not answer 200")
+                etag = response.headers.get("ETag")
+                if etag is not None and (
+                    len(etag.encode("utf-8", "replace")) > 256
+                    or any(ord(c) < 0x20 or ord(c) == 0x7F for c in etag)
+                ):
+                    etag = None  # never stored or echoed
+                self.response_etag = etag
+                self.response_max_age = _max_age(response.headers.get("Cache-Control"))
+                document = self._read_bounded(response, deadline)
+        except HTTPError as exc:
+            try:
+                if exc.code == 304 and self.etag is not None:
+                    self.not_modified = True
+                    self.response_max_age = _max_age(exc.headers.get("Cache-Control"))
+                    return None
+            finally:
+                exc.close()
+            raise PyJWKClientConnectionError("the JWKS endpoint answered with an error") from None
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            raise PyJWKClientConnectionError("the JWKS endpoint could not be read") from exc
+        finally:
+            timer.cancel()
+        return self._as_jwk_set_payload(document)
+
+
 class JwksVerifier:
     """Fetches, caches, and locally verifies AXIAM access tokens against the
-    organization-wide EdDSA JWKS."""
+    organization-wide EdDSA JWKS.
+
+    The cache follows CONTRACT.md §12.4 rule 2 (contract 1.69): its age runs from the last
+    successful fetch (a ``200`` with at least one key, or a ``304`` to the conditional request);
+    its TTL is configured or the response's ``Cache-Control: max-age``, 300 s by default and at
+    most 300 s; a failed refresh (transport error, other status, non-JWKS body, an empty key set)
+    never replaces the held keys or moves the age, and the held keys verify until exactly TTL +
+    300 s after that last success, after which every token is refused until a fetch succeeds.
+    """
 
     def __init__(
         self,
         base_url: str,
         *,
-        lifespan: int = _DEFAULT_LIFESPAN_SECONDS,
+        lifespan: float | None = None,
         jwks_url: str | None = None,
         expected_issuer: str | None = None,
         expected_audience: str | None = None,
         clock_skew_seconds: float = DEFAULT_CLOCK_SKEW_SECONDS,
         revocation_feed: RevocationFeed | None = None,
         resource_metadata_url: str | None = None,
+        telemetry_hook: TelemetryHook | None = None,
+        custom_ca: str | bytes | ssl.SSLContext | None = None,
     ) -> None:
         """Build a verifier against ``{base_url}{JWKS_PATH}``, or against an
         explicit ``jwks_url`` when supplied.
@@ -148,9 +432,15 @@ class JwksVerifier:
             base_url: The AXIAM server's base URL; ``JWKS_PATH`` is appended
                 after stripping any trailing slash. Ignored when
                 ``jwks_url`` is supplied.
-            lifespan: Normal (non-forced) JWKS cache TTL in seconds, passed
-                through to :class:`~jwt.PyJWKClient`'s ``cache_jwk_set``
-                lifespan (default :data:`_DEFAULT_LIFESPAN_SECONDS`).
+            lifespan: JWKS cache TTL in seconds. **Unset by default**: the
+                response's ``Cache-Control: max-age`` is used, else 300 s. At
+                most :data:`MAX_JWKS_TTL_SECONDS` (300 s) either way: a larger
+                value is clamped down, and a larger *configured* one emits one
+                ``config_clamped`` event through ``telemetry_hook`` (CONTRACT.md
+                §12.4 rule 2, §19 rule 6); clamping an advertised ``max-age``
+                emits nothing.
+            telemetry_hook: Optional §19 hook; receives the ``ConfigClamped``
+                event for a clamped ``lifespan``.
             jwks_url: An explicit, full JWKS document URL, overriding the
                 ``{base_url}{JWKS_PATH}`` derivation. Used by the OIDC
                 relying-party helpers (CONTRACT.md §12.3 rule 6), which read
@@ -194,14 +484,23 @@ class JwksVerifier:
                 this ``aud``" and does not check ``aud`` has published a
                 claim it does not honour.
 
+            custom_ca: A private CA to trust for the JWKS fetch, exactly as the REST client's
+                ``custom_ca`` (CONTRACT.md §6): a CA-bundle file path, a CA directory or inline PEM
+                (``str`` or ``bytes``), added to the system trust store, or an ``ssl.SSLContext``
+                with ``verify_mode=CERT_REQUIRED`` and X
+
         Raises:
-            ValueError: if ``clock_skew_seconds`` is negative or exceeds
+            ValueError: if ``custom_ca`` is not one of those forms or a strict
+                ``ssl.SSLContext``, or if
+                ``clock_skew_seconds`` is negative or exceeds
                 :data:`MAX_CLOCK_SKEW_SECONDS` — §10.1 rule 7 forbids an
                 operator-settable unbounded leeway.
             ValidationError: if ``resource_metadata_url`` is set without
                 ``expected_audience`` (CONTRACT.md §28.5 rule 2), or if
                 either is outside RFC 6750's syntax.
         """
+        if lifespan is not None and not (math.isfinite(lifespan) and lifespan > 0):
+            raise ValueError("lifespan must be a positive number of seconds")
         if not 0 <= clock_skew_seconds <= MAX_CLOCK_SKEW_SECONDS:
             raise ValueError(
                 "clock_skew_seconds must be between 0 and "
@@ -218,14 +517,44 @@ class JwksVerifier:
         # — pure string operations, no network I/O) with their own operation
         # name and, where relevant, their route's own `scope`.
         mcp_guard_challenges(expected_audience, resource_metadata_url, "JwksVerifier")
+        trust = validate_custom_ca(custom_ca)
+        ssl_context = build_trust_context(trust) if trust else None
         resolved_jwks_url = jwks_url if jwks_url is not None else base_url.rstrip("/") + JWKS_PATH
-        # The per-key LRU cache (opt-in via a separate constructor flag,
-        # intentionally left at its default/disabled state here) has no
-        # TTL/expiration (Pattern 5 Pitfall); relying solely on the TTL'd
-        # jwk_set_cache (cache_jwk_set=True) avoids serving a rotated/revoked
-        # key indefinitely.
-        self._client = PyJWKClient(resolved_jwks_url, cache_jwk_set=True, lifespan=lifespan)
-        self._last_forced_refetch: float | None = None
+        # The fetcher is only the HTTP transport. The cache lives below, because PyJWT's cache
+        # drops the held set at its TTL and cannot keep it through a failed refresh, which is
+        # exactly what §12.4 rule 2 (stale-if-error, bounded) requires.
+        self._client = _JwksFetcher(resolved_jwks_url, ssl_context)
+        #: A configured TTL, clamped to the contract's 300 s; ``None`` = use the advertised one.
+        self._configured_ttl: float | None = None
+        if lifespan is not None:
+            self._configured_ttl = min(float(lifespan), float(MAX_JWKS_TTL_SECONDS))
+            if lifespan > MAX_JWKS_TTL_SECONDS:
+                TelemetryDispatcher(telemetry_hook).emit(
+                    ConfigClamped(
+                        setting="lifespan",
+                        requested=f"{lifespan:g}",
+                        effective=str(MAX_JWKS_TTL_SECONDS),
+                        contract_reference="§12.4 rule 2",
+                    )
+                )
+        #: The held signing keys, the instant of the last SUCCESSFUL fetch (the age's anchor) and
+        #: the TTL in force since it.
+        self._held: list[PyJWK] | None = None
+        self._anchor: float = 0.0
+        self._ttl: float = (
+            self._configured_ttl if self._configured_ttl is not None else _DEFAULT_LIFESPAN_SECONDS
+        )
+        #: When a refresh was last attempted and either failed or was forced by an unknown
+        #: ``kid``; opens the 60 s window in which no further refresh is attempted.
+        self._last_attempt: float | None = None
+        #: When a TTL-driven (non-forced) refresh was last attempted, successful or not: at most
+        #: one such fetch per 60 s window, whatever TTL the endpoint advertises (``max-age=0``).
+        self._last_ttl_attempt: float | None = None
+        #: The refresh in flight, if any: set while one runs OUTSIDE the state lock.
+        self._inflight: threading.Event | None = None
+        self._refresh_thread: threading.Thread | None = None
+        #: ``ETag`` of the held set, for the conditional refresh.
+        self._etag_of_held: str | None = None
         self._refetch_lock = threading.Lock()
         # §13.4 observation 6 — latches the slug-vs-UUID diagnostic to one
         # emission, so a stream of bad tokens cannot turn it into a log flood.
@@ -324,27 +653,62 @@ class JwksVerifier:
             The decoded claims dict, once the signature has verified.
 
         Raises:
-            ValueError: if ``alg`` is not EdDSA or the header carries no ``kid``.
-            jwt.exceptions.PyJWTError: on any signature/key-resolution failure.
+            AuthError: with ``reason`` ``invalid_alg`` (``alg`` is not EdDSA), ``unknown_kid``
+                (no ``kid``, or no JWKS key matches it; at most one re-fetch per 60 s window,
+                the cache survives it) ``token_expired`` or ``invalid_signature``.
         """
-        header = jwt.get_unverified_header(token)
+        try:
+            header = jwt.get_unverified_header(token)
+        except PyJWTError as exc:
+            raise AuthError(
+                "logout token validation failed (invalid_alg): malformed token header",
+                reason="invalid_alg",
+            ) from exc
         if header.get("alg") != "EdDSA":
-            raise ValueError(f"unexpected alg {header.get('alg')!r}: only EdDSA is accepted")
+            raise AuthError(
+                "logout token validation failed (invalid_alg): only EdDSA is accepted",
+                reason="invalid_alg",
+            )
+        # §12.7.3 rule 1 (contract 1.69): the key is selected by ``kid`` and by nothing else.
+        # A token with no ``kid`` (a pre-1.69 server's) is refused before any key lookup, so a
+        # one-key JWKS cannot make it verify.
         if not header.get("kid"):
-            raise ValueError("logout token carries no kid header")
+            raise AuthError(
+                "logout token validation failed (unknown_kid): the token carries no kid",
+                reason="unknown_kid",
+            )
 
-        signing_key = self._get_signing_key(token)
+        try:
+            signing_key = self._get_signing_key(token)
+        except PyJWTError as exc:
+            # Unknown kid, or an empty/malformed keyset after the verifier's one rate-limited
+            # forced re-fetch.
+            raise AuthError(
+                "logout token validation failed (unknown_kid): no JWKS key matches the token's kid",
+                reason="unknown_kid",
+            ) from exc
 
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["EdDSA"],
-            # No `require`: a logout token names `sid` OR `sub`, and which one
-            # is present is checked by the caller with its own message.
-            # `aud` is checked there too, so PyJWT's own audience check is off
-            # rather than duplicated under a less specific error.
-            options={"verify_aud": False},
-        )
+        try:
+            return jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["EdDSA"],
+                # No `require`: a logout token names `sid` OR `sub`, and which one
+                # is present is checked by the caller with its own message.
+                # `aud` is checked there too, so PyJWT's own audience check is off
+                # rather than duplicated under a less specific error.
+                options={"verify_aud": False},
+            )
+        except (ExpiredSignatureError, ImmatureSignatureError, InvalidIssuedAtError) as exc:
+            raise AuthError(
+                "logout token validation failed (token_expired): outside its validity window",
+                reason="token_expired",
+            ) from exc
+        except PyJWTError as exc:
+            raise AuthError(
+                "logout token validation failed (invalid_signature): the token is not valid",
+                reason="invalid_signature",
+            ) from exc
 
     def _verify_claims(self, token: str, *, expected_tenant_id: str | None) -> dict[str, Any]:
         """CONTRACT.md §10.1 rules **1-8** — everything except the sender
@@ -411,10 +775,9 @@ class JwksVerifier:
             raise AuthError("token typ is not an access token (at+jwt)")
 
         # Rule 12 (contract 1.68): the key is selected by ``kid`` and by nothing
-        # else. ``PyJWKClient`` already refuses a header with no ``kid`` rather
-        # than falling back to "the only key in the set", so no explicit check
-        # is added here (SA-21: not reproduced); ``test_access_token_kind``
-        # pins that behaviour.
+        # else. ``_get_signing_key`` reads the ``kid`` from the header and refuses
+        # a token with none (no "only key in the set" fallback), so no explicit
+        # check is needed here; ``test_access_token_kind`` pins that behaviour.
         try:
             signing_key = self._get_signing_key(token)
         except PyJWTError as exc:
@@ -703,46 +1066,139 @@ class JwksVerifier:
         return self._get_signing_key(token)
 
     def _get_signing_key(self, token: str) -> Any:
-        """Resolve the signing key for *token*, single-flighted through
-        ``_refetch_lock`` so a burst of concurrent callers against a cold
-        or stale cache — forced-refetch or not — collapses to exactly one
-        network fetch (D-08/D-09, PERF-03).
+        """Resolve the signing key for *token* (CONTRACT.md §12.4 rule 2, contract 1.69).
 
-        The lock spans the ENTIRE lookup-and-fetch sequence, not merely the
-        "should-I-invalidate" decision (the pre-existing TOCTOU gap this
-        closes): every waiter, once it acquires the lock, first retries
-        against whatever a prior lock-holder may have already
-        fetched/repaired before ever triggering another fetch itself.
+        Within the TTL the held set answers with no fetch. Past it a refresh is due: at most one
+        TTL-driven fetch per 60 s window (a failed one, or an advertised ``max-age=0``, included),
+        run by a single detached thread, so the state lock is never held across network I/O. A
+        verification whose held set is usable (the key is in it and TTL + 300 s since the last
+        successful fetch has not passed) returns at once, whether or not a fetch is in flight.
+        Only a caller with no usable key (a cold cache, a stale set, an unknown ``kid``) waits for
+        the in-flight fetch, bounded by the SDK's own timeout. An unknown ``kid`` forces one
+        refresh per window; a failed refresh keeps the held set and the age and counts toward the
+        window.
         """
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not kid:
+            raise PyJWKClientError("the token carries no kid")
+        for settled in (False, True):
+            with self._refetch_lock:
+                now = time.monotonic()
+                held = self._held
+                age = now - self._anchor
+                usable = held is not None and 0 <= age <= self._ttl + JWKS_MAX_STALE_SECONDS
+                due = held is None or age < 0 or age >= self._ttl  # age < 0: the clock moved back
+                if not settled and self._inflight is None and due and self._may_ttl(now):
+                    self._start_refresh(now, forced=False)
+                match = PyJWKClient.match_kid(held, kid) if usable and held is not None else None
+                if match is not None:
+                    return match
+                if settled:
+                    break
+                if usable and self._inflight is None and self._may_forced(now):
+                    self._start_refresh(now, forced=True)
+                waiting = self._inflight
+            if waiting is None:
+                break
+            # No usable key: wait (outside the lock) for the one fetch, then look once more.
+            waiting.wait(self._client.timeout + 5)
         with self._refetch_lock:
+            if self._held is None:
+                raise PyJWKClientError("the JWKS endpoint is unavailable")
+            if not 0 <= time.monotonic() - self._anchor <= self._ttl + JWKS_MAX_STALE_SECONDS:
+                # Past the bound: held keys are never used, whatever the cause.
+                raise PyJWKClientError("the JWKS is stale and could not be refreshed")
+        raise PyJWKClientError("no JWKS key matches the token's kid")
+
+    def _may_ttl(self, now: float) -> bool:
+        """Whether a TTL-driven refresh may start: no attempt of any kind inside the 60 s window."""
+        return self._may_forced(now) and _window_open(self._last_ttl_attempt, now)
+
+    def _may_forced(self, now: float) -> bool:
+        """Whether a forced (unknown ``kid``) refresh may start: no failed or forced attempt inside
+        the 60 s window."""
+        return _window_open(self._last_attempt, now)
+
+    def _start_refresh(self, now: float, *, forced: bool) -> None:
+        """Start the single detached refresh. Caller holds the state lock."""
+        done = threading.Event()
+        self._inflight = done
+        if forced:
+            self._last_attempt = now
+        else:
+            self._last_ttl_attempt = now
+        etag = self._etag_of_held
+        held = self._held
+        thread = threading.Thread(
+            target=self._run_refresh, args=(now, etag, held, done), daemon=True
+        )
+        self._refresh_thread = thread
+        thread.start()
+
+    def _settle(self) -> None:
+        """Wait for the refresh in flight, if any (tests; production callers never need it)."""
+        thread = self._refresh_thread
+        if thread is not None:
+            thread.join()
+
+    def _run_refresh(
+        self, now: float, etag: str | None, held: list[PyJWK] | None, done: threading.Event
+    ) -> None:
+        """Fetch the JWKS outside the state lock, then apply the result under it."""
+        outcome: tuple[list[PyJWK], bool, str | None, int | None] | None = None
+        try:
+            outcome = self._fetch(etag, held)
+        except Exception:  # noqa: BLE001 -- every failure is a failed refresh, never an escape
+            outcome = None
+        finally:
+            with self._refetch_lock:
+                if outcome is None:
+                    self._last_attempt = now
+                else:
+                    keys, from_body, response_etag, advertised = outcome
+                    self._held = keys
+                    self._anchor = now
+                    if from_body:
+                        self._etag_of_held = response_etag
+                    if self._configured_ttl is not None:
+                        self._ttl = self._configured_ttl
+                    elif advertised is not None:
+                        self._ttl = float(min(advertised, MAX_JWKS_TTL_SECONDS))
+                    elif from_body:
+                        self._ttl = float(_DEFAULT_LIFESPAN_SECONDS)
+                self._inflight = None
+            done.set()
+
+    def _fetch(
+        self, etag: str | None, held: list[PyJWK] | None
+    ) -> tuple[list[PyJWK], bool, str | None, int | None]:
+        """One fetch. Returns ``(keys, from_body, etag, max_age)`` for a SUCCESS (§12.4 rule 2): a
+        ``200`` whose ``keys`` array holds at least one JWK object (an entry with a string
+        ``kty``), or a ``304`` to the conditional request. Raises for anything else."""
+        client = self._client
+        client.reset_response()
+        client.etag = etag
+        data = client.fetch_data()
+        if data is None:
+            if not client.not_modified or held is None:
+                raise PyJWKClientError("no JWKS document")
+            return held, False, None, client.response_max_age
+        entries = data.get("keys")
+        if not isinstance(entries, list):
+            raise PyJWKClientError("not a JWKS document")
+        jwks = [e for e in entries if isinstance(e, dict) and isinstance(e.get("kty"), str)]
+        if not jwks:
+            raise PyJWKClientError("not a JWKS document")
+        keys: list[PyJWK] = []
+        for entry in jwks:  # an unusable but well-formed JWK counts, and is skipped
             try:
-                return self._client.get_signing_key_from_jwt(token)
-            except PyJWTError:
-                # Unknown kid, a stale in-TTL cache after key rotation, or
-                # an empty/malformed keyset response (e.g. a rotation
-                # window where the new key has not yet propagated).
-                # PyJWTError is the common base of both PyJWKClientError
-                # (unknown kid) and PyJWKSetError (empty/invalid keyset) —
-                # both failure modes warrant the same forced-refetch
-                # response below.
-                pass
-
-            now = time.monotonic()
-            if (
-                self._last_forced_refetch is not None
-                and now - self._last_forced_refetch < _FORCED_REFETCH_MIN_INTERVAL_SECONDS
-            ):
-                # Rate-limited: another caller already forced a refetch
-                # recently (while we waited for the lock, or just before
-                # us) — surface whatever the current cache yields rather
-                # than hammering the endpoint again.
-                return self._client.get_signing_key_from_jwt(token)
-
-            # Force exactly one rate-limited refetch, then retry once. A
-            # second failure propagates to the caller.
-            self._client.jwk_set_cache = None
-            self._last_forced_refetch = now
-            return self._client.get_signing_key_from_jwt(token)
+                key = PyJWK.from_dict(entry)
+            except Exception:  # noqa: BLE001
+                continue
+            if key.public_key_use in ("sig", None) and key.key_id:
+                keys.append(key)
+        return keys, True, client.response_etag, client.response_max_age
 
 
 def verify_certificate_binding(

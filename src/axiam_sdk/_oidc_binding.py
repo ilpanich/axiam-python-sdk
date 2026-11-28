@@ -14,6 +14,11 @@ own ``Set-Cookie``.
 
 **C6 -- ``return_to``.** Only a same-origin relative path is honoured, checked when the entry is
 stored and again before redirecting.
+
+**Redirect target encoding (login-glue-binding Decision 7).** The ``Location`` header of the
+callback's ``302`` carries the percent-encoded form of the destination. Each adapter produces it
+with :func:`encode_redirect_location` at the point where it writes the header; the application is
+never asked to encode, and its hooks never see the encoded value.
 """
 
 from __future__ import annotations
@@ -128,3 +133,44 @@ def resolve_return_to(
         except Exception:
             return None
     return None
+
+
+#: What :func:`encode_redirect_location` leaves as it is, besides ``A-Z a-z 0-9`` (``%`` is handled
+#: on its own). The backslash is KEPT (Decision 7: a MUST); the default ``return_to`` rule never
+#: lets one reach here, only an integrator's predicate can.
+_LOCATION_SAFE = frozenset("!#$&'()*+,-./:;=?@[\\]^_|~")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def encode_redirect_location(destination: str) -> str:
+    """The percent-encoded form of ``destination``, for a ``Location`` header.
+
+    Every character outside ``A-Z a-z 0-9`` and ``! # $ & ' ( ) * + , - . / : ; = ? @ [ \\ ] ^ _ |
+    ~`` is UTF-8 percent-encoded with upper-case hex (space ``%20``, ``e`` with acute ``%C3%A9``,
+    CR ``%0D``, LF ``%0A``, ``"`` ``%22``). A ``%`` that already starts a well-formed escape
+    (``%`` and two hex digits) is kept, so an already-encoded value is not encoded twice; any
+    other ``%`` becomes ``%25`` (``/%%41`` gives ``/%25%41``). Every lone surrogate -- Python
+    strings can carry them, UTF-8 input cannot -- is replaced by U+FFFD before encoding,
+    adjacent ones included, and never raises. The result is pure ASCII with no byte below
+    ``0x21``, so a
+    CR or LF in the destination can never split the header or inject another one.
+    """
+    out: list[str] = []
+    length = len(destination)
+    for index, char in enumerate(destination):
+        if char == "%":
+            if (
+                index + 2 < length
+                and destination[index + 1] in _HEX_DIGITS
+                and destination[index + 2] in _HEX_DIGITS
+            ):
+                out.append("%")
+            else:
+                out.append("%25")
+        elif char.isascii() and (char.isalnum() or char in _LOCATION_SAFE):
+            out.append(char)
+        else:
+            if 0xD800 <= ord(char) <= 0xDFFF:
+                char = "\ufffd"
+            out.extend(f"%{byte:02X}" for byte in char.encode("utf-8"))
+    return "".join(out)

@@ -18,6 +18,7 @@ import copy
 import dataclasses
 import json
 import logging
+import ssl
 import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -85,6 +86,7 @@ from axiam_sdk._oidc import (
     PollSchedule,
     _expose_secret,
     _OidcMixin,
+    _refresh_flight_key,
 )
 from axiam_sdk._registration import (
     ClientRegistration,
@@ -241,7 +243,7 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         tenant_slug: str,
         org_slug: str | None = None,
         org_id: str | None = None,
-        custom_ca: str | None = None,
+        custom_ca: str | bytes | ssl.SSLContext | None = None,
         client_cert: str | bytes | None = None,
         client_key: str | bytes | None = None,
         timeout: httpx.Timeout | None = None,
@@ -264,7 +266,10 @@ class _AxiamClientBase(_OidcMixin, _WebauthnMixin, _AccountMixin):
         successful login/refresh resolves it from the access token's
         ``org_id`` claim (Pitfall 3, see :meth:`resolved_org_id`). ``custom_ca``
         is the sole *server*-trust override permitted by §6 — a PEM-encoded CA
-        bundle, never a boolean.
+        bundle (file path, CA directory, or inline PEM as ``str`` or ``bytes``), or an
+        ``ssl.SSLContext`` with
+        ``verify_mode=CERT_REQUIRED`` and ``check_hostname=True``; never a boolean, and any
+        other value is a ``ValueError``.
 
         ``client_cert``/``client_key`` opt this client into **mutual TLS**
         (CONTRACT.md §6.1): a PEM certificate chain plus its PEM private key
@@ -1839,11 +1844,10 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         cookie/opaque-token session path at ``POST /api/v1/auth/refresh``
         (§12.1 "``oidc_refresh`` vs ``refresh``") — the two are never
         merged, aliased, or made to fall back to one another. Concurrent
-        ``oidc_refresh`` calls collapse into exactly one wire call, and the
-        selected caller's wire call additionally runs inside the same §9
-        single-flight guard the cookie-session :meth:`refresh` uses, so an
-        ``oidc_refresh`` and a concurrent cookie-session refresh can never
-        interleave.
+        ``oidc_refresh`` calls presenting the same refresh token (in the same
+        effective tenant) collapse into exactly one wire call; a different
+        token gets its own wire call and never waits on another's. It does not
+        use the cookie-session refresh guard (§9 rule 7).
 
         The returned set's ``scope`` is the response's, which may be narrower
         than the original grant's: the server intersects the grant with the
@@ -1852,27 +1856,26 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         rather than assuming it is unchanged.
         """
 
+        # Resolve the tenant once: the single-flight key and the wire request
+        # both use this canonical value (§12.3 rule 4).
+        tenant = self._canonical_oauth2_tenant_id(tenant_id)
+
         def do_refresh() -> OidcTokenSet:
-            """Perform the actual ``refresh_token`` grant call; run inside
-            :meth:`~axiam_sdk.token.refresh_guard.RefreshGuard.run_exclusive_sync`
-            by ``under_guard``, and de-duplicated across concurrent callers
-            by the single-flight coalescer below."""
+            """Perform the actual ``refresh_token`` grant call. De-duplicated
+            across concurrent callers of the same (tenant, refresh token) by the
+            keyed single-flight coalescer below, which is this operation's guard;
+            callers of a different key never wait on it (§9 rule 7)."""
             config = configuration or self.oidc_discover()
             form = self._refresh_form(refresh_token=refresh_token, scope=scope)
-            url = self._token_endpoint_url(config, tenant_id)
+            url = self._token_endpoint_url(config, tenant)
             request = self._session.sync_client.build_request("POST", url, data=form)
             response = self._rest_send_sync(request)
             # No nonce: rule 6 does not apply to a refresh-issued ID token.
             return self._handle_token_response(response, config, None)
 
-        def under_guard() -> OidcTokenSet:
-            """Run ``do_refresh`` inside the shared §9 refresh-guard lock,
-            so it can never interleave with a concurrent cookie-session
-            :meth:`refresh` call."""
-            token_set: OidcTokenSet = self._session.refresh_guard.run_exclusive_sync(do_refresh)
-            return token_set
-
-        result: OidcTokenSet = self._oidc_refresh_single_flight_sync.run(under_guard)
+        result: OidcTokenSet = self._oidc_refresh_single_flight_sync.run(
+            _refresh_flight_key(refresh_token, tenant), do_refresh
+        )
         return result
 
     def login_client_credentials(
@@ -2824,6 +2827,13 @@ class AxiamClient(_AxiamClientBase, ManagementNamespaces):
         1. **Signature**, through the same §12.4 JWKS verifier the ID-token
            path uses — no second key-fetching path — with the same
            ``kid``-required discipline.
+           From contract 1.69 the server signs every logout token with the
+           header ``{"alg":"EdDSA","typ":"logout+jwt","kid":"<kid>"}``; the
+           key is selected by that ``kid`` and nothing else. A token with no
+           ``kid`` (a pre-1.69 server's) or an unknown one is refused with
+           ``AuthError.reason == "unknown_kid"`` — no single-key fallback.
+           §10.1 rules 10 and 11 (access-token ``typ`` / ``purpose``) do not
+           apply on this path.
         2. **``iss``/``aud``**: a token minted for another RP is not accepted.
         3. **``events`` carries the back-channel-logout key.** This is what
            distinguishes a logout token from an ID token; skipping it means

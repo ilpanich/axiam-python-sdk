@@ -27,7 +27,7 @@ Official Python client SDK for [AXIAM](https://github.com/ilpanich/axiam) — Ac
 
 ## Contract conformance
 
-This SDK (**1.1.2**) conforms to **contract 1.66**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
+This SDK (**1.4.0**) conforms to **contract 1.69**: CONTRACT.md §1–§13 and §12.7, §14, §15, §17,
 §19, §20, §21, §22, §23, §24, §25, §26, §27, §28, §28.12, §29, §30, §31, §32, §33, §34 and
 §36 (the P1 – P12 clarifications, as contract 1.60 amends them), with §32.7 and §33.2 signed (including §6.1 mTLS, the §10.1 minimum
 local-verification set, and §1.1.1/§10.3's gRPC token operations), and — new in contract 1.65 —
@@ -62,6 +62,13 @@ behaviour, and this SDK's follow-up (F-59-03) implements the ones its review nam
 failed key fetch or replay store left unjudged (P1, second form), a `5xx` on `ciba_poll` is
 transient whatever its body (P8), an unknown union arm renders for a log line (P12.2), and
 a `None` write-only secret is omitted, never sent as `null` (P12.3).
+
+### Contract 1.69 — the 1.4.0 release
+
+CONTRACT.md 1.69 (server #880, #881, #883): `verify_logout_token` selects the key by the logout
+token's `kid` (the server now sends one; a token with no `kid`, or an unknown one, is refused with
+`AuthError.reason == "unknown_kid"`, and §10.1 rules 10 and 11 stay off the logout and ID-token
+paths); the AMQP requester has no unsigned-response option and emits the §8 discard event.
 
 ### Contract 1.68 — the 1.4.0 release (security audit 2026-11-14, wave 3)
 
@@ -463,11 +470,27 @@ async def handler(event: dict) -> None:
     ...  # None return -> ack; any other exception -> nack with requeue
 
 
-await consume(channel, "axiam.authz.request", signing_key, handler, prefetch=10)
+await consume(
+    channel,
+    "axiam.authz.request",
+    signing_key,
+    handler,
+    tenant_id=tenant_id,  # the tenant whose subkey `signing_key` is
+    message_type="authz_request",  # the ONE signed type this consumer accepts
+    prefetch=10,
+)
 ```
 
 Every delivery's HMAC-SHA256 signature is verified BEFORE the handler is
-ever invoked — an unverified message never reaches your code. See
+ever invoked — an unverified message never reaches your code. The consumer is
+**typed** (contract 1.69): `message_type` is `"authz_request"` or `"audit_event"`,
+and a body with any other signed layout (the other event type included) is refused
+as `malformed` before the HMAC is computed; an application consuming both types
+runs two consumers. Every discard (including a body that starts with a byte-order
+mark, which is refused and never stripped) logs one warning on the `axiam_sdk.amqp`
+logger carrying `timestamp`, `exchange`, `routing_key`, `tenant_id` (the `tenant_id`
+you configured, never one read from the body) and `reason` (`malformed`, `unsigned`,
+`signature`, `key_version`, `stale`, `replay`) — never a signature, nonce or key. See
 [`examples/amqp_consumer.py`](./examples/amqp_consumer.py).
 
 **A broker confirm is not evidence that AXIAM saw a message** (§8, contract
@@ -511,13 +534,43 @@ request's response, a duplicate or case-variant key, an `allowed` that is not a 
 nacked without requeue, logged as a security event (never a signature value), is **never an
 allow**, and `check` keeps waiting for the genuine answer until its timeout (`TimeoutError`).
 
-A server older than contract 1.68 answers unsigned. They are refused unless you pass
-`allow_unsigned_responses=True` for one rolling upgrade (logged as a warning; the opt-out never
-admits a response that *carries* a signature and fails it). The reply queue name must not be empty
-or start with `axiam.`. Where more than one service of a tenant publishes authorization requests,
-the exclusive `reply_to` is what keeps them apart; deny SDK principals read access on
-`axiam.authz.request` at the broker (§8, trust boundary). Against a server in the minimal profile
-(AMQP off) use REST or gRPC.
+**Server requirement.** The AMQP authorization requester requires an AXIAM server of 1.68 or
+later (contract 1.68). Such a server signs every authorization response with the tenant's AMQP
+subkey and answers on the requester's private `reply_to` queue. A server older than 1.68 ignores
+`reply_to` and answers, unsigned, only on the shared `axiam.authz.response` queue, which this
+requester never reads: against it every check times out. There is no option to accept unsigned
+responses (CONTRACT 1.69 §8): no AXIAM server sends one to a reply queue, so an unsigned response
+can only have been published by someone else, and it is discarded and logged. During a rolling
+upgrade from a pre-1.68 server, use REST or gRPC authorization until every replica runs 1.68 or
+later.
+
+**The discard event (contract 1.69, #883).** Every discarded response logs one warning on the
+requester's logger carrying `timestamp`, `exchange` (`""`, the default exchange), `routing_key` (the
+requester's own reply queue), `tenant_id` (the requester's own, never the one the response claims)
+and `reason` (`malformed`, `unsigned`, `signature`, `tenant` or `unknown_request`), both as `extra`
+members and in the message text. It never carries a signature value, a nonce or any member of the
+body. An unexpected exception while handling one delivery is logged (its type only), the delivery
+is nacked and the requester keeps serving; if the reply queue itself ends, that is logged once and
+every outstanding and later `check` raises `AuthzRequesterClosedError`. The `reason` is the first
+that applies, in the contract's order: not one JSON object (`malformed`); no `hmac_signature`
+member (`unsigned`, whatever else is missing); a bad signature member or a missing or ill-typed
+`allowed`, `tenant_id`, `nonce` or `correlation_id` (`malformed`); a failing HMAC (`signature`);
+another tenant (`tenant`); no outstanding request (`unknown_request`). After `close()` a late
+answer is not decoded or dispatched: it is nacked without requeue and logs no event.
+
+The reply queue name must not be empty or start with `axiam.`. Where more than one service of a
+tenant publishes authorization requests, the exclusive `reply_to` is what keeps them apart; deny SDK
+principals read access on `axiam.authz.request` at the broker (§8, trust boundary). Against a server
+in the minimal profile (AMQP off) use REST or gRPC.
+
+**`consume(...)` verifies the received bytes too (server #882).** The event consumer checks the
+HMAC over the delivery body with its trailing `hmac_signature` member cut out, and your handler
+receives the object parsed from those same verified bytes. A genuine message containing `<`, `>`,
+`&`, non-ASCII or a `\u` escape verifies; a body with a duplicate key (at any depth), anything after
+the closing `}` (whitespace included), a `hmac_signature` that is `null` or not the last member,
+members in another order or of another message type (a validly signed `AuthzResponse` or
+cache-invalidation message) is nacked without requeue and never reaches the handler. An unsigned
+message is always refused: there is no lenient mode.
 
 ### Reactors — AMQP extension actors (§22)
 
@@ -758,6 +811,15 @@ verifier = JwksVerifier(
 primitive §10.1 permits for integrators implementing their own policy. Its
 name states the omission: it checks **no** claims at all, and the SDK's own
 guards never call it.
+
+**JWKS cache (§12.4 rule 2, contract 1.69).** The verifier keeps the key set for its TTL (`lifespan=`
+or the response's `Cache-Control: max-age`; 300 s by default, never more than 300 s: a larger
+`lifespan=` is clamped and reported once as a `config_clamped` event through `telemetry_hook=`). A
+refresh that fails (transport error, any other status, a body that is not a JWKS, an empty key set)
+keeps the held keys and never moves the cache's age, so a short JWKS outage does not refuse every
+token; the held keys verify until exactly TTL + 300 s after the last successful fetch (a `200` with
+a key, or a `304` to the conditional request), then every token is refused until a fetch succeeds.
+An unknown `kid` costs at most one refresh per 60 s window, failed attempts included.
 
 ### The session-revocation feed (contract 1.44, CONTRACT.md §10.4, opt-in)
 
@@ -1145,6 +1207,20 @@ relative `return_to`** (one leading `/`; no `//` or `/\` prefix; no backslash or
 is stored or followed — anything else falls back to `success_redirect` or the JSON summary; widen it
 with an `allow_return_to=` predicate (consulted only for values the default rule refuses).
 `MemoryOidcStateStore` is bounded (`max_entries`, 10 000, oldest evicted first).
+
+**The cookie clear wins over propagation (deviation, by design).** Because every callback response
+must clear the binding cookie (§12.8 rule 1 (d)) and an unexpected exception cannot carry the clearing
+header, both glues answer every outcome themselves and *return* their error responses instead of raising them. A FastAPI
+`@app.exception_handler(HTTPException)` therefore does **not** see the callback's refusals (the
+uniform `401`, the `400`, the `503`), and an *unexpected* failure inside the callback (your
+`on_success*` hook raises, the state store is down, a bug) is answered with a generic `500`
+(`{"error": "server_error"}` / `{"detail": {...}}` in FastAPI) that clears the cookie, and logged by
+exception type only, instead of reaching your exception handlers or Django's `handler500`. Count or
+alert on failed sign-ins from the `axiam_sdk` logger or from your hooks.
+
+**The `Location` is percent-encoded by the glue.** The redirect target (`success_redirect` or the
+accepted `return_to`) is written as its percent-encoded, pure-ASCII form (existing `%XX` kept, any
+other `%` becomes `%25`, CR/LF become `%0D%0A`); your hooks and `allow_return_to` see the raw value.
 
 ## OPAQUE (§23)
 
@@ -2325,9 +2401,13 @@ regeneration from `proto/axiam/v1/`.
 ## TLS policy (§6)
 
 `httpx` clients are constructed with `verify=True` hardcoded; the only
-escape hatch is an explicit `custom_ca` parameter (a CA bundle path or
-`ssl.SSLContext`) — there is no boolean bypass anywhere in this SDK,
+escape hatch is an explicit `custom_ca` parameter (a CA bundle file path, a CA
+directory, inline PEM as `str` or `bytes`, or an `ssl.SSLContext` with `verify_mode=CERT_REQUIRED` and
+`check_hostname=True`; any other value, such as an unverified context, is a
+`ValueError`; a context cannot be combined with `client_cert`) — there is no boolean bypass anywhere in this SDK,
 including the examples. CI enforces this with a dedicated grep gate.
+The JWKS fetch behind local token verification honours `custom_ca` too
+(`JwksVerifier(custom_ca=...)`; the Django middleware reads `AXIAM_CUSTOM_CA`).
 
 ### mTLS / client certificates (§6.1)
 

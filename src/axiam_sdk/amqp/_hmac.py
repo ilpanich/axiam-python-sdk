@@ -1,22 +1,23 @@
 """AMQP HMAC-SHA256 verification (CONTRACT.md §8).
 
-Byte-for-byte port of the canonical protocol implemented by the Rust server
-in ``crates/axiam-amqp/src/messages.rs`` (``sign_payload``/``verify_payload``).
+Port of the canonical protocol implemented by the Rust server in
+``crates/axiam-amqp/src/messages.rs`` (``sign_payload``/``verify_payload``).
 This module cannot import that crate (the SDK MUST NOT depend on server
 crates), so the algorithm is reimplemented here and proven correct against a
 real server-signed fixture in ``tests/test_amqp_hmac.py`` (Assumption A2 /
-Pitfall 2 — see 19-RESEARCH.md).
+Pitfall 2 -- see 19-RESEARCH.md).
 
-Critical correctness note: the Rust wire types (``AuthzRequest``,
-``AuditEventMessage``) are typed structs, not maps — ``serde_json``
-serializes them in FIELD DECLARATION ORDER, not alphabetical order. A JSON
-object parsed by Python's ``json.loads`` into a ``dict`` preserves the
-insertion order of the keys as they appeared on the wire (PEP 468 / CPython
-3.7+ guarantee), and re-serializing that dict with its keys left alone
-reproduces the same order. Therefore canonicalization here MUST NOT
-alphabetize keys — it must simply re-serialize the received message (minus
-``hmac_signature``) in the order it arrived, which reproduces the exact
-byte sequence the server signed.
+**Verify the received bytes, dispatch the same bytes (server #882, D-5).** The
+server writes ``hmac_signature`` as the *last* member of the wire JSON and signs
+the bytes that precede it. The canonical bytes are therefore the delivery body
+with that trailing ``,"hmac_signature":"<64 hex>"`` member cut out of the
+closing brace -- never a re-serialization of a parsed message. Re-serializing
+fails a genuine message whenever this SDK's encoder and ``serde_json`` disagree
+(``json.dumps`` escapes every non-ASCII character by default), and it lets a
+handler be given a different parse than the one that was verified (C2: a
+duplicate key collapses in ``json.loads`` and vanishes on re-serialization).
+The value handed to a caller is parsed from the verified canonical bytes, with
+duplicate and case-variant keys refused.
 """
 
 from __future__ import annotations
@@ -24,48 +25,118 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
+from typing import Any
+
+#: The member the server appends last: ``,"hmac_signature":"`` + 64 hex digits + ``"`` + ``}``.
+SIGNATURE_MEMBER = b',"hmac_signature":"'
+SIGNATURE_HEX_LENGTH = 64
+SIGNATURE_TAIL = b'"}'
+_HEX64 = re.compile(rb"[0-9a-fA-F]{64}")
+
+
+def cut_trailing_signature(body: bytes) -> tuple[bytes, bytes] | None:
+    """Remove the final ``,"hmac_signature":"<64 hex>"`` member from ``body``.
+
+    Returns ``(canonical, signature_hex)`` -- ``canonical`` being the rest closed with ``}`` --
+    or ``None`` when ``body`` does not end in exactly that member. Never repaired by
+    re-serializing.
+    """
+    suffix_length = len(SIGNATURE_MEMBER) + SIGNATURE_HEX_LENGTH + len(SIGNATURE_TAIL)
+    if len(body) <= suffix_length or not body.endswith(SIGNATURE_TAIL):
+        return None
+    start = len(body) - suffix_length
+    if body[start : start + len(SIGNATURE_MEMBER)] != SIGNATURE_MEMBER:
+        return None
+    signature = body[start + len(SIGNATURE_MEMBER) : len(body) - len(SIGNATURE_TAIL)]
+    if _HEX64.fullmatch(signature) is None:
+        return None
+    return body[:start] + b"}", signature
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that refuses an object with a repeated key."""
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError("a duplicate key")
+        seen[key] = value
+    return seen
+
+
+def _refuse_constant(name: str) -> Any:
+    """``parse_constant`` hook: ``NaN``/``Infinity`` are not JSON."""
+    raise ValueError("a non-finite JSON constant")
+
+
+def strict_json_object(raw: bytes) -> dict[str, Any]:
+    """Parse ``raw`` as exactly one JSON object with unambiguous keys.
+
+    Refuses a first byte that is not ``{`` (a byte-order mark or whitespace included: nothing may
+    precede the opening brace, and a byte-order mark is never stripped), trailing content
+    (whitespace included: nothing may follow the closing brace), a
+    duplicate key at any depth, and two top-level keys that are equal under Unicode case folding
+    (a decoder that matches keys case-insensitively would otherwise read a different message from
+    the same bytes).
+
+    Raises:
+        ValueError: ``raw`` is not such an object. The message names the fact, never a value.
+    """
+    if raw[:1] != b"{":
+        raise ValueError("the body is not a JSON object")
+    try:
+        text = raw.decode("utf-8")
+        if text[-1:] in (" ", "\t", "\n", "\r"):
+            raise ValueError("trailing whitespace")
+        parsed = json.loads(
+            text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_refuse_constant
+        )
+    except RecursionError as exc:
+        raise ValueError("the body is not a JSON object") from exc
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, the duplicate-key refusal
+        if str(exc) == "a duplicate key":
+            raise
+        raise ValueError("the body is not a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("the body is not a JSON object")
+    if len({key.casefold() for key in parsed}) != len(parsed):
+        raise ValueError("keys that differ only by case")
+    return parsed
+
+
+def verify_and_decode(signing_key: bytes, body: bytes) -> dict[str, Any] | None:
+    """Verify ``body`` and return the message parsed from the verified bytes.
+
+    The signature is HMAC-SHA256 over ``body`` with its trailing ``hmac_signature`` member cut
+    out (see the module docstring), compared in constant time. The returned object is parsed
+    from those same canonical bytes -- it never contains ``hmac_signature`` -- so the caller acts
+    on exactly what was verified.
+
+    Returns ``None`` (never raises) for: a body that does not end in the signature member, a
+    non-hex or wrong-length signature, a wrong key or tampered body, trailing content, a body
+    that is not one JSON object, and a duplicate or case-variant key. The signature and the
+    computed digest are never logged or returned (T-19-03).
+    """
+    cut = cut_trailing_signature(body)
+    if cut is None:
+        return None
+    canonical, signature = cut
+    computed = hmac.new(signing_key, canonical, hashlib.sha256).digest()
+    if not hmac.compare_digest(computed, bytes.fromhex(signature.decode("ascii"))):
+        return None
+    try:
+        return strict_json_object(canonical)
+    except ValueError:
+        return None
 
 
 def verify_hmac(signing_key: bytes, body: bytes) -> bool:
     """Verify an HMAC-SHA256 signature over an AMQP message body.
 
-    Returns ``True`` only if the message's ``hmac_signature`` field
-    (hex-encoded) matches HMAC-SHA256(signing_key, canonical_json) where
-    ``canonical_json`` is the message with ``hmac_signature`` removed,
-    re-serialized via ``json.dumps(msg, separators=(",", ":"))`` with the
-    keys left in their received (insertion) order — preserving the wire
-    order emitted by the server's declared-order struct serialization.
-
-    Never raises. Returns ``False`` for: malformed JSON, a body that does
-    not decode to a JSON object, a missing ``hmac_signature`` field, a
-    non-hex or wrong-length signature, a tampered body, or a wrong signing
-    key. The signature and computed digest are never logged or returned —
-    only this boolean (T-19-03).
+    ``True`` only if :func:`verify_and_decode` accepts ``body``: the HMAC over the received bytes
+    (trailing ``hmac_signature`` member removed, no re-serialization) matches, and those bytes
+    are one JSON object with no duplicate key. Never raises. Callers that go on to use the
+    message MUST use :func:`verify_and_decode` and act on the object it returns, not parse
+    ``body`` a second time.
     """
-    try:
-        msg = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
-        return False
-
-    if not isinstance(msg, dict):
-        return False
-
-    sig_hex = msg.pop("hmac_signature", None)
-    if sig_hex is None or not isinstance(sig_hex, str):
-        # Strict mode default (CONTRACT.md §8.3): a message with no
-        # hmac_signature field (or a non-string value) is rejected, never
-        # silently accepted.
-        return False
-
-    # Keys are left in their received order (see module docstring) — do not
-    # alphabetize them. This reproduces the exact byte sequence the Rust
-    # signer actually signed.
-    canonical = json.dumps(msg, separators=(",", ":")).encode("utf-8")
-
-    try:
-        expected = bytes.fromhex(sig_hex)
-    except ValueError:
-        return False
-
-    computed = hmac.new(signing_key, canonical, hashlib.sha256).digest()
-    return hmac.compare_digest(computed, expected)
+    return verify_and_decode(signing_key, body) is not None
